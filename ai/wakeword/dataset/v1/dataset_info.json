@@ -1,0 +1,41 @@
+{
+    "dataset_name": "ASTA Wakeword Dataset",
+    "dataset_version": "v1.0",
+    "generated_on": "2026-07-27 16:51:04",
+    "positive": {
+        "files": 400,
+        "duration": 619.74,
+        "sample_rates": {
+            "16000": 400
+        },
+        "channels": {
+            "1": 400
+        },
+        "bit_depths": {
+            "16": 400
+        },
+        "average_duration": 1.55
+    },
+    "negative": {
+        "files": 5,
+        "duration": 72.79,
+        "sample_rates": {
+            "16000": 5
+        },
+        "channels": {
+            "1": 5
+        },
+        "bit_depths": {
+            "16": 5
+        },
+        "average_duration": 14.56
+    },
+    "training_status": "READY",
+    "recommended_framework": "openWakeWord",
+    "audio_format": {
+        "sample_rate": 16000,
+        "channels": 1,
+        "bit_depth": 16,
+        "encoding": "PCM"
+    }
+}
