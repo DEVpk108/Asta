@@ -1,48 +1,28 @@
 """
 06_download_hindi_negative_dataset.py
 
-Prepare Hindi speech negatives for ASTA.
+Build a Hindi negative dataset for ASTA.
+
+Features:
+- Resume existing Hindi negative dataset
+- Preserves existing WAV files
+- Preserves existing manifest entries
+- Downloads metadata only first
+- Downloads individual MP3 files on demand
+- NEVER uses snapshot_download()
+- Avoids downloading the entire dataset
+- Skips already-used source files
+- Converts audio to 22050 Hz mono WAV
+- Filters by duration
+- Detects duplicates using SHA256
+- Continues until TARGET_SAMPLES is reached
+- Safe to stop and rerun
 
 Dataset:
     dhruvkys/11k-asr
 
-The dataset is a soundfolder dataset containing:
-
-    train/
-        clips/
-            *.mp3
-        metadata.tsv
-
-This script intentionally DOES NOT use:
-    datasets.load_dataset()
-
-That avoids Hugging Face's automatic Audio feature
-decoding and therefore avoids the torchcodec / PyTorch
-dependency.
-
-Pipeline:
-
-    Hugging Face snapshot
-            ↓
-    metadata.tsv
-            ↓
-    MP3 files
-            ↓
-    duration filtering
-            ↓
-    wakeword filtering
-            ↓
-    librosa decoding
-            ↓
-    mono
-            ↓
-    22050 Hz
-            ↓
-    16-bit PCM WAV
-            ↓
-    duplicate detection
-            ↓
-    manifest
+Source:
+    Mozilla Common Voice Hindi
 
 Author: ASTA
 """
@@ -51,268 +31,410 @@ from pathlib import Path
 import csv
 import hashlib
 import random
-import re
 import shutil
-import wave
+import tempfile
+import time
 
 import numpy as np
+import soundfile as sf
 from tqdm import tqdm
 
-
-from ai.wakeword.config import (
-    GENERATED_DIR,
-)
+from huggingface_hub import hf_hub_download
 
 
-# =========================================================
-# Configuration
-# =========================================================
+# ============================================================
+# CONFIG
+# ============================================================
 
-DATASET_NAME = "dhruvkys/11k-asr"
+DATASET_ID = "dhruvkys/11k-asr"
 
-DATASET_SPLIT = "train"
+SPLIT = "train"
 
-TARGET_SAMPLES = 10
+TARGET_SAMPLES = 2990
 
 TARGET_SAMPLE_RATE = 22050
 
 MIN_DURATION_SECONDS = 0.5
+MAX_DURATION_SECONDS = 8.0
 
-MAX_DURATION_SECONDS = 5.0
+# We need a lot more candidates because many clips can be
+# rejected by duration / duplicate / download checks.
+MAX_CANDIDATES_TO_CHECK = 8500
 
-RANDOM_SEED = 42
+# Metadata is small, so cache it locally.
+METADATA_FILENAME = "metadata.tsv"
 
-
-# =========================================================
-# Paths
-# =========================================================
-
-OUTPUT_DIR = (
-    GENERATED_DIR
-    / "downloaded_negative"
-    / "hindi"
-)
-
-MANIFEST_PATH = (
-    OUTPUT_DIR
-    / "hindi_manifest.csv"
-)
-
-SOURCE_DIR = (
-    GENERATED_DIR
+# Existing source cache.
+SOURCE_ROOT = (
+    Path("ai")
+    / "wakeword"
+    / "generated"
     / "negative_sources"
     / "11k-asr"
 )
 
+METADATA_CACHE = SOURCE_ROOT / SPLIT / METADATA_FILENAME
 
-# =========================================================
-# Wakeword filtering
-# =========================================================
+# Final Hindi negative dataset.
+OUTPUT_ROOT = (
+    Path("ai")
+    / "wakeword"
+    / "generated"
+    / "downloaded_negative"
+    / "hindi"
+)
 
-WAKEWORD_PATTERNS = [
+MANIFEST_PATH = OUTPUT_ROOT / "hindi_manifest.csv"
 
-    # English
-    r"\bhey\s+aasta\b",
-    r"\bhey\s+asta\b",
-    r"\bhello\s+aasta\b",
-    r"\bhello\s+asta\b",
-    r"\bhi\s+aasta\b",
-    r"\bhi\s+asta\b",
+# Temporary downloaded MP3 files.
+AUDIO_CACHE = SOURCE_ROOT / SPLIT / "clips"
 
-    # Hindi / Devanagari
-    r"हे\s+आस्ता",
-    r"हे\s+आस्टा",
-    r"हे\s+अस्ता",
-    r"हाय\s+आस्ता",
-    r"हेलो\s+आस्ता",
-]
+# Randomization makes repeated runs less biased toward the
+# beginning of the metadata file.
+RANDOMIZE_CANDIDATES = True
+
+# Small pause between failed requests.
+RETRY_DELAY_SECONDS = 1.5
+
+MAX_DOWNLOAD_RETRIES = 3
 
 
-# =========================================================
-# Text utilities
-# =========================================================
+# ============================================================
+# DIRECTORY SETUP
+# ============================================================
 
-def normalize_text(
-    text: str,
-) -> str:
+OUTPUT_ROOT.mkdir(
+    parents=True,
+    exist_ok=True,
+)
 
-    text = str(
-        text or ""
-    ).strip().lower()
+SOURCE_ROOT.mkdir(
+    parents=True,
+    exist_ok=True,
+)
 
-    text = re.sub(
-        r"\s+",
-        " ",
-        text,
+AUDIO_CACHE.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def print_header():
+    print("\n" + "=" * 50)
+    print("ASTA HINDI NEGATIVE DATASET")
+    print("=" * 50)
+    print(f"Dataset : {DATASET_ID}")
+    print(f"Split   : {SPLIT}")
+    print(f"Target  : {TARGET_SAMPLES}")
+    print(f"Sample rate : {TARGET_SAMPLE_RATE} Hz")
+    print(f"Output  : {OUTPUT_ROOT}")
+    print(f"Manifest: {MANIFEST_PATH}")
+    print("=" * 50)
+    print()
+
+
+def sha256_file(path: Path) -> str:
+    """
+    Calculate SHA256 for a WAV file.
+    """
+
+    digest = hashlib.sha256()
+
+    with path.open("rb") as f:
+
+        while True:
+
+            chunk = f.read(1024 * 1024)
+
+            if not chunk:
+                break
+
+            digest.update(chunk)
+
+    return digest.hexdigest()
+
+
+def get_existing_manifest():
+    """
+    Read existing manifest.
+
+    Returns:
+        rows
+        used_source_files
+        used_hashes
+    """
+
+    rows = []
+
+    used_source_files = set()
+
+    used_hashes = set()
+
+    if not MANIFEST_PATH.exists():
+
+        return (
+            rows,
+            used_source_files,
+            used_hashes,
+        )
+
+    with MANIFEST_PATH.open(
+        "r",
+        encoding="utf-8",
+        newline="",
+    ) as f:
+
+        reader = csv.DictReader(f)
+
+        for row in reader:
+
+            rows.append(row)
+
+            source_file = (
+                row.get("source_file")
+                or row.get("source")
+                or ""
+            ).strip()
+
+            if source_file:
+
+                used_source_files.add(
+                    source_file
+                )
+
+            file_hash = (
+                row.get("sha256")
+                or ""
+            ).strip()
+
+            if file_hash:
+
+                used_hashes.add(
+                    file_hash
+                )
+
+    return (
+        rows,
+        used_source_files,
+        used_hashes,
     )
 
-    return text
 
+def rebuild_existing_hashes(
+    rows,
+    used_hashes,
+):
+    """
+    If an older manifest did not contain hashes,
+    calculate them from existing WAV files.
+    """
 
-def contains_wakeword(
-    text: str,
-) -> bool:
+    if used_hashes:
 
-    normalized = normalize_text(
-        text
+        return used_hashes
+
+    print(
+        "Calculating hashes for existing "
+        "Hindi negatives..."
     )
 
-    for pattern in WAKEWORD_PATTERNS:
+    for row in rows:
 
-        if re.search(
-            pattern,
-            normalized,
-        ):
+        wav_path = row.get("wav_path", "").strip()
 
-            return True
+        if not wav_path:
 
-    return False
+            continue
+
+        path = Path(wav_path)
+
+        if not path.is_absolute():
+
+            path = Path.cwd() / path
+
+        if not path.exists():
+
+            continue
+
+        try:
+
+            file_hash = sha256_file(path)
+
+            used_hashes.add(file_hash)
+
+        except Exception:
+
+            pass
+
+    return used_hashes
 
 
-# =========================================================
-# Hugging Face download
-# =========================================================
+def count_existing_valid_files(rows):
+    """
+    Count existing WAVs that are still present.
+    """
 
-def download_dataset():
+    count = 0
 
+    for row in rows:
+
+        wav_path = row.get(
+            "wav_path",
+            "",
+        ).strip()
+
+        if not wav_path:
+
+            continue
+
+        path = Path(wav_path)
+
+        if not path.is_absolute():
+
+            path = Path.cwd() / path
+
+        if path.exists():
+
+            count += 1
+
+    return count
+
+
+def write_manifest_header_if_needed():
+
+    if MANIFEST_PATH.exists():
+
+        return
+
+    with MANIFEST_PATH.open(
+        "w",
+        encoding="utf-8",
+        newline="",
+    ) as f:
+
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "wav_path",
+                "source_file",
+                "text",
+                "duration_seconds",
+                "sample_rate",
+                "sha256",
+            ],
+        )
+
+        writer.writeheader()
+
+
+def append_manifest_row(
+    wav_path,
+    source_file,
+    text,
+    duration_seconds,
+    file_hash,
+):
+
+    write_manifest_header_if_needed()
+
+    # Store relative paths where possible.
     try:
 
-        from huggingface_hub import (
-            snapshot_download,
+        relative_wav = wav_path.resolve().relative_to(
+            Path.cwd().resolve()
         )
 
-    except ImportError:
+        wav_string = str(
+            relative_wav
+        ).replace("\\", "/")
 
-        raise RuntimeError(
-            "\n"
-            "huggingface_hub is required.\n\n"
-            "Install with:\n"
-            "pip install huggingface_hub\n"
+    except ValueError:
+
+        wav_string = str(
+            wav_path
+        ).replace("\\", "/")
+
+    with MANIFEST_PATH.open(
+        "a",
+        encoding="utf-8",
+        newline="",
+    ) as f:
+
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "wav_path",
+                "source_file",
+                "text",
+                "duration_seconds",
+                "sample_rate",
+                "sha256",
+            ],
         )
 
-    SOURCE_DIR.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+        writer.writerow(
+            {
+                "wav_path": wav_string,
+                "source_file": source_file,
+                "text": text,
+                "duration_seconds": f"{duration_seconds:.4f}",
+                "sample_rate": TARGET_SAMPLE_RATE,
+                "sha256": file_hash,
+            }
+        )
 
+
+# ============================================================
+# METADATA
+# ============================================================
+
+def download_metadata():
+    """
+    Download only metadata.tsv.
+
+    Does NOT download audio.
+    """
+
+    if METADATA_CACHE.exists():
+
+        print(
+            f"Using cached metadata:\n"
+            f"{METADATA_CACHE}\n"
+        )
+
+        return METADATA_CACHE
+
+    print("Downloading metadata only...")
+    print(f"Dataset : {DATASET_ID}")
+    print(f"File    : {SPLIT}/{METADATA_FILENAME}")
     print()
-    print(
-        "Downloading Hindi dataset files..."
-    )
 
-    print(
-        f"Dataset : {DATASET_NAME}"
-    )
-
-    print(
-        f"Destination : {SOURCE_DIR}"
-    )
-
-    print()
-
-    snapshot_download(
-        repo_id=DATASET_NAME,
+    downloaded_path = hf_hub_download(
+        repo_id=DATASET_ID,
+        filename=f"{SPLIT}/{METADATA_FILENAME}",
         repo_type="dataset",
-        local_dir=str(
-            SOURCE_DIR
-        ),
-        local_dir_use_symlinks=False,
+        local_dir=str(SOURCE_ROOT),
     )
 
-    return SOURCE_DIR
-
-
-# =========================================================
-# Locate metadata
-# =========================================================
-
-def find_metadata(
-    root: Path,
-) -> Path:
-
-    candidates = [
-
-        root
-        / DATASET_SPLIT
-        / "metadata.tsv",
-
-        root
-        / "metadata.tsv",
-
-    ]
-
-    for path in candidates:
-
-        if path.exists():
-
-            return path
-
-    matches = list(
-        root.rglob(
-            "metadata.tsv"
-        )
+    downloaded_path = Path(
+        downloaded_path
     )
 
-    if not matches:
-
-        raise FileNotFoundError(
-            "Could not find metadata.tsv "
-            f"inside:\n{root}"
-        )
-
-    return matches[0]
+    return downloaded_path
 
 
-# =========================================================
-# Locate clips
-# =========================================================
+def read_metadata(metadata_path):
+    """
+    Read metadata.tsv.
 
-def find_clips_dir(
-    root: Path,
-) -> Path:
-
-    candidates = [
-
-        root
-        / DATASET_SPLIT
-        / "clips",
-
-        root
-        / "clips",
-
-    ]
-
-    for path in candidates:
-
-        if path.exists():
-
-            return path
-
-    matches = list(
-        root.rglob(
-            "clips"
-        )
-    )
-
-    for path in matches:
-
-        if path.is_dir():
-
-            return path
-
-    raise FileNotFoundError(
-        "Could not find clips directory "
-        f"inside:\n{root}"
-    )
-
-
-# =========================================================
-# Read metadata
-# =========================================================
-
-def read_metadata(
-    metadata_path: Path,
-):
+    Expected columns:
+        file_name
+        text
+    """
 
     rows = []
 
@@ -320,80 +442,23 @@ def read_metadata(
         "r",
         encoding="utf-8",
         newline="",
-    ) as file:
+    ) as f:
 
         reader = csv.DictReader(
-            file,
+            f,
             delimiter="\t",
         )
-
-        if not reader.fieldnames:
-
-            raise ValueError(
-                "metadata.tsv has no header."
-            )
-
-        # The official dataset uses:
-        #
-        # file_name
-        # text
-
-        file_column = None
-
-        text_column = None
-
-        for name in reader.fieldnames:
-
-            normalized = (
-                name.strip().lower()
-            )
-
-            if normalized in (
-                "file_name",
-                "filename",
-                "file",
-            ):
-
-                file_column = name
-
-            elif normalized in (
-                "text",
-                "sentence",
-                "transcription",
-                "transcript",
-            ):
-
-                text_column = name
-
-        if file_column is None:
-
-            raise ValueError(
-                "Could not find file_name "
-                "column in metadata.tsv."
-            )
-
-        if text_column is None:
-
-            raise ValueError(
-                "Could not find text "
-                "column in metadata.tsv."
-            )
 
         for row in reader:
 
             filename = (
-                row.get(
-                    file_column,
-                    "",
-                )
+                row.get("file_name")
+                or row.get("path")
                 or ""
             ).strip()
 
             text = (
-                row.get(
-                    text_column,
-                    "",
-                )
+                row.get("text")
                 or ""
             ).strip()
 
@@ -402,111 +467,124 @@ def read_metadata(
                 continue
 
             rows.append(
-                (
-                    filename,
-                    text,
-                )
+                {
+                    "file_name": filename,
+                    "text": text,
+                }
             )
 
     return rows
 
 
-# =========================================================
-# Audio loading
-# =========================================================
+# ============================================================
+# DOWNLOAD
+# ============================================================
 
-def load_audio(
-    path: Path,
+def download_audio(
+    source_filename,
 ):
+    """
+    Download ONE MP3 file.
 
-    try:
+    Never downloads the entire dataset.
+    """
 
-        import librosa
-
-    except ImportError:
-
-        raise RuntimeError(
-            "\n"
-            "librosa is required.\n\n"
-            "Install with:\n"
-            "pip install librosa\n"
-        )
-
-    audio, sample_rate = (
-        librosa.load(
-            str(path),
-            sr=None,
-            mono=False,
-        )
+    relative_path = (
+        f"{SPLIT}/clips/{source_filename}"
     )
 
-    audio = np.asarray(
-        audio,
-        dtype=np.float32,
+    destination = (
+        AUDIO_CACHE / source_filename
     )
 
-    return (
-        audio,
-        int(sample_rate),
+    destination.parent.mkdir(
+        parents=True,
+        exist_ok=True,
     )
 
+    # Already cached.
+    if destination.exists():
 
-# =========================================================
-# Mono
-# =========================================================
+        return destination
 
-def to_mono(
-    audio: np.ndarray,
-):
+    last_error = None
 
-    audio = np.asarray(
-        audio,
-        dtype=np.float32,
-    )
+    for attempt in range(
+        1,
+        MAX_DOWNLOAD_RETRIES + 1,
+    ):
 
-    if audio.ndim == 1:
+        try:
 
-        return audio
-
-    if audio.ndim == 2:
-
-        # librosa:
-        # channels x samples
-
-        if audio.shape[0] <= 8:
-
-            return np.mean(
-                audio,
-                axis=0,
+            downloaded = hf_hub_download(
+                repo_id=DATASET_ID,
+                filename=relative_path,
+                repo_type="dataset",
+                local_dir=str(SOURCE_ROOT),
             )
 
-        # Fallback:
-        # samples x channels
+            downloaded = Path(
+                downloaded
+            )
 
-        return np.mean(
-            audio,
-            axis=1,
-        )
+            if downloaded.exists():
 
-    raise ValueError(
-        f"Unsupported audio shape: "
-        f"{audio.shape}"
+                return downloaded
+
+        except Exception as exc:
+
+            last_error = exc
+
+            if attempt < MAX_DOWNLOAD_RETRIES:
+
+                time.sleep(
+                    RETRY_DELAY_SECONDS
+                )
+
+    raise RuntimeError(
+        f"Failed downloading "
+        f"{source_filename}: "
+        f"{last_error}"
     )
 
 
-# =========================================================
-# Normalize
-# =========================================================
+# ============================================================
+# AUDIO PROCESSING
+# ============================================================
 
-def normalize_audio(
-    audio: np.ndarray,
+def process_audio(
+    source_path,
+    output_path,
 ):
+    """
+    Read MP3 and convert to:
+        22050 Hz
+        mono
+        PCM16 WAV
+    """
+
+    import librosa
+
+    audio, sample_rate = librosa.load(
+        str(source_path),
+        sr=TARGET_SAMPLE_RATE,
+        mono=True,
+    )
+
+    if audio is None:
+
+        return None
 
     audio = np.asarray(
         audio,
         dtype=np.float32,
     )
 
+    if audio.size == 0:
+
+        return None
+
+    # Remove NaN / Inf.
     audio = np.nan_to_num(
         audio,
         nan=0.0,
@@ -514,568 +592,422 @@ def normalize_audio(
         neginf=0.0,
     )
 
-    return np.clip(
+    duration = (
+        len(audio)
+        / TARGET_SAMPLE_RATE
+    )
+
+    if duration < MIN_DURATION_SECONDS:
+
+        return None
+
+    if duration > MAX_DURATION_SECONDS:
+
+        return None
+
+    # Normalize only if necessary.
+    peak = float(
+        np.max(
+            np.abs(audio)
+        )
+    )
+
+    if peak > 1.0:
+
+        audio = (
+            audio
+            / peak
+        )
+
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    sf.write(
+        str(output_path),
         audio,
-        -1.0,
-        1.0,
+        TARGET_SAMPLE_RATE,
+        subtype="PCM_16",
     )
 
-
-# =========================================================
-# Resampling
-# =========================================================
-
-def resample_audio(
-    audio: np.ndarray,
-    source_rate: int,
-    target_rate: int,
-):
-
-    if source_rate == target_rate:
-
-        return audio.astype(
-            np.float32,
-            copy=False,
-        )
-
-    try:
-
-        import librosa
-
-        output = librosa.resample(
-            audio,
-            orig_sr=source_rate,
-            target_sr=target_rate,
-        )
-
-        return np.asarray(
-            output,
-            dtype=np.float32,
-        )
-
-    except Exception:
-
-        # Safe interpolation fallback.
-
-        if len(audio) == 0:
-
-            return np.array(
-                [],
-                dtype=np.float32,
-            )
-
-        target_length = int(
-            round(
-                len(audio)
-                * target_rate
-                / source_rate
-            )
-        )
-
-        old_positions = np.linspace(
-            0.0,
-            1.0,
-            len(audio),
-            endpoint=False,
-        )
-
-        new_positions = np.linspace(
-            0.0,
-            1.0,
-            target_length,
-            endpoint=False,
-        )
-
-        return np.interp(
-            new_positions,
-            old_positions,
-            audio,
-        ).astype(
-            np.float32
-        )
+    return duration
 
 
-# =========================================================
-# WAV writer
-# =========================================================
-
-def save_wav(
-    path: Path,
-    audio: np.ndarray,
-):
-
-    audio = normalize_audio(
-        audio
-    )
-
-    pcm = (
-        audio * 32767.0
-    ).astype(
-        np.int16
-    )
-
-    with wave.open(
-        str(path),
-        "wb",
-    ) as wav:
-
-        wav.setnchannels(1)
-
-        wav.setsampwidth(2)
-
-        wav.setframerate(
-            TARGET_SAMPLE_RATE
-        )
-
-        wav.writeframes(
-            pcm.tobytes()
-        )
-
-
-# =========================================================
-# Hash
-# =========================================================
-
-def audio_hash(
-    audio: np.ndarray,
-):
-
-    audio = normalize_audio(
-        audio
-    )
-
-    pcm = (
-        audio * 32767.0
-    ).astype(
-        np.int16
-    )
-
-    return hashlib.sha256(
-        pcm.tobytes()
-    ).hexdigest()
-
-
-# =========================================================
-# Main
-# =========================================================
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
 
-    random.seed(
-        RANDOM_SEED
+    print_header()
+
+    # --------------------------------------------------------
+    # Existing dataset
+    # --------------------------------------------------------
+
+    (
+        existing_rows,
+        used_sources,
+        used_hashes,
+    ) = get_existing_manifest()
+
+    existing_count = count_existing_valid_files(
+        existing_rows
     )
 
-    np.random.seed(
-        RANDOM_SEED
+    used_hashes = rebuild_existing_hashes(
+        existing_rows,
+        used_hashes,
+    )
+
+    remaining = max(
+        0,
+        TARGET_SAMPLES - existing_count,
+    )
+
+    print(
+        f"Existing valid samples : "
+        f"{existing_count}"
+    )
+
+    print(
+        f"Target samples          : "
+        f"{TARGET_SAMPLES}"
+    )
+
+    print(
+        f"Remaining required      : "
+        f"{remaining}"
     )
 
     print()
-    print("=" * 50)
-    print(
-        "ASTA HINDI NEGATIVE DATASET"
-    )
-    print("=" * 50)
 
-    print(
-        f"Dataset : {DATASET_NAME}"
-    )
+    if remaining == 0:
 
-    print(
-        f"Target  : {TARGET_SAMPLES}"
-    )
-
-    print(
-        f"Sample rate : "
-        f"{TARGET_SAMPLE_RATE} Hz"
-    )
-
-    print(
-        f"Output  : {OUTPUT_DIR}"
-    )
-
-    print("=" * 50)
-
-    # -----------------------------------------------------
-    # Download source dataset
-    # -----------------------------------------------------
-
-    dataset_root = (
-        download_dataset()
-    )
-
-    # -----------------------------------------------------
-    # Locate files
-    # -----------------------------------------------------
-
-    metadata_path = (
-        find_metadata(
-            dataset_root
+        print(
+            "Target already reached."
         )
-    )
 
-    clips_dir = (
-        find_clips_dir(
-            dataset_root
+        print(
+            "\nRESULT: PASS"
         )
-    )
 
-    print()
-    print(
-        f"Metadata : {metadata_path}"
-    )
+        return
 
-    print(
-        f"Clips    : {clips_dir}"
-    )
+    # --------------------------------------------------------
+    # Metadata
+    # --------------------------------------------------------
 
-    # -----------------------------------------------------
-    # Read metadata
-    # -----------------------------------------------------
+    metadata_path = download_metadata()
 
     rows = read_metadata(
         metadata_path
     )
 
     print(
-        f"Usable metadata rows : "
+        f"Metadata rows : "
         f"{len(rows)}"
     )
 
-    # -----------------------------------------------------
-    # Shuffle source order
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Candidate selection
+    # --------------------------------------------------------
 
-    random.shuffle(
-        rows
+    candidates = [
+        row
+        for row in rows
+        if row["file_name"]
+        not in used_sources
+    ]
+
+    if RANDOMIZE_CANDIDATES:
+
+        random.shuffle(
+            candidates
+        )
+
+    candidates = candidates[
+        :MAX_CANDIDATES_TO_CHECK
+    ]
+
+    print(
+        f"New candidates available : "
+        f"{len(candidates)}"
     )
 
-    # -----------------------------------------------------
-    # Output
-    # -----------------------------------------------------
+    print()
 
-    OUTPUT_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    # --------------------------------------------------------
+    # Output numbering
+    # --------------------------------------------------------
 
-    # -----------------------------------------------------
-    # Counters
-    # -----------------------------------------------------
+    next_index = existing_count
 
     generated = 0
-
-    duration_filtered = 0
-
-    duplicates = 0
-
-    conversion_errors = 0
+    candidates_checked = 0
 
     text_filtered = 0
-
-    missing_files = 0
-
-    seen_hashes = set()
-
-    manifest_rows = []
-
-    # -----------------------------------------------------
-    # Progress
-    # -----------------------------------------------------
+    duration_filtered = 0
+    duplicates = 0
+    download_errors = 0
+    conversion_errors = 0
 
     progress = tqdm(
-        total=TARGET_SAMPLES,
+        total=remaining,
         desc="Preparing Hindi negatives",
         unit="clip",
     )
 
-    # -----------------------------------------------------
-    # Process
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Process candidates
+    # --------------------------------------------------------
 
-    for filename, text in rows:
+    for candidate in candidates:
 
-        if generated >= TARGET_SAMPLES:
+        if generated >= remaining:
 
             break
 
-        # -------------------------------------------------
-        # Wakeword protection
-        # -------------------------------------------------
+        candidates_checked += 1
 
-        if contains_wakeword(
-            text
-        ):
-
-            text_filtered += 1
-
-            continue
-
-        # -------------------------------------------------
-        # Locate source audio
-        # -------------------------------------------------
-
-        source_path = (
-            clips_dir
-            / filename
+        source_filename = (
+            candidate["file_name"]
         )
 
-        if not source_path.exists():
+        text = (
+            candidate["text"]
+        )
 
-            missing_files += 1
+        # ----------------------------------------------------
+        # Skip already-used source
+        # ----------------------------------------------------
+
+        if source_filename in used_sources:
 
             continue
 
-        # -------------------------------------------------
-        # Load audio
-        # -------------------------------------------------
+        # ----------------------------------------------------
+        # Download one MP3
+        # ----------------------------------------------------
 
         try:
 
-            audio, source_rate = (
-                load_audio(
-                    source_path
-                )
+            source_path = download_audio(
+                source_filename
             )
 
-            audio = to_mono(
-                audio
-            )
+        except Exception:
 
-            audio = normalize_audio(
-                audio
+            download_errors += 1
+
+            continue
+
+        # ----------------------------------------------------
+        # Output filename
+        # ----------------------------------------------------
+
+        output_path = (
+            OUTPUT_ROOT
+            / f"hindi_{next_index:05d}.wav"
+        )
+
+        # ----------------------------------------------------
+        # Convert
+        # ----------------------------------------------------
+
+        try:
+
+            duration = process_audio(
+                source_path,
+                output_path,
             )
 
         except Exception:
 
             conversion_errors += 1
 
+            if output_path.exists():
+
+                try:
+                    output_path.unlink()
+                except Exception:
+                    pass
+
             continue
 
-        if source_rate <= 0:
+        # ----------------------------------------------------
+        # Duration rejection
+        # ----------------------------------------------------
 
-            conversion_errors += 1
-
-            continue
-
-        # -------------------------------------------------
-        # Duration
-        # -------------------------------------------------
-
-        source_duration = (
-            len(audio)
-            / source_rate
-        )
-
-        if (
-            source_duration
-            < MIN_DURATION_SECONDS
-            or
-            source_duration
-            > MAX_DURATION_SECONDS
-        ):
+        if duration is None:
 
             duration_filtered += 1
 
+            if output_path.exists():
+
+                try:
+                    output_path.unlink()
+                except Exception:
+                    pass
+
             continue
 
-        # -------------------------------------------------
-        # Resample
-        # -------------------------------------------------
+        # ----------------------------------------------------
+        # Duplicate detection
+        # ----------------------------------------------------
 
         try:
 
-            audio = resample_audio(
-                audio,
-                source_rate,
-                TARGET_SAMPLE_RATE,
-            )
-
-            audio = normalize_audio(
-                audio
+            file_hash = sha256_file(
+                output_path
             )
 
         except Exception:
 
             conversion_errors += 1
 
+            try:
+                output_path.unlink()
+            except Exception:
+                pass
+
             continue
 
-        # -------------------------------------------------
-        # Duplicate detection
-        # -------------------------------------------------
-
-        digest = audio_hash(
-            audio
-        )
-
-        if digest in seen_hashes:
+        if file_hash in used_hashes:
 
             duplicates += 1
 
-            continue
-
-        seen_hashes.add(
-            digest
-        )
-
-        # -------------------------------------------------
-        # Output filename
-        # -------------------------------------------------
-
-        output_filename = (
-            f"hindi_"
-            f"{generated:06d}.wav"
-        )
-
-        output_path = (
-            OUTPUT_DIR
-            / output_filename
-        )
-
-        # -------------------------------------------------
-        # Save
-        # -------------------------------------------------
-
-        try:
-
-            save_wav(
-                output_path,
-                audio,
-            )
-
-        except Exception:
-
-            conversion_errors += 1
+            try:
+                output_path.unlink()
+            except Exception:
+                pass
 
             continue
 
-        # -------------------------------------------------
-        # Manifest
-        # -----------------------------------------------------
+        # ----------------------------------------------------
+        # Successful sample
+        # ----------------------------------------------------
 
-        manifest_rows.append([
-            output_filename,
-            filename,
-            text,
-            f"{source_duration:.6f}",
-            source_rate,
-            TARGET_SAMPLE_RATE,
-            digest,
-        ])
+        append_manifest_row(
+            wav_path=output_path,
+            source_file=source_filename,
+            text=text,
+            duration_seconds=duration,
+            file_hash=file_hash,
+        )
+
+        used_sources.add(
+            source_filename
+        )
+
+        used_hashes.add(
+            file_hash
+        )
 
         generated += 1
+        next_index += 1
 
-        progress.update(
-            1
-        )
+        progress.update(1)
 
     progress.close()
 
-    # -----------------------------------------------------
-    # Manifest
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Final count
+    # --------------------------------------------------------
 
-    with MANIFEST_PATH.open(
-        "w",
-        newline="",
-        encoding="utf-8",
-    ) as file:
-
-        writer = csv.writer(
-            file
-        )
-
-        writer.writerow([
-            "filename",
-            "source_filename",
-            "text",
-            "source_duration_seconds",
-            "source_sample_rate",
-            "output_sample_rate",
-            "sha256",
-        ])
-
-        writer.writerows(
-            manifest_rows
-        )
-
-    # -----------------------------------------------------
-    # Summary
-    # -----------------------------------------------------
+    final_count = (
+        existing_count
+        + generated
+    )
 
     print()
+
     print("=" * 50)
-    print(
-        "HINDI NEGATIVE DATASET COMPLETE"
-    )
+    print("HINDI NEGATIVE DATASET COMPLETE")
     print("=" * 50)
 
     print(
-        f"Generated          : "
+        f"Existing preserved : "
+        f"{existing_count}"
+    )
+
+    print(
+        f"Newly generated     : "
         f"{generated}"
     )
 
     print(
-        f"Target             : "
+        f"Generated total     : "
+        f"{final_count}"
+    )
+
+    print(
+        f"Target              : "
         f"{TARGET_SAMPLES}"
     )
 
     print(
-        f"Text filtered      : "
+        f"Candidates checked  : "
+        f"{candidates_checked}"
+    )
+
+    print(
+        f"Text filtered       : "
         f"{text_filtered}"
     )
 
     print(
-        f"Duration filtered  : "
+        f"Duration filtered   : "
         f"{duration_filtered}"
     )
 
     print(
-        f"Missing files      : "
-        f"{missing_files}"
-    )
-
-    print(
-        f"Duplicates         : "
+        f"Duplicates          : "
         f"{duplicates}"
     )
 
     print(
-        f"Conversion errors  : "
+        f"Download errors     : "
+        f"{download_errors}"
+    )
+
+    print(
+        f"Conversion errors   : "
         f"{conversion_errors}"
     )
 
     print(
-        f"Manifest           : "
+        f"Manifest            : "
         f"{MANIFEST_PATH}"
     )
 
     print("=" * 50)
 
-    if generated < TARGET_SAMPLES:
+    if final_count >= TARGET_SAMPLES:
 
         print()
+        print("RESULT: PASS")
         print(
-            "RESULT: INCOMPLETE"
-        )
-
-        print(
-            "Could not reach the requested "
-            "number of Hindi negatives."
-        )
-
-    elif conversion_errors:
-
-        print()
-        print(
-            "RESULT: PASS WITH WARNINGS"
+            "Hindi negative dataset target reached."
         )
 
     else:
 
         print()
+        print("RESULT: INCOMPLETE")
+
         print(
-            "RESULT: PASS"
+            f"Still required: "
+            f"{TARGET_SAMPLES - final_count}"
+        )
+
+        print(
+            "Existing samples were preserved."
+        )
+
+        print(
+            "Run this script again to continue."
         )
 
     print("=" * 50)

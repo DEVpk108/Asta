@@ -31,3 +31,4 @@ venv/
 # Ignore DLLs and heavy binaries
 *.dll
 *.so
+*txt
