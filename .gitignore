@@ -32,3 +32,5 @@ venv/
 *.dll
 *.so
 *txt
+*npy
+*.npy
