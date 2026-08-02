@@ -26,11 +26,9 @@ background_paths:
 background_paths_duplication_rate:
   - 1
 
-
-
 augmentation_rounds: 1
 
-ffeature_data_files:
+feature_data_files:
   "ACAV100M_sample": "./training_data/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
 
 batch_n_per_class:
