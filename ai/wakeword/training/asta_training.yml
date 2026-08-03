@@ -1,47 +1,17 @@
 model_name: "asta"
+model_type: "dnn"
+layer_size: 128
 
-target_phrase:
-  - "hey asta"
-  - "hello asta"
-  - "wake up asta"
+steps: 100
+max_negative_weight: 5000
+target_false_positives_per_hour: 0.2
 
-custom_negative_phrases: []
-
-n_samples: 20000
-n_samples_val: 4000
-
-tts_batch_size: 50
-augmentation_batch_size: 16
-
-piper_sample_generator_path: "./piper-sample-generator"
-
-output_dir: "./asta_model"
-
-rir_paths:
-  - "./mit_rirs"
-
-background_paths:
-  - "./background_clips"
-
-background_paths_duplication_rate:
-  - 1
-
-augmentation_rounds: 1
+batch_n_per_class: 256
 
 feature_data_files:
-  "ACAV100M_sample": "./training_data/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+  positive: "E:/Projects/ASTA/ai/wakeword/generated/synthetic_positive/features/positive_features.npy"
+  adversarial_negative: "E:/Projects/ASTA/ai/wakeword/generated/negative/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
 
-batch_n_per_class:
-  "ACAV100M_sample": 1024
-  "adversarial_negative": 50
-  "positive": 50
+false_positive_validation_data_path: "E:/Projects/ASTA/ai/wakeword/generated/negative/validation_set_features.npy"
 
-false_positive_validation_data_path: "./training_data/validation_set_features.npy"
-
-model_type: "dnn"
-layer_size: 32
-
-steps: 50000
-
-max_negative_weight: 1500
-target_false_positives_per_hour: 0.2
+output_dir: "E:/Projects/ASTA/ai/wakeword/generated/models"
