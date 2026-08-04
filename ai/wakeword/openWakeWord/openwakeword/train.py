@@ -1,4 +1,25 @@
 import torch
+
+# Work around PyTorch 2.x + SpeechBrain lazy-import interaction.
+# Optimizer.add_param_group may already be wrapped with _disable_dynamo,
+# which causes torch._dynamo to import during Adam initialization.
+
+import torch._compile as _torch_compile
+import torch.optim.optimizer as _optimizer
+
+# Keep PyTorch's original decorator available for anything else.
+_torch_compile._disable_dynamo = (
+    lambda fn=None, recursive=True:
+    (lambda *args, **kwargs: fn(*args, **kwargs))
+    if fn else (lambda f: f)
+)
+
+# Unwrap add_param_group if PyTorch decorated it with _disable_dynamo.
+_add_param_group = _optimizer.Optimizer.add_param_group
+
+if hasattr(_add_param_group, "__wrapped__"):
+    _optimizer.Optimizer.add_param_group = _add_param_group.__wrapped__
+
 from torch import optim, nn
 import torchinfo
 import torchmetrics
