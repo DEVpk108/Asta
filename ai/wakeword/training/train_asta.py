@@ -2,6 +2,19 @@ import os
 import yaml
 import numpy as np
 import torch
+# Work around PyTorch 2.x Dynamo/inspect interaction with SpeechBrain's
+# lazy k2 module on this Windows/Python 3.12 environment.
+import torch.optim.optimizer as _torch_optimizer
+
+if hasattr(_torch_optimizer.Optimizer.add_param_group, "__wrapped__"):
+    _torch_optimizer.Optimizer.add_param_group = (
+        _torch_optimizer.Optimizer.add_param_group.__wrapped__
+    )
+
+if hasattr(_torch_optimizer.Optimizer.zero_grad, "__wrapped__"):
+    _torch_optimizer.Optimizer.zero_grad = (
+        _torch_optimizer.Optimizer.zero_grad.__wrapped__
+    )
 
 from openwakeword.train import Model
 
@@ -100,21 +113,34 @@ def main():
     )
 
     # False-positive validation data.
-    X_val_fp = np.load(fp_validation_path, mmap_mode="r")
+    X_val_fp_raw = np.load(fp_validation_path, mmap_mode="r")
 
-    print(f"FP validation shape: {X_val_fp.shape}")
+    print(f"FP validation raw shape: {X_val_fp_raw.shape}")
+
+# validation_set_features.npy contains individual 96-feature frames.
+# The wakeword model consumes 16 consecutive frames per example.
+    n_windows = X_val_fp_raw.shape[0] // input_shape[0]
+
+    X_val_fp_data = X_val_fp_raw[:n_windows * input_shape[0]].reshape(
+        n_windows,
+        input_shape[0],
+        input_shape[1],
+    )
+
+    print(f"FP validation windowed shape: {X_val_fp_data.shape}")
 
     X_val_fp_labels = np.zeros(
-        X_val_fp.shape[0],
-        dtype=np.float32
+        n_windows,
+        dtype=np.float32,
     )
 
     X_val_fp = torch.utils.data.DataLoader(
         torch.utils.data.TensorDataset(
-            torch.from_numpy(np.asarray(X_val_fp)),
+            torch.from_numpy(np.array(X_val_fp_data, copy=True)),
             torch.from_numpy(X_val_fp_labels),
         ),
-        batch_size=len(X_val_fp_labels),
+        batch_size=128,
+        shuffle=False,
     )
 
     # Balanced positive/negative validation set.

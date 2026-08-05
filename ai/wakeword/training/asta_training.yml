@@ -6,7 +6,9 @@ steps: 100
 max_negative_weight: 5000
 target_false_positives_per_hour: 0.2
 
-batch_n_per_class: 256
+batch_n_per_class:
+  positive: 256
+  negative: 256
 
 feature_data_files:
   positive: "E:/Projects/ASTA/ai/wakeword/generated/synthetic_positive/features/positive_features.npy"
