@@ -16,6 +16,8 @@ if hasattr(_optimizer.Optimizer.zero_grad, "__wrapped__"):
 
 if hasattr(_adam.Adam.step, "__wrapped__"):
     _adam.Adam.step = torch.no_grad()(_adam.Adam.step.__wrapped__)
+    
+import torch.onnx
 
 from torch import optim, nn
 import torchinfo
@@ -444,8 +446,19 @@ class Model(nn.Module):
         # Save ONNX model
         logging.info(f"####\nSaving ONNX mode as '{os.path.join(output_dir, model_name + '.onnx')}'")
         model_to_save = copy.deepcopy(model)
+        
+        
+
+        for module_name in list(sys.modules):
+            if module_name.startswith("speechbrain.integrations."):
+                sys.modules.pop(module_name, None)
+
+        model_to_save.eval()
+        
+        
+        
         torch.onnx.export(model_to_save.to("cpu"), torch.rand(self.input_shape)[None, ],
-                          os.path.join(output_dir, model_name + ".onnx"), opset_version=13)
+                          os.path.join(output_dir, model_name + ".onnx"), opset_version=13,dynamo=False,)
 
         return None
 

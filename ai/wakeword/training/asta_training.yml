@@ -2,8 +2,8 @@ model_name: "asta"
 model_type: "dnn"
 layer_size: 128
 
-steps: 100
-max_negative_weight: 5000
+steps: 5000
+max_negative_weight: 1000
 target_false_positives_per_hour: 0.2
 
 batch_n_per_class:
