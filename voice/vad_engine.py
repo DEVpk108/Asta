@@ -46,95 +46,88 @@ class VADEngine:
         initial_audio=None,
         speech_timeout=3.0,
     ):
-        
-        
-        print("[VAD] Waiting for speech...")
+
+        print("[VAD] Waiting for command...")
+
         start_wait = time.monotonic()
 
         audio_buffer = []
+
+    # Wakeword already happened.
+    # We DO NOT include it in Whisper input.
         recording = False
-        if initial_audio is not None:
-            audio_buffer.append(initial_audio)
-            recording = True
-            print("[VAD] Continuing from wakeword...")
 
         try:
             while True:
-                try:
 
+                try:
                     chunk = microphone.get_chunk().flatten()
                 except queue.Empty:
                     continue
-                
+
+            # Timeout waiting for user to start speaking
                 if not recording:
                     if time.monotonic() - start_wait > speech_timeout:
-                        print("[VAD] Speech timeout.")
+                        print("[VAD] No command after wakeword.")
                         return None
 
                 tensor = torch.from_numpy(chunk).float()
-
                 event = self.vad(tensor)
-            
+
                 if self.debug:
                     print(event)
 
-                # Speech started
-                if self.is_speech_started(event):
+            # -------------------------
+            # Speech begins
+            # -------------------------
+                if not recording and self.is_speech_started(event):
 
-                    print("[VAD] Speech detected.")
+                    print("[VAD] Command started.")
 
                     recording = True
+
+                # Optional:
+                # include ~250 ms before speech start so we don't
+                # clip the first word.
                     if initial_audio is not None:
-                        print("[VAD] Using wakeword buffer.")           
+
+                        preroll = initial_audio[-4000:]      # ~250 ms
+                        audio_buffer.append(preroll)
 
                 if recording:
                     audio_buffer.append(chunk)
 
-                # Speech ended
+            # -------------------------
+            # Speech ends
+            # -------------------------
                 if recording and self.is_speech_ended(event):
 
-                    print("[VAD] End of speech.")
-
+                    print("[VAD] Command finished.")
                     break
+
         finally:
             self.vad.reset_states()
 
         if not audio_buffer:
             return None
-        
-        audio = np.concatenate(audio_buffer)
+
+        audio = np.concatenate(audio_buffer).astype(np.float32)
+
         rms = np.sqrt(np.mean(audio ** 2))
-        
+
         if self.debug:
-            peak = np.max(np.abs(audio))
-            print(f"[VAD] Peak : {peak:.4f}")
+            print(f"[VAD] RMS: {rms:.4f}")
 
-            print(f"[VAD] RMS : {rms:.4f}")
-        
         if rms < 0.02:
-
-            print("[VAD] Low energy segment ignored.")
-
+            print("[VAD] Low-energy command.")
             return None
-
-        
 
         minimum_samples = int(
             self.sample_rate * self.min_speech_duration
         )
 
         if len(audio) < minimum_samples:
-            return None
-        
-        duration = len(audio) / self.sample_rate
-
-        minimum_duration = max(
-            self.min_speech_duration,
-            0.8,
-        )
-
-        if duration < minimum_duration:
-            print("[VAD] Too short.")
+            print("[VAD] Command too short.")
             return None
 
         return np.ascontiguousarray(audio, dtype=np.float32)

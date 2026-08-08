@@ -83,28 +83,36 @@ def load_audio(path):
         )
 
     # Prevent overflow when converting back to int16
-    audio = np.clip(
-        audio,
-        -32768,
-        32767,
-    )
+    peak = np.max(np.abs(audio))
+
+    if peak > 0:
+        audio = audio / peak
+
+    audio *= 30000
 
     audio = audio.astype(np.int16)
 
     # Pad short clips
     if len(audio) < TARGET_SAMPLES:
+        remaining = TARGET_SAMPLES - len(audio)
+
+        max_shift = min(remaining, 4000)   # about 250 ms
+
+        left = remaining // 2 + np.random.randint(-max_shift, max_shift + 1)
+
+        left = max(0, min(left, remaining))
+        right = remaining - left
+
         audio = np.pad(
             audio,
-            (
-                0,
-                TARGET_SAMPLES - len(audio),
-            ),
-            mode="constant",
+            (left, right),
+            mode="constant"
         )
 
     # Trim long clips
     elif len(audio) > TARGET_SAMPLES:
-        audio = audio[:TARGET_SAMPLES]
+        start = np.random.randint(0, len(audio) - TARGET_SAMPLES + 1)
+        audio = audio[start:start + TARGET_SAMPLES]
 
     return audio
 

@@ -1,30 +1,44 @@
 from collections import deque
+from pathlib import Path
 
 import numpy as np
-from ai.wakeword.openwakeword.model import Model
+from openwakeword.model import Model
+
+ROOT = Path(__file__).resolve().parents[1]
+
+DEFAULT_MODEL = (
+    ROOT
+    / "ai"
+    / "wakeword"
+    / "generated"
+    / "models"
+    / "hello_asta.onnx"
+)
 
 
 class WakeWordEngine:
 
     def __init__(
         self,
-        model_path="generated/models/asta.onnx",
+        model_path=None,
         threshold=0.5,
         debug=True,
     ):
-        self.model_path = model_path
+        self.model_path = str(model_path or DEFAULT_MODEL)
         self.threshold = threshold
         self.debug = debug
 
         self.model = Model(
-            wakeword_models=[model_path],
+            wakeword_models=[self.model_path],
             inference_framework="onnx",
             vad_threshold=0,
         )
 
-        if "asta" not in self.model.models:
+        self.prediction_history = deque(maxlen=5)
+
+        if "hello_asta" not in self.model.models:
             raise RuntimeError(
-                f"ASTA model was not loaded. "
+                f"hello_asta model was not loaded. "
                 f"Loaded models: {list(self.model.models.keys())}"
             )
 
@@ -33,7 +47,7 @@ class WakeWordEngine:
 
     def wait_for_wakeword(self, microphone):
 
-        print("[WakeWord] Listening for ASTA...")
+        print("[WakeWord] Listening for hello_asta...")
 
         buffer = deque()
 
@@ -60,18 +74,18 @@ class WakeWordEngine:
 
             prediction = self.model.predict(audio_int16)
 
-            score = float(prediction["asta"])
+            score = float(prediction["hello_asta"])
 
             if self.debug:
                 print(
-                    f"\r[WakeWord] ASTA: {score:.3f}",
+                    f"\r[WakeWord] hello_asta: {score:.3f}",
                     end="",
                     flush=True,
                 )
 
             if score >= self.threshold:
                 print(
-                    f"\n[WakeWord] ASTA detected "
+                    f"\n[WakeWord] hello_asta detected "
                     f"(score={score:.3f})"
                 )
 

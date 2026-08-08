@@ -65,11 +65,7 @@ class VoiceModule(Module):
             # 2. Wait for the actual user command
             # -------------------------------------------------
 
-            audio = self.vad.collect_utterance(
-                self.microphone,
-                initial_audio=wakeword_audio,
-                speech_timeout=3.0,
-            )
+            audio = self.vad.collect_utterance(self.microphone)
 
             if audio is None:
                 print("[Voice] No command detected.")

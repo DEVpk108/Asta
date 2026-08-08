@@ -7,9 +7,7 @@ def main():
 
     generator.generate(
         phrases=[
-            "Hey ASTA",
-            "Hello ASTA",
-            "Wake up ASTA",
+            "Asta"
         ],
         samples_per_phrase=1000,
         overwrite=False,
