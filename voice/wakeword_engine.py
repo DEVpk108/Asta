@@ -15,7 +15,6 @@ DEFAULT_MODEL = (
     / "hello_asta.onnx"
 )
 
-
 class WakeWordEngine:
 
     def __init__(
