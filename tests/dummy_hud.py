@@ -10,7 +10,7 @@ class DummyHUDModule(Modules):
         )
         
      def initialize(self):
-        print("[HUD] Initialized")
+        print("[HUD] Ini")
 
      def shutdown(self):
-        print("[HUD] Shutdown")
+        print("[HUD] Sh")
