@@ -3,7 +3,9 @@ from pathlib import Path
 import numpy as np
 import scipy.io.wavfile as wavfile
 import onnxruntime as ort
-
+import numpy as np
+import scipy.io.wavfile as wavfile
+from scipy.signal import resample_poly
 from openwakeword.utils import AudioFeatures
 
 
@@ -46,31 +48,43 @@ def load_audio(path):
 
     audio = audio.astype(np.float32)
 
-    if sr != TARGET_SR:
-        from scipy.signal import resample_poly
-
+    if sr != 16000:
         audio = resample_poly(
             audio,
-            TARGET_SR,
+            16000,
             sr,
         )
 
-    peak = np.max(np.abs(audio))
+    audio = np.clip(
+        audio,
+        -32768,
+        32767,
+    )
 
-    if peak > 0:
-        audio = audio / peak
-
-    audio *= 30000
     audio = audio.astype(np.int16)
 
-    if len(audio) < TARGET_SAMPLES:
+    target_samples = 32000
+
+    # Deterministic centered padding
+    if len(audio) < target_samples:
+        remaining = target_samples - len(audio)
+
+        left = remaining // 2
+        right = remaining - left
+
         audio = np.pad(
             audio,
-            (0, TARGET_SAMPLES - len(audio)),
+            (left, right),
             mode="constant",
         )
-    elif len(audio) > TARGET_SAMPLES:
-        audio = audio[:TARGET_SAMPLES]
+
+    # Deterministic centered crop
+    elif len(audio) > target_samples:
+        start = (len(audio) - target_samples) // 2
+
+        audio = audio[
+            start:start + target_samples
+        ]
 
     return audio
 
