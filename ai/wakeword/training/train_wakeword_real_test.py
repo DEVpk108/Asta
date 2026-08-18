@@ -339,7 +339,7 @@ def get_phrase_feature_path(
 
     return os.path.join(
         feature_dir,
-        f"{phrase}_real_only_features.npy",
+        f"{phrase}_features.npy",
     )
 
 

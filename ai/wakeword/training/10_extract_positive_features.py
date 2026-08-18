@@ -69,28 +69,19 @@ from openwakeword.utils import AudioFeatures
 # ---------------------------------------------------------------------
 
 def load_audio(path):
-    """
-    Load WAV, convert to mono, resample to 16 kHz,
-    normalize, and pad/trim to exactly 2 seconds.
-    """
-
     sr, audio = wavfile.read(path)
 
-    # Stereo -> mono
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
 
     audio = audio.astype(np.float32)
 
-    # Resample to 16 kHz
-    if sr != TARGET_SR:
+    if sr != 16000:
         audio = resample_poly(
             audio,
-            TARGET_SR,
+            16000,
             sr,
         )
-
-    # Normalize each recording safely.
 
     audio = np.clip(
         audio,
@@ -100,37 +91,13 @@ def load_audio(path):
 
     audio = audio.astype(np.int16)
 
-    # -------------------------------------------------------------
-    # Pad short clips.
-    #
-    # We don't always put the audio exactly in the center.
-    # A small random shift gives the embedding extractor
-    # slightly different temporal alignment.
-    # -------------------------------------------------------------
+    target_samples = 32000
 
-    if len(audio) < TARGET_SAMPLES:
+    # Deterministic centered padding
+    if len(audio) < target_samples:
+        remaining = target_samples - len(audio)
 
-        remaining = TARGET_SAMPLES - len(audio)
-
-        max_shift = min(
-            remaining,
-            4000,
-        )
-
-        center = remaining // 2
-
-        shift = np.random.randint(
-            -max_shift,
-            max_shift + 1,
-        )
-
-        left = center + shift
-
-        left = max(
-            0,
-            min(left, remaining),
-        )
-
+        left = remaining // 2
         right = remaining - left
 
         audio = np.pad(
@@ -139,19 +106,12 @@ def load_audio(path):
             mode="constant",
         )
 
-    # -------------------------------------------------------------
-    # Trim long clips.
-    # -------------------------------------------------------------
-
-    elif len(audio) > TARGET_SAMPLES:
-
-        start = np.random.randint(
-            0,
-            len(audio) - TARGET_SAMPLES + 1,
-        )
+    # Deterministic centered crop
+    elif len(audio) > target_samples:
+        start = (len(audio) - target_samples) // 2
 
         audio = audio[
-            start:start + TARGET_SAMPLES
+            start:start + target_samples
         ]
 
     return audio
