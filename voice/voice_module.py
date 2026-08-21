@@ -7,7 +7,7 @@ from core.module import Module
 from .microphone_engine import MicrophoneEngine
 from .wakeword_engine import WakeWordEngine
 from .vad_engine import VADEngine
-from .recognition_engine import RecognitionEngine
+from .recognition_engine_2 import RecognitionEngine
 
 
 class VoiceModule(Module):

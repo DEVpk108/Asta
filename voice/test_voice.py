@@ -1,4 +1,4 @@
-from .recognition_engine import RecognitionEngine
+from .recognition_engine_2 import RecognitionEngine
 from .microphone_engine import MicrophoneEngine
 from .vad_engine import VADEngine
 from .wakeword_engine import WakeWordEngine
