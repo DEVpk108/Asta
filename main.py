@@ -13,25 +13,16 @@ def main():
     hud = HUDModule(kernel)
     ai = AIModule(kernel)
     voice = VoiceModule(kernel)
-    
+
     print("===== ASTA KERNEL =====")
-    
-    
 
     kernel.register_module(ai)
-    
     kernel.register_module(speech)
-    
     kernel.register_module(hud)
-    
     kernel.register_module(voice)
-    
-    
 
     kernel.start()
     kernel.run()
-    
-    
 
 
 if __name__ == "__main__":

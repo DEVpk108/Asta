@@ -7,7 +7,7 @@ from core.module import Module
 from .microphone_engine import MicrophoneEngine
 from .wakeword_engine import WakeWordEngine
 from .vad_engine import VADEngine
-from .recognition_engine_2 import RecognitionEngine
+from .recognition_engine import RecognitionEngine
 
 
 class VoiceModule(Module):
@@ -27,15 +27,20 @@ class VoiceModule(Module):
         self._running = False
         self._thread = None
 
+    # ---------------------------------------------------------
+    # Lifecycle
+    # ---------------------------------------------------------
+
     def initialize(self):
         print("[Voice] Initializing...")
 
-        self.microphone.start()
-
         self._running = True
+
+        self.microphone.start()
 
         self._thread = threading.Thread(
             target=self._listen_loop,
+            name="VoiceListenLoop",
             daemon=True,
         )
 
@@ -48,13 +53,29 @@ class VoiceModule(Module):
 
         self._running = False
 
-        if self.microphone:
+        # Stop microphone first so get_chunk() can unblock.
+        try:
             self.microphone.stop()
+        except Exception as exc:
+            print(
+                f"[Voice] Microphone shutdown error: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
+        # Wait briefly for the worker thread to finish.
+        if (
+            self._thread is not None
+            and self._thread.is_alive()
+        ):
+            self._thread.join(timeout=2.0)
+
+        self._thread = None
 
         print("[Voice] Stopped")
+
+    # ---------------------------------------------------------
+    # Main voice loop
+    # ---------------------------------------------------------
 
     def _listen_loop(self):
 
@@ -62,7 +83,7 @@ class VoiceModule(Module):
 
             try:
                 # -------------------------------------------------
-                # Wait for one of the three wake words.
+                # 1. Wait for one of the three wake words.
                 # -------------------------------------------------
 
                 initial_audio = (
@@ -75,7 +96,7 @@ class VoiceModule(Module):
                     break
 
                 # -------------------------------------------------
-                # Capture the user's command.
+                # 2. Capture the user's command.
                 # -------------------------------------------------
 
                 audio = self.vad.collect_utterance(
@@ -91,18 +112,23 @@ class VoiceModule(Module):
                     break
 
                 # -------------------------------------------------
-                # Speech → text.
+                # 3. Speech → text via Moonshine.
                 # -------------------------------------------------
 
-                text = self.recognition.transcribe(audio)
+                text = self.recognition.transcribe(
+                    audio
+                )
 
                 if not text:
                     continue
 
-                print(f"[Voice] User: {text}")
+                print(
+                    f"[Voice] User: {text}",
+                    flush=True,
+                )
 
                 # -------------------------------------------------
-                # Send the recognized command into ASTA.
+                # 4. Send recognized text into ASTA.
                 # -------------------------------------------------
 
                 self.event_bus.emit(
@@ -114,5 +140,11 @@ class VoiceModule(Module):
 
                 print(
                     f"[Voice] Error: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
                 )
+
+                # Prevent a persistent failure from creating
+                # a tight exception loop.
+                if self._running:
+                    threading.Event().wait(0.1)
