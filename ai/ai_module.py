@@ -41,6 +41,7 @@ class AIModule(Module):
     # ---------------------------------------------------------
 
     def on_user_message(self, text):
+
         if not text:
             return
 
@@ -49,8 +50,32 @@ class AIModule(Module):
             flush=True,
         )
 
+        # -----------------------------------------------------
+        # Called whenever LM Studio finishes a sentence.
+        # -----------------------------------------------------
+
+        def on_sentence(sentence):
+
+            if not sentence:
+                return
+
+            print(
+                f"[AI] Sentence: {sentence}",
+                flush=True,
+            )
+
+            self.event_bus.emit(
+                "assistant_sentence",
+                text=sentence,
+            )
+
+        # -----------------------------------------------------
+        # Stream the response.
+        # -----------------------------------------------------
+
         response = self.engine.generate_response(
-            text
+            text,
+            on_sentence=on_sentence,
         )
 
         if not response:
@@ -60,10 +85,12 @@ class AIModule(Module):
             )
             return
 
-        print(
-            f"[AI] Response: {response}",
-            flush=True,
-        )
+        # -----------------------------------------------------
+        # Keep the complete response event too.
+        #
+        # HUD can use this for the full final response.
+        # Speech will use assistant_sentence.
+        # -----------------------------------------------------
 
         self.event_bus.emit(
             "assistant_response",
