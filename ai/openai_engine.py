@@ -146,9 +146,6 @@ class AIEngine:
                         or event_type
                     )
 
-                    # -------------------------------------------------
-                    # Message token
-                    # -------------------------------------------------
 
                     if event_name == "message.delta":
 
