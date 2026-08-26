@@ -21,3 +21,4 @@ Asta is engineered to be a "silent helper"—always ready, never heavy.
 *   **Execution Goal:** Low time-complexity algorithms to maintain a snappy, seamless user experience.
 
 ;
+ASTA already has a perfectly reasonable Python kernel/event-bus architecture.
