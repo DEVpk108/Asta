@@ -1,6 +1,7 @@
 # voice/voice_module.py
 
 import threading
+import time 
 
 from core.module import Module
 
@@ -26,6 +27,9 @@ class VoiceModule(Module):
 
         self._running = False
         self._thread = None
+        self.conversation_timeout = 8.0
+        self._conversation_active = False
+        self._last_interaction = 0.0
 
     # ---------------------------------------------------------
     # Lifecycle
@@ -76,6 +80,28 @@ class VoiceModule(Module):
     # ---------------------------------------------------------
     # Main voice loop
     # ---------------------------------------------------------
+    
+    def _start_conversation(self):
+            self._conversation_active = True
+            self._last_interaction = time.monotonic()
+
+            print(
+                "[Voice] Conversation mode: ACTIVE",
+                flush=True,
+            )
+
+
+    def _conversation_expired(self):
+        return (
+            self._conversation_active
+            and (
+                time.monotonic()
+                - self._last_interaction
+                > self.conversation_timeout
+            )
+        )   
+    
+    
 
     def _listen_loop(self):
 
@@ -83,20 +109,42 @@ class VoiceModule(Module):
 
             try:
                 # -------------------------------------------------
-                # 1. Wait for one of the three wake words.
+                # 1. Standby mode: wait for a wake word.
                 # -------------------------------------------------
 
-                initial_audio = (
-                    self.wakeword.wait_for_wakeword(
-                        self.microphone
+                if not self._conversation_active:
+
+                    initial_audio = (
+                        self.wakeword.wait_for_wakeword(
+                            self.microphone
+                        )
                     )
-                )
 
-                if not self._running:
-                    break
+                    if not self._running:
+                        break
+
+                    self._start_conversation()
+
+                else:
+                    # -------------------------------------------------
+                    # 2. Conversation mode:
+                    #    no wake word required.
+                    # -------------------------------------------------
+
+                    initial_audio = None
+
+                    if self._conversation_expired():
+                        self._conversation_active = False
+
+                        print(
+                            "[Voice] Conversation mode: INACTIVE",
+                            flush=True,
+                        )
+
+                        continue
 
                 # -------------------------------------------------
-                # 2. Capture the user's command.
+                # 3. Capture the user's command.
                 # -------------------------------------------------
 
                 audio = self.vad.collect_utterance(
@@ -105,14 +153,27 @@ class VoiceModule(Module):
                     speech_timeout=3,
                 )
 
-                if audio is None:
-                    continue
-
                 if not self._running:
                     break
 
                 # -------------------------------------------------
-                # 3. Speech → text via Moonshine.
+                # No speech after wake word / during conversation.
+                # -------------------------------------------------
+
+                if audio is None:
+
+                    if self._conversation_expired():
+                        self._conversation_active = False
+
+                        print(
+                            "[Voice] Conversation mode: INACTIVE",
+                            flush=True,
+                        )
+
+                    continue
+
+                # -------------------------------------------------
+                # 4. Speech → text via Moonshine.
                 # -------------------------------------------------
 
                 text = self.recognition.transcribe(
@@ -128,13 +189,25 @@ class VoiceModule(Module):
                 )
 
                 # -------------------------------------------------
-                # 4. Send recognized text into ASTA.
+                # 5. Refresh conversation timeout.
+                # -------------------------------------------------
+
+                self._last_interaction = time.monotonic()
+
+                # -------------------------------------------------
+                # 6. Send recognized text into ASTA.
                 # -------------------------------------------------
 
                 self.event_bus.emit(
                     "user_message",
                     text=text,
                 )
+
+                # -------------------------------------------------
+                # 7. Refresh timeout after processing.
+                # -------------------------------------------------
+
+                self._last_interaction = time.monotonic()
 
             except Exception as exc:
 
@@ -144,7 +217,5 @@ class VoiceModule(Module):
                     flush=True,
                 )
 
-                # Prevent a persistent failure from creating
-                # a tight exception loop.
                 if self._running:
                     threading.Event().wait(0.1)

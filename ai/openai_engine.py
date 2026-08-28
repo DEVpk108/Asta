@@ -224,17 +224,11 @@ class AIEngine:
                                 ]
                             )
 
-                            if sentence:
-                                print(
-                                    f"[AI] Sentence: "
-                                    f"{sentence}",
-                                    flush=True,
-                                )
 
-                                if on_sentence:
-                                    on_sentence(
-                                        sentence
-                                    )
+                            if on_sentence:
+                                on_sentence(
+                                    sentence
+                                )
 
                     # -------------------------------------------------
                     # Final aggregated response
