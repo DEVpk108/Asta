@@ -24,4 +24,4 @@ Asta is engineered to be a "silent helper"—always ready, never heavy.
 <<<<<<< HEAD
 =======
 ASTA already has a perfectly reasonable Python kernel/event-bus architecture
->>>>>>> 878fa1b4c18387086ab443a9354d5fc67d57d625
+
