@@ -1,13 +1,17 @@
 import threading
 
 from .event_bus import EventBus
+from .intent_router import IntentRouter
 
 
 class Kernel:
 
     def __init__(self):
         self.event_bus = EventBus()
+        self.intent_router = IntentRouter()
+
         self.modules = []
+
         self._running = False
         self._stop_event = threading.Event()
 

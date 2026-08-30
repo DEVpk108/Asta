@@ -1,4 +1,5 @@
 from core.module import Module
+from core.intent_router import IntentType
 
 from .openai_engine import AIEngine
 
@@ -37,7 +38,7 @@ class AIModule(Module):
         print("[AI] Stopped")
 
     # ---------------------------------------------------------
-    # Event handlers
+    # User message routing
     # ---------------------------------------------------------
 
     def on_user_message(self, text):
@@ -50,8 +51,45 @@ class AIModule(Module):
             flush=True,
         )
 
+        intent = self.kernel.intent_router.route(
+            text
+        )
+
+        print(
+            f"[AI] Intent: {intent.value}",
+            flush=True,
+        )
+
         # -----------------------------------------------------
-        # Called whenever LM Studio finishes a sentence.
+        # Direct command
+        # -----------------------------------------------------
+
+        if intent == IntentType.COMMAND:
+
+            self.event_bus.emit(
+                "command_request",
+                text=text,
+            )
+
+            return
+
+        # -----------------------------------------------------
+        # Memory request
+        # -----------------------------------------------------
+
+        if intent == IntentType.MEMORY:
+
+            self.event_bus.emit(
+                "memory_request",
+                text=text,
+            )
+
+            return
+
+        # -----------------------------------------------------
+        # Conversation / unknown
+        #
+        # These still go to the LLM for now.
         # -----------------------------------------------------
 
         def on_sentence(sentence):
@@ -69,10 +107,6 @@ class AIModule(Module):
                 text=sentence,
             )
 
-        # -----------------------------------------------------
-        # Stream the response.
-        # -----------------------------------------------------
-
         response = self.engine.generate_response(
             text,
             on_sentence=on_sentence,
@@ -86,10 +120,7 @@ class AIModule(Module):
             return
 
         # -----------------------------------------------------
-        # Keep the complete response event too.
-        #
-        # HUD can use this for the full final response.
-        # Speech will use assistant_sentence.
+        # Full response
         # -----------------------------------------------------
 
         self.event_bus.emit(
