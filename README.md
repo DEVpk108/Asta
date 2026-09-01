@@ -25,3 +25,24 @@ Asta is engineered to be a "silent helper"—always ready, never heavy.
 =======
 ASTA already has a perfectly reasonable Python kernel/event-bus architecture
 
+                     A.S.T.A.
+                       │
+             ┌─────────┴─────────┐
+             │                   │
+          Kernel              Modules
+             │
+     ┌───────┼────────┬────────┐
+     ▼       ▼        ▼        ▼
+    AI     Speech     HUD     Voice
+             │
+             ▼
+       Whisper STT
+             │
+             ▼
+        Wake Word
+             │
+             ▼
+        Conversation
+             │
+             ▼
+        Intent Router
