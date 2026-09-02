@@ -1,0 +1,5543 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+
+<meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+>
+
+<title>Snake — Ultimate Edition</title>
+
+<style>
+
+/* =========================================================
+   THEME
+========================================================= */
+
+:root {
+    --bg-1: #07110d;
+    --bg-2: #101820;
+    --surface: rgba(17, 24, 21, .76);
+    --surface-strong: rgba(22, 31, 27, .94);
+
+    --border: rgba(255,255,255,.10);
+    --border-light: rgba(255,255,255,.15);
+
+    --text: #f4f7f5;
+    --muted: #98a39d;
+
+    --green: #39d98a;
+    --green-dark: #159d5b;
+    --green-soft: #70edac;
+
+    --red: #ff5d68;
+    --yellow: #ffd45c;
+    --blue: #68a9ff;
+    --purple: #ae7cff;
+
+    --shadow:
+        0 25px 70px rgba(0,0,0,.30);
+
+    --glow:
+        0 0 35px rgba(57,217,138,.14);
+}
+
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+
+html,
+body {
+    min-height: 100%;
+}
+
+
+body {
+    min-height: 100vh;
+
+    overflow-x: hidden;
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+
+    padding: 24px;
+
+    color: var(--text);
+
+    font-family:
+        Inter,
+        ui-sans-serif,
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+
+    background:
+        radial-gradient(
+            circle at 15% 10%,
+            rgba(57,217,138,.13),
+            transparent 28%
+        ),
+        radial-gradient(
+            circle at 85% 20%,
+            rgba(104,169,255,.10),
+            transparent 26%
+        ),
+        radial-gradient(
+            circle at 50% 100%,
+            rgba(174,124,255,.10),
+            transparent 30%
+        ),
+        linear-gradient(
+            135deg,
+            var(--bg-1),
+            var(--bg-2)
+        );
+
+    background-attachment: fixed;
+}
+
+
+/* =========================================================
+   AMBIENT BACKGROUND
+========================================================= */
+
+body::before,
+body::after {
+    content: "";
+
+    position: fixed;
+
+    width: 380px;
+    height: 380px;
+
+    border-radius: 50%;
+
+    pointer-events: none;
+
+    filter: blur(100px);
+
+    opacity: .18;
+
+    animation:
+        floatOrb 12s ease-in-out infinite alternate;
+}
+
+
+body::before {
+    top: -130px;
+    left: -140px;
+
+    background: var(--green);
+}
+
+
+body::after {
+    right: -150px;
+    bottom: -160px;
+
+    background: var(--purple);
+
+    animation-delay: -6s;
+}
+
+
+@keyframes floatOrb {
+
+    from {
+        transform: translate3d(0,0,0) scale(1);
+    }
+
+    to {
+        transform: translate3d(35px,20px,0) scale(1.15);
+    }
+}
+
+
+/* =========================================================
+   APP
+========================================================= */
+
+.app {
+    width: min(94vw, 760px);
+
+    position: relative;
+
+    z-index: 1;
+}
+
+
+/* =========================================================
+   TOP BAR
+========================================================= */
+
+.topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+
+    margin-bottom: 16px;
+}
+
+
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+
+    font-size: clamp(29px, 6vw, 42px);
+    font-weight: 900;
+
+    letter-spacing: -1.8px;
+}
+
+
+.logo-mark {
+    width: 15px;
+    height: 15px;
+
+    border-radius: 50%;
+
+    background:
+        linear-gradient(
+            135deg,
+            var(--green-soft),
+            var(--green)
+        );
+
+    box-shadow:
+        0 0 22px rgba(57,217,138,.6);
+}
+
+
+.top-actions {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+}
+
+
+.status {
+    color: var(--muted);
+
+    font-size: 11px;
+    font-weight: 800;
+
+    text-transform: uppercase;
+
+    letter-spacing: .7px;
+}
+
+
+.icon-btn {
+    width: 40px;
+    height: 40px;
+
+    display: grid;
+    place-items: center;
+
+    border:
+        1px solid var(--border);
+
+    border-radius: 13px;
+
+    background:
+        rgba(255,255,255,.05);
+
+    color: var(--text);
+
+    cursor: pointer;
+
+    backdrop-filter:
+        blur(12px);
+
+    transition:
+        transform .18s ease,
+        background .18s ease,
+        border-color .18s ease;
+}
+
+
+.icon-btn:hover {
+    background:
+        rgba(255,255,255,.08);
+
+    border-color:
+        var(--border-light);
+}
+
+
+.icon-btn:active {
+    transform: scale(.93);
+}
+
+
+/* =========================================================
+   GAME INFO
+========================================================= */
+
+.info-panel {
+    display: grid;
+
+    grid-template-columns:
+        1.25fr
+        1fr
+        1fr
+        1fr;
+
+    gap: 9px;
+
+    margin-bottom: 13px;
+}
+
+
+.info-card {
+    position: relative;
+
+    overflow: hidden;
+
+    padding: 12px 14px;
+
+    border:
+        1px solid var(--border);
+
+    border-radius: 16px;
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(255,255,255,.065),
+            rgba(255,255,255,.025)
+        );
+
+    backdrop-filter:
+        blur(17px);
+
+    box-shadow:
+        0 8px 25px rgba(0,0,0,.12);
+
+    transition:
+        transform .2s ease,
+        border-color .2s ease;
+}
+
+
+.info-card:hover {
+    transform:
+        translateY(-2px);
+
+    border-color:
+        var(--border-light);
+}
+
+
+.info-card::after {
+    content: "";
+
+    position: absolute;
+
+    width: 80px;
+    height: 80px;
+
+    top: -35px;
+    right: -35px;
+
+    border-radius: 50%;
+
+    background:
+        rgba(255,255,255,.035);
+}
+
+
+.info-label {
+    display: block;
+
+    margin-bottom: 4px;
+
+    color: var(--muted);
+
+    font-size: 9px;
+    font-weight: 800;
+
+    letter-spacing: 1px;
+
+    text-transform: uppercase;
+}
+
+
+.info-value {
+    font-size: 23px;
+    font-weight: 900;
+
+    letter-spacing: -.6px;
+}
+
+
+#score {
+    color: var(--green-soft);
+}
+
+
+#best {
+    color: var(--blue);
+}
+
+
+#level {
+    color: var(--yellow);
+}
+
+
+#combo {
+    color: var(--purple);
+}
+
+
+/* =========================================================
+   MODE PILLS
+========================================================= */
+
+.modes {
+    display: flex;
+    justify-content: center;
+
+    gap: 7px;
+
+    margin-bottom: 13px;
+
+    flex-wrap: wrap;
+}
+
+
+.mode {
+    border:
+        1px solid var(--border);
+
+    border-radius: 999px;
+
+    padding:
+        7px 14px;
+
+    background:
+        rgba(255,255,255,.035);
+
+    color: var(--muted);
+
+    font-size: 11px;
+    font-weight: 800;
+
+    cursor: pointer;
+
+    transition:
+        .18s ease;
+
+    backdrop-filter:
+        blur(10px);
+}
+
+
+.mode:hover {
+    color: var(--text);
+
+    background:
+        rgba(255,255,255,.07);
+}
+
+
+.mode.active {
+    color: #06130d;
+
+    border-color:
+        transparent;
+
+    background:
+        linear-gradient(
+            135deg,
+            var(--green-soft),
+            var(--green)
+        );
+
+    box-shadow:
+        0 7px 22px rgba(57,217,138,.22);
+}
+
+
+/* =========================================================
+   BOARD
+========================================================= */
+
+.board-shell {
+    position: relative;
+
+    padding: 7px;
+
+    border-radius: 25px;
+
+    background:
+        linear-gradient(
+            135deg,
+            rgba(255,255,255,.12),
+            rgba(255,255,255,.025)
+        );
+
+    box-shadow:
+        var(--shadow),
+        var(--glow);
+}
+
+
+.board-shell::before {
+    content: "";
+
+    position: absolute;
+
+    inset: 0;
+
+    border-radius: 25px;
+
+    padding: 1px;
+
+    background:
+        linear-gradient(
+            135deg,
+            rgba(255,255,255,.18),
+            rgba(255,255,255,.02)
+        );
+
+    -webkit-mask:
+        linear-gradient(#000 0 0) content-box,
+        linear-gradient(#000 0 0);
+
+    -webkit-mask-composite:
+        xor;
+
+    mask-composite:
+        exclude;
+
+    pointer-events: none;
+}
+
+
+canvas {
+    position: relative;
+
+    z-index: 1;
+
+    display: block;
+
+    width: 100%;
+
+    aspect-ratio: 1;
+
+    border-radius: 19px;
+
+    background:
+        #0c1511;
+
+    touch-action: none;
+
+    user-select: none;
+}
+
+
+/* =========================================================
+   OVERLAYS
+========================================================= */
+
+.overlay {
+    position: absolute;
+
+    inset: 7px;
+
+    z-index: 20;
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+
+    padding: 20px;
+
+    border-radius: 19px;
+
+    background:
+        rgba(4,9,7,.67);
+
+    backdrop-filter:
+        blur(15px);
+}
+
+
+.overlay.hidden {
+    display: none;
+}
+
+
+.overlay-card {
+    width: min(92%, 390px);
+
+    padding: 31px 25px;
+
+    text-align: center;
+
+    border:
+        1px solid var(--border-light);
+
+    border-radius: 22px;
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(255,255,255,.095),
+            rgba(255,255,255,.035)
+        );
+
+    box-shadow:
+        0 20px 60px rgba(0,0,0,.30);
+
+    animation:
+        cardIn .35s ease both;
+}
+
+
+@keyframes cardIn {
+
+    from {
+        opacity: 0;
+        transform:
+            translateY(10px)
+            scale(.97);
+    }
+
+    to {
+        opacity: 1;
+        transform:
+            translateY(0)
+            scale(1);
+    }
+}
+
+
+.overlay-icon {
+    width: 55px;
+    height: 55px;
+
+    display: grid;
+    place-items: center;
+
+    margin:
+        0 auto 14px;
+
+    border-radius: 17px;
+
+    background:
+        linear-gradient(
+            135deg,
+            rgba(57,217,138,.22),
+            rgba(57,217,138,.05)
+        );
+
+    border:
+        1px solid rgba(57,217,138,.20);
+
+    font-size: 25px;
+}
+
+
+.overlay-card h2 {
+    margin-bottom: 8px;
+
+    font-size: 31px;
+
+    letter-spacing: -.8px;
+}
+
+
+.overlay-card p {
+    margin-bottom: 20px;
+
+    color: var(--muted);
+
+    font-size: 14px;
+
+    line-height: 1.55;
+}
+
+
+.primary {
+    border: none;
+
+    border-radius: 999px;
+
+    padding:
+        12px 25px;
+
+    min-width: 145px;
+
+    background:
+        linear-gradient(
+            135deg,
+            var(--green-soft),
+            var(--green)
+        );
+
+    color:
+        #04120b;
+
+    font-size: 14px;
+    font-weight: 900;
+
+    cursor: pointer;
+
+    box-shadow:
+        0 10px 28px rgba(57,217,138,.20);
+
+    transition:
+        transform .16s ease,
+        box-shadow .16s ease;
+}
+
+
+.primary:hover {
+    box-shadow:
+        0 13px 34px rgba(57,217,138,.29);
+}
+
+
+.primary:active {
+    transform: scale(.95);
+}
+
+
+/* =========================================================
+   COUNTDOWN
+========================================================= */
+
+.countdown {
+    position: absolute;
+
+    inset: 7px;
+
+    z-index: 15;
+
+    display: grid;
+    place-items: center;
+
+    pointer-events: none;
+}
+
+
+.countdown.hidden {
+    display: none;
+}
+
+
+.countdown-text {
+    font-size:
+        clamp(75px, 18vw, 145px);
+
+    font-weight: 1000;
+
+    color:
+        var(--green-soft);
+
+    text-shadow:
+        0 0 30px rgba(57,217,138,.42),
+        0 0 70px rgba(57,217,138,.18);
+
+    animation:
+        countPop .75s ease forwards;
+}
+
+
+@keyframes countPop {
+
+    0% {
+        opacity: 0;
+        transform:
+            scale(.35);
+    }
+
+    35% {
+        opacity: 1;
+        transform:
+            scale(1);
+    }
+
+    100% {
+        opacity: 0;
+        transform:
+            scale(1.18);
+    }
+}
+
+
+/* =========================================================
+   BUTTONS
+========================================================= */
+
+.controls {
+    display: flex;
+
+    justify-content: center;
+
+    gap: 9px;
+
+    margin-top: 14px;
+}
+
+
+.control {
+    border: 1px solid var(--border);
+
+    border-radius: 999px;
+
+    padding:
+        10px 20px;
+
+    background:
+        rgba(255,255,255,.055);
+
+    color: var(--text);
+
+    cursor: pointer;
+
+    font-size: 13px;
+    font-weight: 800;
+
+    backdrop-filter:
+        blur(10px);
+
+    transition:
+        transform .14s ease,
+        background .14s ease,
+        border-color .14s ease;
+}
+
+
+.control:hover {
+    background:
+        rgba(255,255,255,.085);
+
+    border-color:
+        var(--border-light);
+}
+
+
+.control:active {
+    transform:
+        scale(.95);
+}
+
+
+.control.pause {
+    color:
+        #201905;
+
+    border: none;
+
+    background:
+        linear-gradient(
+            135deg,
+            #ffe98a,
+            #ffd45c
+        );
+}
+
+
+/* =========================================================
+   MOBILE CONTROLS
+========================================================= */
+
+.mobile-controls {
+    display: none;
+
+    grid-template-columns:
+        repeat(3, 62px);
+
+    grid-template-rows:
+        repeat(2, 62px);
+
+    justify-content: center;
+
+    gap: 7px;
+
+    margin-top: 18px;
+}
+
+
+.mobile-controls button {
+    width: 62px;
+    height: 62px;
+
+    border:
+        1px solid var(--border);
+
+    border-radius: 17px;
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(255,255,255,.085),
+            rgba(255,255,255,.035)
+        );
+
+    color:
+        var(--text);
+
+    font-size: 22px;
+
+    cursor: pointer;
+
+    backdrop-filter:
+        blur(12px);
+
+    box-shadow:
+        0 7px 20px rgba(0,0,0,.13);
+
+    transition:
+        transform .1s ease;
+}
+
+
+.mobile-controls button:active {
+    transform:
+        scale(.91);
+}
+
+
+.up {
+    grid-column: 2;
+}
+
+
+.left {
+    grid-column: 1;
+    grid-row: 2;
+}
+
+
+.down {
+    grid-column: 2;
+    grid-row: 2;
+}
+
+
+.right {
+    grid-column: 3;
+    grid-row: 2;
+}
+
+
+/* =========================================================
+   SCORE POPUP
+========================================================= */
+
+.score-popup {
+    position: absolute;
+
+    z-index: 30;
+
+    pointer-events: none;
+
+    color:
+        var(--green-soft);
+
+    font-size: 17px;
+    font-weight: 1000;
+
+    text-shadow:
+        0 0 12px rgba(57,217,138,.35);
+
+    animation:
+        scoreFloat .8s ease forwards;
+}
+
+
+@keyframes scoreFloat {
+
+    0% {
+        opacity: 0;
+
+        transform:
+            translateY(4px)
+            scale(.7);
+    }
+
+    20% {
+        opacity: 1;
+    }
+
+    100% {
+        opacity: 0;
+
+        transform:
+            translateY(-42px)
+            scale(1.05);
+    }
+}
+
+
+/* =========================================================
+   SETTINGS
+========================================================= */
+
+.settings {
+    position: fixed;
+
+    inset: 0;
+
+    z-index: 100;
+
+    display: flex;
+
+    justify-content: center;
+    align-items: center;
+
+    padding: 18px;
+
+    background:
+        rgba(0,0,0,.53);
+
+    backdrop-filter:
+        blur(12px);
+}
+
+
+.settings.hidden {
+    display: none;
+}
+
+
+.settings-card {
+    width: min(92vw, 430px);
+
+    padding: 24px;
+
+    border:
+        1px solid var(--border-light);
+
+    border-radius: 22px;
+
+    background:
+        var(--surface-strong);
+
+    box-shadow:
+        0 25px 80px rgba(0,0,0,.40);
+}
+
+
+.settings-card h3 {
+    margin-bottom: 18px;
+
+    font-size: 23px;
+}
+
+
+.setting {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+
+    gap: 20px;
+
+    padding:
+        13px 0;
+
+    border-bottom:
+        1px solid var(--border);
+}
+
+
+.setting:last-of-type {
+    border-bottom: none;
+}
+
+
+.setting-title {
+    font-size: 14px;
+    font-weight: 800;
+}
+
+
+.setting-description {
+    margin-top: 3px;
+
+    color: var(--muted);
+
+    font-size: 11px;
+}
+
+
+/* =========================================================
+   SELECT
+========================================================= */
+
+select {
+    padding:
+        8px 10px;
+
+    min-width: 125px;
+
+    border:
+        1px solid var(--border);
+
+    border-radius: 10px;
+
+    background:
+        rgba(255,255,255,.06);
+
+    color:
+        var(--text);
+
+    outline: none;
+}
+
+
+/* =========================================================
+   TOGGLE
+========================================================= */
+
+.toggle {
+    position: relative;
+
+    width: 48px;
+    height: 27px;
+
+    border: none;
+
+    border-radius: 999px;
+
+    background:
+        #555d59;
+
+    cursor: pointer;
+}
+
+
+.toggle.on {
+    background:
+        var(--green);
+}
+
+
+.toggle-dot {
+    position: absolute;
+
+    top: 3px;
+    left: 3px;
+
+    width: 21px;
+    height: 21px;
+
+    border-radius: 50%;
+
+    background: white;
+
+    transition:
+        transform .16s ease;
+}
+
+
+.toggle.on .toggle-dot {
+    transform:
+        translateX(21px);
+}
+
+
+/* =========================================================
+   INFO
+========================================================= */
+
+.footer-info {
+    margin-top: 11px;
+
+    text-align: center;
+
+    color: var(--muted);
+
+    font-size: 10px;
+
+    opacity: .85;
+}
+
+
+/* =========================================================
+   RESPONSIVE
+========================================================= */
+
+@media (max-width: 650px) {
+
+    body {
+        padding:
+            12px 8px 18px;
+
+        align-items: flex-start;
+    }
+
+
+    .app {
+        width: 100%;
+    }
+
+
+    .info-panel {
+        grid-template-columns:
+            repeat(2, 1fr);
+    }
+
+
+    .mobile-controls {
+        display: grid;
+    }
+
+
+    .footer-info {
+        font-size: 9px;
+    }
+}
+
+
+@media (min-width: 651px) {
+
+    .mobile-controls {
+        display: none !important;
+    }
+}
+
+
+/* =========================================================
+   ACCESSIBILITY
+========================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+
+    *,
+    *::before,
+    *::after {
+
+        animation-duration:
+            .01ms !important;
+
+        animation-iteration-count:
+            1 !important;
+
+        transition-duration:
+            .01ms !important;
+    }
+
+    body::before,
+    body::after {
+        animation: none;
+    }
+}
+
+</style>
+</head>
+
+
+<body>
+
+<div class="app">
+
+    <!-- =====================================================
+         TOP BAR
+    ====================================================== -->
+
+    <header class="topbar">
+
+        <div class="logo">
+
+            <span class="logo-mark"></span>
+
+            Snake
+
+        </div>
+
+
+        <div class="top-actions">
+
+            <span
+                class="status"
+                id="status"
+            >
+                Ready
+            </span>
+
+
+            <button
+                class="icon-btn"
+                id="settingsButton"
+                aria-label="Open settings"
+            >
+                ⚙
+            </button>
+
+        </div>
+
+    </header>
+
+
+    <!-- =====================================================
+         MODES
+    ====================================================== -->
+
+    <div class="modes">
+
+        <button
+            class="mode active"
+            data-mode="classic"
+        >
+            Classic
+        </button>
+
+        <button
+            class="mode"
+            data-mode="walls"
+        >
+            Walls
+        </button>
+
+        <button
+            class="mode"
+            data-mode="portals"
+        >
+            Portals
+        </button>
+
+    </div>
+
+
+    <!-- =====================================================
+         SCORE
+    ====================================================== -->
+
+    <section class="info-panel">
+
+        <div class="info-card">
+
+            <span class="info-label">
+                Score
+            </span>
+
+            <span
+                class="info-value"
+                id="score"
+            >
+                0
+            </span>
+
+        </div>
+
+
+        <div class="info-card">
+
+            <span class="info-label">
+                Best
+            </span>
+
+            <span
+                class="info-value"
+                id="best"
+            >
+                0
+            </span>
+
+        </div>
+
+
+        <div class="info-card">
+
+            <span class="info-label">
+                Level
+            </span>
+
+            <span
+                class="info-value"
+                id="level"
+            >
+                1
+            </span>
+
+        </div>
+
+
+        <div class="info-card">
+
+            <span class="info-label">
+                Combo
+            </span>
+
+            <span
+                class="info-value"
+                id="combo"
+            >
+                x0
+            </span>
+
+        </div>
+
+    </section>
+
+
+    <!-- =====================================================
+         BOARD
+    ====================================================== -->
+
+    <section class="board-shell">
+
+        <canvas
+            id="gameCanvas"
+            aria-label="Snake game board"
+        ></canvas>
+
+
+        <!-- START -->
+
+        <div
+            class="overlay"
+            id="startOverlay"
+        >
+
+            <div class="overlay-card">
+
+                <div class="overlay-icon">
+                    🐍
+                </div>
+
+                <h2>
+                    Ready to play?
+                </h2>
+
+                <p>
+                    Eat the food, build combos,
+                    survive the board and beat
+                    your best score.
+                </p>
+
+                <button
+                    class="primary"
+                    id="startButton"
+                >
+                    Start Game
+                </button>
+
+            </div>
+
+        </div>
+
+
+        <!-- PAUSE -->
+
+        <div
+            class="overlay hidden"
+            id="pauseOverlay"
+        >
+
+            <div class="overlay-card">
+
+                <div class="overlay-icon">
+                    ⏸
+                </div>
+
+                <h2>
+                    Game Paused
+                </h2>
+
+                <p>
+                    Your snake is waiting.
+                </p>
+
+                <button
+                    class="primary"
+                    id="resumeButton"
+                >
+                    Resume
+                </button>
+
+            </div>
+
+        </div>
+
+
+        <!-- GAME OVER -->
+
+        <div
+            class="overlay hidden"
+            id="gameOverOverlay"
+        >
+
+            <div class="overlay-card">
+
+                <div class="overlay-icon">
+                    💥
+                </div>
+
+                <h2>
+                    Game Over
+                </h2>
+
+                <p>
+                    Score:
+                    <strong id="finalScore">
+                        0
+                    </strong>
+
+                    <br>
+
+                    Best:
+                    <strong id="finalBest">
+                        0
+                    </strong>
+                </p>
+
+                <button
+                    class="primary"
+                    id="playAgainButton"
+                >
+                    Play Again
+                </button>
+
+            </div>
+
+        </div>
+
+
+        <!-- COUNTDOWN -->
+
+        <div
+            class="countdown hidden"
+            id="countdown"
+        >
+
+            <div
+                class="countdown-text"
+                id="countdownText"
+            >
+                3
+            </div>
+
+        </div>
+
+    </section>
+
+
+    <!-- =====================================================
+         DESKTOP CONTROLS
+    ====================================================== -->
+
+    <div class="controls">
+
+        <button
+            class="control"
+            id="restartButton"
+        >
+            Restart
+        </button>
+
+        <button
+            class="control pause"
+            id="pauseButton"
+        >
+            Pause
+        </button>
+
+    </div>
+
+
+    <!-- =====================================================
+         MOBILE
+    ====================================================== -->
+
+    <div class="mobile-controls">
+
+        <button
+            class="up"
+            data-dir="up"
+            aria-label="Up"
+        >
+            ▲
+        </button>
+
+        <button
+            class="left"
+            data-dir="left"
+            aria-label="Left"
+        >
+            ◀
+        </button>
+
+        <button
+            class="down"
+            data-dir="down"
+            aria-label="Down"
+        >
+            ▼
+        </button>
+
+        <button
+            class="right"
+            data-dir="right"
+            aria-label="Right"
+        >
+            ▶
+        </button>
+
+    </div>
+
+
+    <div class="footer-info">
+        Arrow Keys / WASD · Space = Pause · Swipe on mobile
+    </div>
+
+</div>
+
+
+<!-- =========================================================
+     SETTINGS
+========================================================== -->
+
+<div
+    class="settings hidden"
+    id="settingsModal"
+>
+
+    <div class="settings-card">
+
+        <h3>
+            Settings
+        </h3>
+
+
+        <div class="setting">
+
+            <div>
+
+                <div class="setting-title">
+                    Theme
+                </div>
+
+                <div class="setting-description">
+                    Select the visual style.
+                </div>
+
+            </div>
+
+
+            <select id="themeSelect">
+
+                <option value="classic">
+                    Emerald
+                </option>
+
+                <option value="blue">
+                    Ocean
+                </option>
+
+                <option value="purple">
+                    Violet
+                </option>
+
+            </select>
+
+        </div>
+
+
+        <div class="setting">
+
+            <div>
+
+                <div class="setting-title">
+                    Sound
+                </div>
+
+                <div class="setting-description">
+                    Game sound effects.
+                </div>
+
+            </div>
+
+
+            <button
+                class="toggle on"
+                id="soundToggle"
+                aria-label="Toggle sound"
+            >
+                <span class="toggle-dot"></span>
+            </button>
+
+        </div>
+
+
+        <div class="setting">
+
+            <div>
+
+                <div class="setting-title">
+                    Effects
+                </div>
+
+                <div class="setting-description">
+                    Particles, glow and motion.
+                </div>
+
+            </div>
+
+
+            <button
+                class="toggle on"
+                id="effectsToggle"
+                aria-label="Toggle effects"
+            >
+                <span class="toggle-dot"></span>
+            </button>
+
+        </div>
+
+
+        <button
+            class="primary"
+            id="closeSettings"
+            style="margin-top:19px"
+        >
+            Done
+        </button>
+
+    </div>
+
+</div>
+
+
+<script>
+"use strict";
+
+
+/* =========================================================
+   CONFIGURATION
+========================================================= */
+
+const CONFIG = Object.freeze({
+
+    GRID: 28,
+
+    START_LENGTH: 4,
+
+    START_SPEED: 128,
+
+    MIN_SPEED: 50,
+
+    SPEED_STEP: 7,
+
+    LEVEL_EVERY: 4,
+
+    COMBO_WINDOW: 2500,
+
+    BONUS_CHANCE: .08,
+
+    BONUS_POINTS: 5,
+
+    PARTICLES: 18,
+
+    MAX_DPR: 3,
+
+    SWIPE_DISTANCE: 24
+
+});
+
+
+/* =========================================================
+   STATE
+========================================================= */
+
+const STATE = Object.freeze({
+
+    READY: "ready",
+
+    COUNTDOWN: "countdown",
+
+    PLAYING: "playing",
+
+    PAUSED: "paused",
+
+    GAME_OVER: "game_over"
+
+});
+
+
+let state = STATE.READY;
+
+
+let mode = "classic";
+
+
+/* =========================================================
+   MODES
+========================================================= */
+
+const MODES = {
+
+    classic: {
+        wrapping: false,
+        obstacles: false,
+        portals: false
+    },
+
+    walls: {
+        wrapping: true,
+        obstacles: true,
+        portals: false
+    },
+
+    portals: {
+        wrapping: true,
+        obstacles: true,
+        portals: true
+    }
+
+};
+
+
+/* =========================================================
+   DIRECTIONS
+========================================================= */
+
+const DIR = {
+
+    up: {
+        x: 0,
+        y: -1
+    },
+
+    down: {
+        x: 0,
+        y: 1
+    },
+
+    left: {
+        x: -1,
+        y: 0
+    },
+
+    right: {
+        x: 1,
+        y: 0
+    }
+
+};
+
+
+/* =========================================================
+   DOM
+========================================================= */
+
+const canvas =
+    document.getElementById(
+        "gameCanvas"
+    );
+
+const ctx =
+    canvas.getContext("2d");
+
+
+const scoreEl =
+    document.getElementById("score");
+
+const bestEl =
+    document.getElementById("best");
+
+const levelEl =
+    document.getElementById("level");
+
+const comboEl =
+    document.getElementById("combo");
+
+const statusEl =
+    document.getElementById("status");
+
+
+const startOverlay =
+    document.getElementById("startOverlay");
+
+const pauseOverlay =
+    document.getElementById("pauseOverlay");
+
+const gameOverOverlay =
+    document.getElementById("gameOverOverlay");
+
+
+const countdown =
+    document.getElementById("countdown");
+
+const countdownText =
+    document.getElementById(
+        "countdownText"
+    );
+
+
+const finalScore =
+    document.getElementById(
+        "finalScore"
+    );
+
+const finalBest =
+    document.getElementById(
+        "finalBest"
+    );
+
+
+/* =========================================================
+   DATA
+========================================================= */
+
+let snake = [];
+
+let visualSnake = [];
+
+let food = null;
+
+let bonusFood = null;
+
+let obstacles = [];
+
+let portals = [];
+
+
+let direction = {
+    ...DIR.right
+};
+
+let queuedDirection = {
+    ...DIR.right
+};
+
+let turnQueued = false;
+
+
+let score = 0;
+
+let best = 0;
+
+let level = 1;
+
+let combo = 0;
+
+let comboTimer = 0;
+
+let foodsEaten = 0;
+
+let speed =
+    CONFIG.START_SPEED;
+
+
+/* =========================================================
+   EFFECTS
+========================================================= */
+
+let particles = [];
+
+let screenShake = 0;
+
+let lastFoodPulse = 0;
+
+
+/* =========================================================
+   CANVAS
+========================================================= */
+
+let boardSize = 0;
+
+let cell = 0;
+
+
+/* =========================================================
+   LOOP
+========================================================= */
+
+let animationId = null;
+
+let lastTime = 0;
+
+let accumulator = 0;
+
+
+/* =========================================================
+   TOUCH
+========================================================= */
+
+let touchStartX = 0;
+
+let touchStartY = 0;
+
+
+/* =========================================================
+   SETTINGS
+========================================================= */
+
+let soundEnabled =
+    getStorage(
+        "snake-sound",
+        true
+    );
+
+let effectsEnabled =
+    getStorage(
+        "snake-effects",
+        true
+    );
+
+let theme =
+    getStorage(
+        "snake-theme",
+        "classic"
+    );
+
+
+/* =========================================================
+   STORAGE
+========================================================= */
+
+function getStorage(
+    key,
+    fallback
+) {
+
+    try {
+
+        const value =
+            localStorage.getItem(
+                key
+            );
+
+
+        if (
+            value === null
+        ) {
+
+            return fallback;
+        }
+
+
+        if (
+            typeof fallback ===
+            "boolean"
+        ) {
+
+            return value === "true";
+        }
+
+
+        return value;
+
+    } catch {
+
+        return fallback;
+    }
+}
+
+
+function setStorage(
+    key,
+    value
+) {
+
+    try {
+
+        localStorage.setItem(
+            key,
+            String(value)
+        );
+
+    } catch {}
+}
+
+
+function bestKey() {
+
+    return `snake-best-${mode}`;
+}
+
+
+/* =========================================================
+   BEST SCORE
+========================================================= */
+
+function loadBest() {
+
+    try {
+
+        const value =
+            parseInt(
+                localStorage.getItem(
+                    `snake-best-${mode}`
+                ),
+                10
+            );
+
+
+        return Number.isFinite(value)
+            ? Math.max(0, value)
+            : 0;
+
+    } catch {
+
+        return 0;
+    }
+}
+
+
+function saveBest() {
+
+    try {
+
+        localStorage.setItem(
+            `snake-best-${mode}`,
+            String(best)
+        );
+
+    } catch {}
+}
+
+
+/* =========================================================
+   THEME
+========================================================= */
+
+function applyTheme() {
+
+    const root =
+        document.documentElement;
+
+
+    if (
+        theme === "blue"
+    ) {
+
+        root.style.setProperty(
+            "--green",
+            "#49b7ff"
+        );
+
+        root.style.setProperty(
+            "--green-soft",
+            "#8fd5ff"
+        );
+
+    } else if (
+        theme === "purple"
+    ) {
+
+        root.style.setProperty(
+            "--green",
+            "#a86dff"
+        );
+
+        root.style.setProperty(
+            "--green-soft",
+            "#cfadff"
+        );
+
+    } else {
+
+        root.style.setProperty(
+            "--green",
+            "#39d98a"
+        );
+
+        root.style.setProperty(
+            "--green-soft",
+            "#70edac"
+        );
+    }
+}
+
+
+/* =========================================================
+   TOGGLE UI
+========================================================= */
+
+function refreshToggles() {
+
+    document
+        .getElementById(
+            "soundToggle"
+        )
+        .classList.toggle(
+            "on",
+            soundEnabled
+        );
+
+
+    document
+        .getElementById(
+            "effectsToggle"
+        )
+        .classList.toggle(
+            "on",
+            effectsEnabled
+        );
+}
+
+
+/* =========================================================
+   AUDIO
+========================================================= */
+
+let audio = null;
+
+
+function initAudio() {
+
+    if (audio) {
+        return;
+    }
+
+
+    try {
+
+        const AudioContext =
+            window.AudioContext ||
+            window.webkitAudioContext;
+
+
+        if (
+            AudioContext
+        ) {
+
+            audio =
+                new AudioContext();
+        }
+
+    } catch {
+
+        audio = null;
+    }
+}
+
+
+function playTone(
+    frequency,
+    duration,
+    wave = "sine",
+    volume = .035
+) {
+
+    if (
+        !soundEnabled ||
+        !audio
+    ) {
+
+        return;
+    }
+
+
+    const oscillator =
+        audio.createOscillator();
+
+    const gain =
+        audio.createGain();
+
+
+    const now =
+        audio.currentTime;
+
+
+    oscillator.type =
+        wave;
+
+    oscillator.frequency.value =
+        frequency;
+
+
+    gain.gain.setValueAtTime(
+        .0001,
+        now
+    );
+
+
+    gain.gain.exponentialRampToValueAtTime(
+        volume,
+        now + .008
+    );
+
+
+    gain.gain.exponentialRampToValueAtTime(
+        .0001,
+        now + duration
+    );
+
+
+    oscillator.connect(gain);
+
+    gain.connect(
+        audio.destination
+    );
+
+
+    oscillator.start();
+
+    oscillator.stop(
+        now + duration
+    );
+}
+
+
+function eatSound(
+    bonus
+) {
+
+    playTone(
+        bonus ? 900 : 620,
+        bonus ? .13 : .075,
+        "sine",
+        .045
+    );
+}
+
+
+function gameOverSound() {
+
+    playTone(
+        220,
+        .14,
+        "sawtooth",
+        .03
+    );
+
+
+    setTimeout(
+        () => {
+            playTone(
+                140,
+                .23,
+                "sawtooth",
+                .026
+            );
+        },
+        70
+    );
+}
+
+
+function portalSound() {
+
+    playTone(
+        420,
+        .06,
+        "triangle",
+        .025
+    );
+
+
+    setTimeout(
+        () => {
+
+            playTone(
+                720,
+                .10,
+                "triangle",
+                .025
+            );
+
+        },
+        45
+    );
+}
+
+
+/* =========================================================
+   CANVAS RESIZE
+========================================================= */
+
+function resizeCanvas() {
+
+    const size =
+        Math.min(
+            canvas.parentElement
+                .clientWidth,
+            700
+        );
+
+
+    const dpr =
+        Math.min(
+            window.devicePixelRatio || 1,
+            CONFIG.MAX_DPR
+        );
+
+
+    canvas.style.width =
+        `${size}px`;
+
+    canvas.style.height =
+        `${size}px`;
+
+
+    canvas.width =
+        Math.round(
+            size * dpr
+        );
+
+    canvas.height =
+        Math.round(
+            size * dpr
+        );
+
+
+    ctx.setTransform(
+        dpr,
+        0,
+        0,
+        dpr,
+        0,
+        0
+    );
+
+
+    boardSize =
+        size;
+
+
+    cell =
+        size / CONFIG.GRID;
+
+
+    render();
+}
+
+
+window.addEventListener(
+    "resize",
+    resizeCanvas
+);
+
+
+/* =========================================================
+   RESET
+========================================================= */
+
+function resetGame() {
+
+    const center =
+        Math.floor(
+            CONFIG.GRID / 2
+        );
+
+
+    snake = [];
+
+
+    for (
+        let i = 0;
+        i < CONFIG.START_LENGTH;
+        i++
+    ) {
+
+        snake.push({
+            x:
+                center - i,
+
+            y:
+                center
+        });
+    }
+
+
+    visualSnake =
+        snake.map(
+            item => ({
+                x: item.x,
+                y: item.y
+            })
+        );
+
+
+    direction =
+        { ...DIR.right };
+
+    queuedDirection =
+        { ...DIR.right };
+
+
+    turnQueued = false;
+
+
+    score = 0;
+
+    level = 1;
+
+    combo = 0;
+
+    comboTimer = 0;
+
+    foodsEaten = 0;
+
+
+    speed =
+        CONFIG.START_SPEED;
+
+
+    particles = [];
+
+    screenShake = 0;
+
+
+    obstacles = [];
+
+    portals = [];
+
+    bonusFood = null;
+
+
+    best =
+        loadBest();
+
+
+    updateUI();
+
+
+    createObstacles();
+
+    createPortals();
+
+    createFood();
+
+
+    accumulator = 0;
+
+    lastTime =
+        performance.now();
+
+
+    render();
+}
+
+
+/* =========================================================
+   OBSTACLES
+========================================================= */
+
+function createObstacles() {
+
+    if (
+        !MODES[mode].obstacles
+    ) {
+
+        return;
+    }
+
+
+    const amount =
+        mode === "walls"
+            ? 12 + level * 2
+            : 9 + level;
+
+
+    const safeRadius = 5;
+
+    let attempts = 0;
+
+
+    while (
+        obstacles.length <
+        amount &&
+        attempts < 1500
+    ) {
+
+        attempts++;
+
+
+        const obstacle = {
+
+            x:
+                Math.floor(
+                    Math.random() *
+                    CONFIG.GRID
+                ),
+
+            y:
+                Math.floor(
+                    Math.random() *
+                    CONFIG.GRID
+                )
+
+        };
+
+
+        if (
+            Math.abs(
+                obstacle.x -
+                snake[0].x
+            ) <= safeRadius &&
+            Math.abs(
+                obstacle.y -
+                snake[0].y
+            ) <= safeRadius
+        ) {
+
+            continue;
+        }
+
+
+        if (
+            snake.some(
+                item =>
+                    item.x ===
+                        obstacle.x &&
+                    item.y ===
+                        obstacle.y
+            )
+        ) {
+
+            continue;
+        }
+
+
+        if (
+            obstacles.some(
+                item =>
+                    item.x ===
+                        obstacle.x &&
+                    item.y ===
+                        obstacle.y
+            )
+        ) {
+
+            continue;
+        }
+
+
+        obstacles.push(
+            obstacle
+        );
+    }
+}
+
+
+/* =========================================================
+   PORTALS
+========================================================= */
+
+function createPortals() {
+
+    if (
+        !MODES[mode].portals
+    ) {
+
+        return;
+    }
+
+
+    let attempts = 0;
+
+
+    while (
+        portals.length < 2 &&
+        attempts < 1000
+    ) {
+
+        attempts++;
+
+
+        const point = {
+
+            x:
+                Math.floor(
+                    Math.random() *
+                    CONFIG.GRID
+                ),
+
+            y:
+                Math.floor(
+                    Math.random() *
+                    CONFIG.GRID
+                ),
+
+            id:
+                portals.length
+        };
+
+
+        if (
+            snake.some(
+                segment =>
+                    segment.x === point.x &&
+                    segment.y === point.y
+            )
+        ) {
+
+            continue;
+        }
+
+
+        if (
+            obstacles.some(
+                obstacle =>
+                    obstacle.x === point.x &&
+                    obstacle.y === point.y
+            )
+        ) {
+
+            continue;
+        }
+
+
+        portals.push(point);
+    }
+}
+
+
+/* =========================================================
+   FREE CELL
+========================================================= */
+
+function getFreeCell() {
+
+    const cells = [];
+
+
+    for (
+        let y = 0;
+        y < CONFIG.GRID;
+        y++
+    ) {
+
+        for (
+            let x = 0;
+            x < CONFIG.GRID;
+            x++
+        ) {
+
+            const usedSnake =
+                snake.some(
+                    s =>
+                        s.x === x &&
+                        s.y === y
+                );
+
+
+            const usedObstacle =
+                obstacles.some(
+                    o =>
+                        o.x === x &&
+                        o.y === y
+                );
+
+
+            const usedPortal =
+                portals.some(
+                    p =>
+                        p.x === x &&
+                        p.y === y
+                );
+
+
+            if (
+                !usedSnake &&
+                !usedObstacle &&
+                !usedPortal
+            ) {
+
+                cells.push({
+                    x,
+                    y
+                });
+            }
+        }
+    }
+
+
+    if (
+        cells.length === 0
+    ) {
+
+        return null;
+    }
+
+
+    return cells[
+        Math.floor(
+            Math.random() *
+            cells.length
+        )
+    ];
+}
+
+
+/* =========================================================
+   CREATE FOOD
+========================================================= */
+
+function createFood() {
+
+    food =
+        getFreeCell();
+
+
+    bonusFood = null;
+
+
+    if (
+        Math.random() <
+        CONFIG.BONUS_CHANCE
+    ) {
+
+        bonusFood =
+            getFreeCell();
+    }
+
+
+    if (
+        !food
+    ) {
+
+        endGame(true);
+    }
+}
+
+
+/* =========================================================
+   SCORE
+========================================================= */
+
+function addScore(
+    amount,
+    position
+) {
+
+    score += amount;
+
+
+    if (
+        score > best
+    ) {
+
+        best =
+            score;
+
+        saveBest();
+    }
+
+
+    spawnScorePopup(
+        position,
+        amount
+    );
+
+
+    updateUI();
+}
+
+
+function updateUI() {
+
+    scoreEl.textContent =
+        score;
+
+    bestEl.textContent =
+        best;
+
+    levelEl.textContent =
+        level;
+
+    comboEl.textContent =
+        `x${combo}`;
+}
+
+
+/* =========================================================
+   SCORE POPUP
+========================================================= */
+
+function spawnScorePopup(
+    position,
+    amount
+) {
+
+    if (
+        !effectsEnabled
+    ) {
+
+        return;
+    }
+
+
+    const popup =
+        document.createElement(
+            "div"
+        );
+
+
+    popup.className =
+        "score-popup";
+
+
+    popup.textContent =
+        `+${amount}`;
+
+
+    popup.style.left =
+        `${
+            position.x *
+            cell +
+            cell / 2
+        }px`;
+
+
+    popup.style.top =
+        `${
+            position.y *
+            cell +
+            cell / 2
+        }px`;
+
+
+    document
+        .querySelector(
+            ".board-shell"
+        )
+        .appendChild(
+            popup
+        );
+
+
+    setTimeout(
+        () => popup.remove(),
+        800
+    );
+}
+
+
+/* =========================================================
+   INPUT
+========================================================= */
+
+function requestDirection(
+    next
+) {
+
+    if (
+        state !== STATE.PLAYING ||
+        turnQueued
+    ) {
+
+        return;
+    }
+
+
+    if (
+        next.x === -direction.x &&
+        next.y === -direction.y
+    ) {
+
+        return;
+    }
+
+
+    if (
+        next.x === direction.x &&
+        next.y === direction.y
+    ) {
+
+        return;
+    }
+
+
+    queuedDirection =
+        { ...next };
+
+
+    turnQueued = true;
+}
+
+
+/* =========================================================
+   KEYBOARD
+========================================================= */
+
+document.addEventListener(
+    "keydown",
+    event => {
+
+        const key =
+            event.key.toLowerCase();
+
+
+        if (
+            [
+                "arrowup",
+                "arrowdown",
+                "arrowleft",
+                "arrowright",
+                " ",
+                "w",
+                "a",
+                "s",
+                "d",
+                "enter"
+            ].includes(key)
+        ) {
+
+            event.preventDefault();
+        }
+
+
+        if (
+            state === STATE.GAME_OVER &&
+            (
+                key === "enter" ||
+                key === " "
+            )
+        ) {
+
+            startGame();
+
+            return;
+        }
+
+
+        if (
+            key === " "
+        ) {
+
+            togglePause();
+
+            return;
+        }
+
+
+        if (
+            key === "arrowup" ||
+            key === "w"
+        ) {
+
+            requestDirection(
+                DIR.up
+            );
+
+        } else if (
+            key === "arrowdown" ||
+            key === "s"
+        ) {
+
+            requestDirection(
+                DIR.down
+            );
+
+        } else if (
+            key === "arrowleft" ||
+            key === "a"
+        ) {
+
+            requestDirection(
+                DIR.left
+            );
+
+        } else if (
+            key === "arrowright" ||
+            key === "d"
+        ) {
+
+            requestDirection(
+                DIR.right
+            );
+        }
+    }
+);
+
+
+/* =========================================================
+   NEXT HEAD
+========================================================= */
+
+function getNextHead() {
+
+    let x =
+        snake[0].x +
+        direction.x;
+
+
+    let y =
+        snake[0].y +
+        direction.y;
+
+
+    const rules =
+        MODES[mode];
+
+
+    if (
+        rules.wrapping
+    ) {
+
+        x =
+            (x + CONFIG.GRID) %
+            CONFIG.GRID;
+
+        y =
+            (y + CONFIG.GRID) %
+            CONFIG.GRID;
+    }
+
+
+    return {
+        x,
+        y
+    };
+}
+
+
+/* =========================================================
+   UPDATE
+========================================================= */
+
+function updateGame() {
+
+    if (
+        turnQueued
+    ) {
+
+        direction =
+            { ...queuedDirection };
+
+        turnQueued = false;
+    }
+
+
+    const next =
+        getNextHead();
+
+
+    const rules =
+        MODES[mode];
+
+
+    /*
+        Classic wall collision.
+    */
+
+    if (
+        !rules.wrapping &&
+        (
+            next.x < 0 ||
+            next.x >= CONFIG.GRID ||
+            next.y < 0 ||
+            next.y >= CONFIG.GRID
+        )
+    ) {
+
+        endGame();
+
+        return;
+    }
+
+
+    /*
+        Obstacle collision.
+    */
+
+    if (
+        obstacles.some(
+            obstacle =>
+                obstacle.x === next.x &&
+                obstacle.y === next.y
+        )
+    ) {
+
+        endGame();
+
+        return;
+    }
+
+
+    /*
+        Food.
+    */
+
+    const normalFood =
+        food &&
+        food.x === next.x &&
+        food.y === next.y;
+
+
+    const specialFood =
+        bonusFood &&
+        bonusFood.x === next.x &&
+        bonusFood.y === next.y;
+
+
+    const eating =
+        normalFood ||
+        specialFood;
+
+
+    /*
+        Body collision.
+
+        Allow the current tail cell if
+        the tail is about to move.
+    */
+
+    const bodyLength =
+        eating
+            ? snake.length
+            : snake.length - 1;
+
+
+    for (
+        let i = 0;
+        i < bodyLength;
+        i++
+    ) {
+
+        if (
+            snake[i].x === next.x &&
+            snake[i].y === next.y
+        ) {
+
+            endGame();
+
+            return;
+        }
+    }
+
+
+    /*
+        Move.
+    */
+
+    snake.unshift(next);
+
+
+    /*
+        Portal.
+    */
+
+    if (
+        rules.portals
+    ) {
+
+        const portal =
+            portals.find(
+                p =>
+                    p.x === next.x &&
+                    p.y === next.y
+            );
+
+
+        if (
+            portal
+        ) {
+
+            const target =
+                portals[
+                    portal.id === 0
+                        ? 1
+                        : 0
+                ];
+
+
+            if (
+                target
+            ) {
+
+                snake[0] = {
+                    x: target.x,
+                    y: target.y
+                };
+
+
+                portalSound();
+            }
+        }
+    }
+
+
+    /*
+        Eating.
+    */
+
+    if (
+        eating
+    ) {
+
+        let points =
+            specialFood
+                ? CONFIG.BONUS_POINTS
+                : 1;
+
+
+        /*
+            Combo.
+        */
+
+        if (
+            comboTimer > 0
+        ) {
+
+            combo++;
+
+        } else {
+
+            combo = 1;
+        }
+
+
+        comboTimer =
+            CONFIG.COMBO_WINDOW;
+
+
+        if (
+            combo > 2
+        ) {
+
+            points +=
+                Math.min(
+                    combo - 2,
+                    6
+                );
+        }
+
+
+        addScore(
+            points,
+            next
+        );
+
+
+        foodsEaten++;
+
+
+        /*
+            Effects.
+        */
+
+        if (
+            effectsEnabled
+        ) {
+
+            createParticles(
+                next,
+                specialFood
+                    ? "#ffd45c"
+                    : "var(--green)"
+            );
+
+
+            screenShake =
+                specialFood
+                    ? 7
+                    : 3;
+        }
+
+
+        eatSound(
+            specialFood
+        );
+
+
+        /*
+            Level.
+        */
+
+        const newLevel =
+            1 +
+            Math.floor(
+                foodsEaten /
+                CONFIG.LEVEL_EVERY
+            );
+
+
+        if (
+            newLevel !== level
+        ) {
+
+            level =
+                newLevel;
+
+
+            speed =
+                Math.max(
+                    CONFIG.MIN_SPEED,
+                    CONFIG.START_SPEED -
+                    (
+                        level - 1
+                    ) *
+                    CONFIG.SPEED_STEP
+                );
+
+
+            /*
+                Add more obstacles
+                as difficulty rises.
+            */
+
+            createObstacles();
+        }
+
+
+        createFood();
+
+    } else {
+
+        snake.pop();
+    }
+
+
+    /*
+        Combo timer.
+    */
+
+    comboTimer -= speed;
+
+
+    if (
+        comboTimer <= 0
+    ) {
+
+        comboTimer = 0;
+
+        combo = 0;
+    }
+
+
+    updateUI();
+
+    syncVisualLength();
+}
+
+
+/* =========================================================
+   VISUAL SNAKE
+========================================================= */
+
+function syncVisualLength() {
+
+    while (
+        visualSnake.length <
+        snake.length
+    ) {
+
+        const last =
+            visualSnake[
+                visualSnake.length - 1
+            ];
+
+
+        visualSnake.push({
+
+            x:
+                last
+                    ? last.x
+                    : snake[0].x,
+
+            y:
+                last
+                    ? last.y
+                    : snake[0].y
+
+        });
+    }
+
+
+    while (
+        visualSnake.length >
+        snake.length
+    ) {
+
+        visualSnake.pop();
+    }
+}
+
+
+/* =========================================================
+   SMOOTH VISUALS
+========================================================= */
+
+function updateVisuals(
+    delta
+) {
+
+    const smoothing =
+        1 -
+        Math.pow(
+            .0001,
+            delta / 16.67
+        );
+
+
+    for (
+        let i = 0;
+        i < snake.length;
+        i++
+    ) {
+
+        if (
+            !visualSnake[i]
+        ) {
+
+            continue;
+        }
+
+
+        visualSnake[i].x +=
+            (
+                snake[i].x -
+                visualSnake[i].x
+            ) *
+            smoothing;
+
+
+        visualSnake[i].y +=
+            (
+                snake[i].y -
+                visualSnake[i].y
+            ) *
+            smoothing;
+    }
+}
+
+
+/* =========================================================
+   PARTICLES
+========================================================= */
+
+function createParticles(
+    position,
+    color
+) {
+
+    for (
+        let i = 0;
+        i < CONFIG.PARTICLES;
+        i++
+    ) {
+
+        const angle =
+            Math.random() *
+            Math.PI *
+            2;
+
+
+        const velocity =
+            .6 +
+            Math.random() *
+            2.5;
+
+
+        particles.push({
+
+            x:
+                position.x *
+                cell +
+                cell / 2,
+
+            y:
+                position.y *
+                cell +
+                cell / 2,
+
+            vx:
+                Math.cos(angle) *
+                velocity,
+
+            vy:
+                Math.sin(angle) *
+                velocity,
+
+            life: 1,
+
+            size:
+                1.5 +
+                Math.random() *
+                3.5,
+
+            color
+        });
+    }
+}
+
+
+function updateParticles(
+    delta
+) {
+
+    if (
+        !effectsEnabled
+    ) {
+
+        particles = [];
+
+        return;
+    }
+
+
+    const factor =
+        delta / 16.67;
+
+
+    for (
+        const p of particles
+    ) {
+
+        p.x +=
+            p.vx *
+            factor;
+
+
+        p.y +=
+            p.vy *
+            factor;
+
+
+        p.vx *= .985;
+
+        p.vy =
+            p.vy * .985 +
+            .055 * factor;
+
+
+        p.life -=
+            .035 * factor;
+    }
+
+
+    particles =
+        particles.filter(
+            p =>
+                p.life > 0
+        );
+}
+
+
+/* =========================================================
+   LOOP
+========================================================= */
+
+function startLoop() {
+
+    stopLoop();
+
+
+    lastTime =
+        performance.now();
+
+
+    accumulator = 0;
+
+
+    animationId =
+        requestAnimationFrame(
+            loop
+        );
+}
+
+
+function stopLoop() {
+
+    if (
+        animationId !== null
+    ) {
+
+        cancelAnimationFrame(
+            animationId
+        );
+
+
+        animationId = null;
+    }
+}
+
+
+function loop(
+    time
+) {
+
+    if (
+        state !== STATE.PLAYING
+    ) {
+
+        animationId = null;
+
+        render();
+
+        return;
+    }
+
+
+    const delta =
+        Math.min(
+            time - lastTime,
+            100
+        );
+
+
+    lastTime = time;
+
+
+    accumulator += delta;
+
+
+    while (
+        accumulator >= speed
+    ) {
+
+        updateGame();
+
+        accumulator -= speed;
+
+
+        if (
+            state !== STATE.PLAYING
+        ) {
+
+            break;
+        }
+    }
+
+
+    updateVisuals(delta);
+
+    updateParticles(delta);
+
+
+    screenShake *= .88;
+
+
+    render();
+
+
+    if (
+        state === STATE.PLAYING
+    ) {
+
+        animationId =
+            requestAnimationFrame(
+                loop
+            );
+    }
+}
+
+
+/* =========================================================
+   START GAME
+========================================================= */
+
+function startGame() {
+
+    initAudio();
+
+
+    if (
+        audio &&
+        audio.state === "suspended"
+    ) {
+
+        audio.resume();
+    }
+
+
+    resetGame();
+
+
+    hideAllOverlays();
+
+
+    state =
+        STATE.COUNTDOWN;
+
+
+    statusEl.textContent =
+        "Get Ready";
+
+
+    runCountdown();
+}
+
+
+/* =========================================================
+   COUNTDOWN
+========================================================= */
+
+function runCountdown() {
+
+    const values = [
+        "3",
+        "2",
+        "1",
+        "GO!"
+    ];
+
+
+    let index = 0;
+
+
+    countdown.classList.remove(
+        "hidden"
+    );
+
+
+    function next() {
+
+        countdownText.textContent =
+            values[index];
+
+
+        countdownText.style.animation =
+            "none";
+
+
+        void countdownText.offsetWidth;
+
+
+        countdownText.style.animation =
+            "countPop .75s ease forwards";
+
+
+        index++;
+
+
+        if (
+            index <
+            values.length
+        ) {
+
+            setTimeout(
+                next,
+                760
+            );
+
+            return;
+        }
+
+
+        setTimeout(
+            () => {
+
+                countdown.classList.add(
+                    "hidden"
+                );
+
+
+                state =
+                    STATE.PLAYING;
+
+
+                statusEl.textContent =
+                    "Playing";
+
+
+                startLoop();
+
+            },
+            460
+        );
+    }
+
+
+    next();
+}
+
+
+/* =========================================================
+   PAUSE
+========================================================= */
+
+function togglePause() {
+
+    if (
+        state === STATE.PLAYING
+    ) {
+
+        pauseGame();
+
+    } else if (
+        state === STATE.PAUSED
+    ) {
+
+        resumeGame();
+    }
+}
+
+
+function pauseGame() {
+
+    state =
+        STATE.PAUSED;
+
+
+    stopLoop();
+
+
+    statusEl.textContent =
+        "Paused";
+
+
+    pauseOverlay.classList.remove(
+        "hidden"
+    );
+
+
+    render();
+}
+
+
+function resumeGame() {
+
+    if (
+        state !== STATE.PAUSED
+    ) {
+
+        return;
+    }
+
+
+    state =
+        STATE.PLAYING;
+
+
+    pauseOverlay.classList.add(
+        "hidden"
+    );
+
+
+    statusEl.textContent =
+        "Playing";
+
+
+    startLoop();
+}
+
+
+/* =========================================================
+   GAME OVER
+========================================================= */
+
+function endGame(
+    completed = false
+) {
+
+    if (
+        state === STATE.GAME_OVER
+    ) {
+
+        return;
+    }
+
+
+    state =
+        STATE.GAME_OVER;
+
+
+    stopLoop();
+
+
+    finalScore.textContent =
+        score;
+
+
+    finalBest.textContent =
+        best;
+
+
+    statusEl.textContent =
+        completed
+            ? "Complete"
+            : "Game Over";
+
+
+    gameOverOverlay.classList.remove(
+        "hidden"
+    );
+
+
+    gameOverSound();
+
+
+    render();
+}
+
+
+/* =========================================================
+   RENDER
+========================================================= */
+
+function render() {
+
+    if (
+        boardSize <= 0
+    ) {
+
+        return;
+    }
+
+
+    ctx.save();
+
+
+    if (
+        effectsEnabled &&
+        screenShake > .1
+    ) {
+
+        ctx.translate(
+
+            (
+                Math.random() -
+                .5
+            ) *
+            screenShake,
+
+            (
+                Math.random() -
+                .5
+            ) *
+            screenShake
+
+        );
+    }
+
+
+    drawBackground();
+
+    drawGrid();
+
+    drawObstacles();
+
+    drawPortals();
+
+    drawFood();
+
+    drawSnake();
+
+    drawParticles();
+
+
+    ctx.restore();
+}
+
+
+/* =========================================================
+   BACKGROUND
+========================================================= */
+
+function drawBackground() {
+
+    const gradient =
+        ctx.createRadialGradient(
+            boardSize * .5,
+            boardSize * .38,
+            0,
+            boardSize * .5,
+            boardSize * .5,
+            boardSize * .72
+        );
+
+
+    gradient.addColorStop(
+        0,
+        "#102219"
+    );
+
+
+    gradient.addColorStop(
+        1,
+        "#07110d"
+    );
+
+
+    ctx.fillStyle =
+        gradient;
+
+
+    ctx.fillRect(
+        0,
+        0,
+        boardSize,
+        boardSize
+    );
+}
+
+
+/* =========================================================
+   GRID
+========================================================= */
+
+function drawGrid() {
+
+    ctx.save();
+
+
+    ctx.globalAlpha =
+        .19;
+
+
+    ctx.strokeStyle =
+        "#ffffff";
+
+
+    ctx.lineWidth = .7;
+
+
+    for (
+        let i = 1;
+        i < CONFIG.GRID;
+        i++
+    ) {
+
+        const p =
+            Math.round(
+                i * cell
+            ) + .5;
+
+
+        ctx.beginPath();
+
+        ctx.moveTo(
+            p,
+            0
+        );
+
+        ctx.lineTo(
+            p,
+            boardSize
+        );
+
+        ctx.stroke();
+
+
+        ctx.beginPath();
+
+        ctx.moveTo(
+            0,
+            p
+        );
+
+        ctx.lineTo(
+            boardSize,
+            p
+        );
+
+        ctx.stroke();
+    }
+
+
+    ctx.restore();
+}
+
+
+/* =========================================================
+   OBSTACLES
+========================================================= */
+
+function drawObstacles() {
+
+    for (
+        const obstacle of obstacles
+    ) {
+
+        const pad =
+            cell * .13;
+
+
+        const x =
+            obstacle.x *
+                cell +
+            pad;
+
+
+        const y =
+            obstacle.y *
+                cell +
+            pad;
+
+
+        const size =
+            cell -
+            pad * 2;
+
+
+        /*
+            Shadow.
+        */
+
+        ctx.fillStyle =
+            "rgba(0,0,0,.30)";
+
+
+        roundedRect(
+            x + 1.5,
+            y + 2,
+            size,
+            size,
+            cell * .18
+        );
+
+
+        ctx.fill();
+
+
+        /*
+            Main obstacle.
+        */
+
+        const gradient =
+            ctx.createLinearGradient(
+                x,
+                y,
+                x + size,
+                y + size
+            );
+
+
+        gradient.addColorStop(
+            0,
+            "#33423a"
+        );
+
+
+        gradient.addColorStop(
+            1,
+            "#1d2923"
+        );
+
+
+        ctx.fillStyle =
+            gradient;
+
+
+        roundedRect(
+            x,
+            y,
+            size,
+            size,
+            cell * .18
+        );
+
+
+        ctx.fill();
+
+
+        /*
+            Top shine.
+        */
+
+        ctx.fillStyle =
+            "rgba(255,255,255,.08)";
+
+
+        roundedRect(
+            x + size*.13,
+            y + size*.10,
+            size*.74,
+            size*.20,
+            size*.08
+        );
+
+
+        ctx.fill();
+    }
+}
+
+
+/* =========================================================
+   PORTALS
+========================================================= */
+
+function drawPortals() {
+
+    portals.forEach(
+        (portal, index) => {
+
+            const cx =
+                portal.x *
+                cell +
+                cell / 2;
+
+
+            const cy =
+                portal.y *
+                cell +
+                cell / 2;
+
+
+            const pulse =
+                effectsEnabled
+                    ? 1 +
+                      Math.sin(
+                          performance.now() /
+                          180
+                      ) *
+                      .08
+                    : 1;
+
+
+            const radius =
+                cell *
+                .30 *
+                pulse;
+
+
+            ctx.save();
+
+
+            /*
+                Outer glow.
+            */
+
+            if (
+                effectsEnabled
+            ) {
+
+                ctx.shadowColor =
+                    index === 0
+                        ? "#4b9eff"
+                        : "#ba7dff";
+
+
+                ctx.shadowBlur =
+                    14;
+            }
+
+
+            ctx.beginPath();
+
+            ctx.arc(
+                cx,
+                cy,
+                radius,
+                0,
+                Math.PI * 2
+            );
+
+
+            ctx.strokeStyle =
+                index === 0
+                    ? "#4b9eff"
+                    : "#ba7dff";
+
+
+            ctx.lineWidth =
+                cell * .10;
+
+
+            ctx.stroke();
+
+
+            ctx.restore();
+
+
+            ctx.beginPath();
+
+            ctx.arc(
+                cx,
+                cy,
+                radius * .55,
+                0,
+                Math.PI * 2
+            );
+
+
+            ctx.strokeStyle =
+                index === 0
+                    ? "#9bc7ff"
+                    : "#dfc7ff";
+
+
+            ctx.lineWidth =
+                cell * .035;
+
+
+            ctx.stroke();
+        }
+    );
+}
+
+
+/* =========================================================
+   FOOD
+========================================================= */
+
+function drawFood() {
+
+    drawFoodItem(
+        food,
+        false
+    );
+
+
+    if (
+        bonusFood
+    ) {
+
+        drawFoodItem(
+            bonusFood,
+            true
+        );
+    }
+}
+
+
+function drawFoodItem(
+    item,
+    bonus
+) {
+
+    if (
+        !item
+    ) {
+
+        return;
+    }
+
+
+    const t =
+        performance.now();
+
+
+    const pulse =
+        effectsEnabled
+            ? 1 +
+              Math.sin(
+                  t /
+                  (
+                      bonus
+                          ? 110
+                          : 170
+                  )
+              ) *
+              (
+                  bonus
+                      ? .10
+                      : .055
+              )
+            : 1;
+
+
+    const cx =
+        item.x *
+            cell +
+        cell / 2;
+
+
+    const cy =
+        item.y *
+            cell +
+        cell / 2;
+
+
+    const radius =
+        cell *
+        (
+            bonus
+                ? .28
+                : .29
+        ) *
+        pulse;
+
+
+    /*
+        Glow.
+    */
+
+    if (
+        effectsEnabled
+    ) {
+
+        const gradient =
+            ctx.createRadialGradient(
+                cx,
+                cy,
+                0,
+                cx,
+                cy,
+                radius * 2.5
+            );
+
+
+        gradient.addColorStop(
+            0,
+            bonus
+                ? "rgba(255,212,92,.32)"
+                : "rgba(255,93,104,.25)"
+        );
+
+
+        gradient.addColorStop(
+            1,
+            "rgba(0,0,0,0)"
+        );
+
+
+        ctx.fillStyle =
+            gradient;
+
+
+        ctx.beginPath();
+
+        ctx.arc(
+            cx,
+            cy,
+            radius * 2.5,
+            0,
+            Math.PI * 2
+        );
+
+        ctx.fill();
+    }
+
+
+    /*
+        Food shadow.
+    */
+
+    ctx.beginPath();
+
+    ctx.arc(
+        cx + 1.5,
+        cy + 2,
+        radius,
+        0,
+        Math.PI * 2
+    );
+
+
+    ctx.fillStyle =
+        "rgba(0,0,0,.30)";
+
+
+    ctx.fill();
+
+
+    /*
+        Food.
+    */
+
+    const foodGradient =
+        ctx.createLinearGradient(
+            cx - radius,
+            cy - radius,
+            cx + radius,
+            cy + radius
+        );
+
+
+    foodGradient.addColorStop(
+        0,
+        bonus
+            ? "#ffe998"
+            : "#ff8690"
+    );
+
+
+    foodGradient.addColorStop(
+        1,
+        bonus
+            ? "#ffb82e"
+            : "#ff4655"
+    );
+
+
+    ctx.fillStyle =
+        foodGradient;
+
+
+    ctx.beginPath();
+
+    ctx.arc(
+        cx,
+        cy,
+        radius,
+        0,
+        Math.PI * 2
+    );
+
+    ctx.fill();
+
+
+    /*
+        Shine.
+    */
+
+    ctx.beginPath();
+
+    ctx.arc(
+        cx -
+            radius * .30,
+        cy -
+            radius * .30,
+        radius * .22,
+        0,
+        Math.PI * 2
+    );
+
+
+    ctx.fillStyle =
+        "rgba(255,255,255,.70)";
+
+
+    ctx.fill();
+
+
+    /*
+        Bonus star.
+    */
+
+    if (
+        bonus
+    ) {
+
+        ctx.fillStyle =
+            "rgba(255,255,255,.88)";
+
+
+        drawStar(
+            cx,
+            cy,
+            radius * .60,
+            radius * .26,
+            5
+        );
+
+
+        ctx.fill();
+    }
+}
+
+
+/* =========================================================
+   SNAKE
+========================================================= */
+
+function drawSnake() {
+
+    for (
+        let i =
+            visualSnake.length - 1;
+        i >= 0;
+        i--
+    ) {
+
+        const segment =
+            visualSnake[i];
+
+
+        const head =
+            i === 0;
+
+
+        const pad =
+            head
+                ? cell * .075
+                : cell * .11;
+
+
+        const size =
+            cell -
+            pad * 2;
+
+
+        const x =
+            segment.x *
+                cell +
+            pad;
+
+
+        const y =
+            segment.y *
+                cell +
+            pad;
+
+
+        /*
+            Shadow.
+        */
+
+        ctx.fillStyle =
+            "rgba(0,0,0,.30)";
+
+
+        roundedRect(
+            x + 1,
+            y + 2,
+            size,
+            size,
+            cell * .20
+        );
+
+
+        ctx.fill();
+
+
+        /*
+            Body gradient.
+        */
+
+        const gradient =
+            ctx.createLinearGradient(
+                x,
+                y,
+                x + size,
+                y + size
+            );
+
+
+        gradient.addColorStop(
+            0,
+            head
+                ? "#8af4b8"
+                : "#68e8a3"
+        );
+
+
+        gradient.addColorStop(
+            .48,
+            head
+                ? "#39d98a"
+                : "#39c980"
+        );
+
+
+        gradient.addColorStop(
+            1,
+            head
+                ? "#159d5b"
+                : "#11894e"
+        );
+
+
+        ctx.fillStyle =
+            gradient;
+
+
+        if (
+            head &&
+            effectsEnabled
+        ) {
+
+            ctx.shadowColor =
+                "rgba(57,217,138,.42)";
+
+            ctx.shadowBlur =
+                13;
+        }
+
+
+        roundedRect(
+            x,
+            y,
+            size,
+            size,
+            cell * .20
+        );
+
+
+        ctx.fill();
+
+
+        ctx.shadowBlur = 0;
+
+
+        /*
+            Body highlight.
+        */
+
+        if (
+            !head &&
+            effectsEnabled
+        ) {
+
+            ctx.fillStyle =
+                "rgba(255,255,255,.12)";
+
+
+            roundedRect(
+                x + size*.12,
+                y + size*.10,
+                size*.76,
+                size*.18,
+                size*.08
+            );
+
+
+            ctx.fill();
+        }
+
+
+        /*
+            Head eyes.
+        */
+
+        if (
+            head
+        ) {
+
+            drawEyes(
+                x,
+                y,
+                size
+            );
+        }
+    }
+}
+
+
+/* =========================================================
+   EYES
+========================================================= */
+
+function drawEyes(
+    x,
+    y,
+    size
+) {
+
+    let eye1;
+
+    let eye2;
+
+
+    if (
+        direction.x > 0
+    ) {
+
+        eye1 = {
+            x: x + size*.73,
+            y: y + size*.30
+        };
+
+        eye2 = {
+            x: x + size*.73,
+            y: y + size*.70
+        };
+
+    } else if (
+        direction.x < 0
+    ) {
+
+        eye1 = {
+            x: x + size*.27,
+            y: y + size*.30
+        };
+
+        eye2 = {
+            x: x + size*.27,
+            y: y + size*.70
+        };
+
+    } else if (
+        direction.y < 0
+    ) {
+
+        eye1 = {
+            x: x + size*.30,
+            y: y + size*.27
+        };
+
+        eye2 = {
+            x: x + size*.70,
+            y: y + size*.27
+        };
+
+    } else {
+
+        eye1 = {
+            x: x + size*.30,
+            y: y + size*.73
+        };
+
+        eye2 = {
+            x: x + size*.70,
+            y: y + size*.73
+        };
+    }
+
+
+    ctx.fillStyle =
+        "rgba(255,255,255,.94)";
+
+
+    circle(
+        eye1.x,
+        eye1.y,
+        size*.092
+    );
+
+
+    circle(
+        eye2.x,
+        eye2.y,
+        size*.092
+    );
+
+
+    ctx.fillStyle =
+        "#14231c";
+
+
+    circle(
+        eye1.x,
+        eye1.y,
+        size*.043
+    );
+
+
+    circle(
+        eye2.x,
+        eye2.y,
+        size*.043
+    );
+}
+
+
+/* =========================================================
+   PARTICLES
+========================================================= */
+
+function drawParticles() {
+
+    if (
+        !effectsEnabled
+    ) {
+
+        return;
+    }
+
+
+    for (
+        const p of particles
+    ) {
+
+        ctx.save();
+
+
+        ctx.globalAlpha =
+            p.life;
+
+
+        ctx.fillStyle =
+            p.color;
+
+
+        ctx.shadowColor =
+            p.color;
+
+
+        ctx.shadowBlur =
+            8;
+
+
+        circle(
+            p.x,
+            p.y,
+            p.size *
+            p.life
+        );
+
+
+        ctx.restore();
+    }
+}
+
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function circle(
+    x,
+    y,
+    radius
+) {
+
+    ctx.beginPath();
+
+    ctx.arc(
+        x,
+        y,
+        radius,
+        0,
+        Math.PI * 2
+    );
+
+    ctx.fill();
+}
+
+
+function roundedRect(
+    x,
+    y,
+    width,
+    height,
+    radius
+) {
+
+    radius =
+        Math.min(
+            radius,
+            width / 2,
+            height / 2
+        );
+
+
+    ctx.beginPath();
+
+    ctx.moveTo(
+        x + radius,
+        y
+    );
+
+
+    ctx.lineTo(
+        x + width - radius,
+        y
+    );
+
+
+    ctx.quadraticCurveTo(
+        x + width,
+        y,
+        x + width,
+        y + radius
+    );
+
+
+    ctx.lineTo(
+        x + width,
+        y + height - radius
+    );
+
+
+    ctx.quadraticCurveTo(
+        x + width,
+        y + height,
+        x + width - radius,
+        y + height
+    );
+
+
+    ctx.lineTo(
+        x + radius,
+        y + height
+    );
+
+
+    ctx.quadraticCurveTo(
+        x,
+        y + height,
+        x,
+        y + height - radius
+    );
+
+
+    ctx.lineTo(
+        x,
+        y + radius
+    );
+
+
+    ctx.quadraticCurveTo(
+        x,
+        y,
+        x + radius,
+        y
+    );
+
+
+    ctx.closePath();
+}
+
+
+function drawStar(
+    cx,
+    cy,
+    outer,
+    inner,
+    points
+) {
+
+    let angle =
+        -Math.PI / 2;
+
+
+    ctx.beginPath();
+
+
+    for (
+        let i = 0;
+        i < points * 2;
+        i++
+    ) {
+
+        const radius =
+            i % 2 === 0
+                ? outer
+                : inner;
+
+
+        const x =
+            cx +
+            Math.cos(angle) *
+            radius;
+
+
+        const y =
+            cy +
+            Math.sin(angle) *
+            radius;
+
+
+        if (
+            i === 0
+        ) {
+
+            ctx.moveTo(
+                x,
+                y
+            );
+
+        } else {
+
+            ctx.lineTo(
+                x,
+                y
+            );
+        }
+
+
+        angle +=
+            Math.PI /
+            points;
+    }
+
+
+    ctx.closePath();
+}
+
+
+/* =========================================================
+   MOBILE CONTROLS
+========================================================= */
+
+document
+    .querySelectorAll(
+        ".mobile-controls button"
+    )
+    .forEach(button => {
+
+        button.addEventListener(
+            "pointerdown",
+            event => {
+
+                event.preventDefault();
+
+
+                requestDirection(
+                    DIR[
+                        button.dataset.dir
+                    ]
+                );
+            }
+        );
+    });
+
+
+/* =========================================================
+   SWIPE
+========================================================= */
+
+canvas.addEventListener(
+    "touchstart",
+    event => {
+
+        if (
+            event.changedTouches.length === 0
+        ) {
+
+            return;
+        }
+
+
+        const touch =
+            event.changedTouches[0];
+
+
+        touchStartX =
+            touch.clientX;
+
+
+        touchStartY =
+            touch.clientY;
+
+    },
+    {
+        passive: true
+    }
+);
+
+
+canvas.addEventListener(
+    "touchend",
+    event => {
+
+        if (
+            state !== STATE.PLAYING ||
+            event.changedTouches.length === 0
+        ) {
+
+            return;
+        }
+
+
+        const touch =
+            event.changedTouches[0];
+
+
+        const dx =
+            touch.clientX -
+            touchStartX;
+
+
+        const dy =
+            touch.clientY -
+            touchStartY;
+
+
+        if (
+            Math.abs(dx) <
+                CONFIG.SWIPE_DISTANCE &&
+            Math.abs(dy) <
+                CONFIG.SWIPE_DISTANCE
+        ) {
+
+            return;
+        }
+
+
+        if (
+            Math.abs(dx) >
+            Math.abs(dy)
+        ) {
+
+            requestDirection(
+                dx > 0
+                    ? DIR.right
+                    : DIR.left
+            );
+
+        } else {
+
+            requestDirection(
+                dy > 0
+                    ? DIR.down
+                    : DIR.up
+            );
+        }
+
+    },
+    {
+        passive: true
+    }
+);
+
+
+/* =========================================================
+   MODES
+========================================================= */
+
+document
+    .querySelectorAll(
+        ".mode"
+    )
+    .forEach(button => {
+
+        button.addEventListener(
+            "click",
+            () => {
+
+                const selected =
+                    button.dataset.mode;
+
+
+                if (
+                    selected === mode
+                ) {
+
+                    return;
+                }
+
+
+                mode =
+                    selected;
+
+
+                document
+                    .querySelectorAll(
+                        ".mode"
+                    )
+                    .forEach(
+                        item =>
+                            item.classList.toggle(
+                                "active",
+                                item === button
+                            )
+                    );
+
+
+                startGame();
+            }
+        );
+    });
+
+
+/* =========================================================
+   SETTINGS
+========================================================= */
+
+document
+    .getElementById(
+        "settingsButton"
+    )
+    .addEventListener(
+        "click",
+        () => {
+
+            document
+                .getElementById(
+                    "settingsModal"
+                )
+                .classList.remove(
+                    "hidden"
+                );
+
+
+            stopLoop();
+        }
+    );
+
+
+document
+    .getElementById(
+        "closeSettings"
+    )
+    .addEventListener(
+        "click",
+        () => {
+
+            document
+                .getElementById(
+                    "settingsModal"
+                )
+                .classList.add(
+                    "hidden"
+                );
+
+
+            if (
+                state === STATE.PLAYING
+            ) {
+
+                startLoop();
+            }
+        }
+    );
+
+
+document
+    .getElementById(
+        "themeSelect"
+    )
+    .addEventListener(
+        "change",
+        event => {
+
+            theme =
+                event.target.value;
+
+
+            setStorage(
+                "snake-theme",
+                theme
+            );
+
+
+            applyTheme();
+
+            render();
+        }
+    );
+
+
+document
+    .getElementById(
+        "soundToggle"
+    )
+    .addEventListener(
+        "click",
+        () => {
+
+            soundEnabled =
+                !soundEnabled;
+
+
+            setStorage(
+                "snake-sound",
+                soundEnabled
+            );
+
+
+            refreshToggles();
+
+
+            if (
+                soundEnabled
+            ) {
+
+                initAudio();
+
+                playTone(
+                    700,
+                    .07
+                );
+            }
+        }
+    );
+
+
+document
+    .getElementById(
+        "effectsToggle"
+    )
+    .addEventListener(
+        "click",
+        () => {
+
+            effectsEnabled =
+                !effectsEnabled;
+
+
+            setStorage(
+                "snake-effects",
+                effectsEnabled
+            );
+
+
+            refreshToggles();
+
+
+            render();
+        }
+    );
+
+
+/* =========================================================
+   MAIN BUTTONS
+========================================================= */
+
+document
+    .getElementById(
+        "startButton"
+    )
+    .addEventListener(
+        "click",
+        startGame
+    );
+
+
+document
+    .getElementById(
+        "restartButton"
+    )
+    .addEventListener(
+        "click",
+        startGame
+    );
+
+
+document
+    .getElementById(
+        "playAgainButton"
+    )
+    .addEventListener(
+        "click",
+        startGame
+    );
+
+
+document
+    .getElementById(
+        "pauseButton"
+    )
+    .addEventListener(
+        "click",
+        togglePause
+    );
+
+
+document
+    .getElementById(
+        "resumeButton"
+    )
+    .addEventListener(
+        "click",
+        resumeGame
+    );
+
+
+/* =========================================================
+   OVERLAY
+========================================================= */
+
+function hideAllOverlays() {
+
+    startOverlay.classList.add(
+        "hidden"
+    );
+
+    pauseOverlay.classList.add(
+        "hidden"
+    );
+
+    gameOverOverlay.classList.add(
+        "hidden"
+    );
+}
+
+
+/* =========================================================
+   INITIALIZE
+========================================================= */
+
+applyTheme();
+
+refreshToggles();
+
+document
+    .getElementById(
+        "themeSelect"
+    )
+    .value =
+        theme;
+
+resizeCanvas();
+
+resetGame();
+
+state =
+    STATE.READY;
+
+statusEl.textContent =
+    "Ready";
+
+</script>
+
+</body>
+</html>
+```
