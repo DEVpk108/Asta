@@ -1,5 +1,5 @@
 from core.module import Module
-from core.intent_router import IntentType
+from core.contracts import IntentType, IntentResult
 
 from .openai_engine import AIEngine
 
@@ -20,14 +20,14 @@ class AIModule(Module):
     # ---------------------------------------------------------
 
     def initialize(self):
-        print("[AI] Initializing...")
+        print("[AI] Initializing...", flush=True)
 
         self.event_bus.subscribe(
             "user_message",
             self.on_user_message,
         )
 
-        print("[AI] Ready")
+        print("[AI] Ready", flush=True)
 
     def shutdown(self):
         self.event_bus.unsubscribe(
@@ -35,10 +35,10 @@ class AIModule(Module):
             self.on_user_message,
         )
 
-        print("[AI] Stopped")
+        print("[AI] Stopped", flush=True)
 
     # ---------------------------------------------------------
-    # User message routing
+    # User message
     # ---------------------------------------------------------
 
     def on_user_message(self, text):
@@ -51,12 +51,18 @@ class AIModule(Module):
             flush=True,
         )
 
-        intent = self.kernel.intent_router.route(
-            text
+        # -----------------------------------------------------
+        # Intent analysis
+        # -----------------------------------------------------
+
+        result: IntentResult = (
+            self.kernel.intent_router.analyze(text)
         )
 
         print(
-            f"[AI] Intent: {intent.value}",
+            f"[AI] Intent: {result.intent.value} "
+            f"(confidence={result.confidence:.2f}, "
+            f"classifier={result.classifier})",
             flush=True,
         )
 
@@ -64,11 +70,11 @@ class AIModule(Module):
         # Direct command
         # -----------------------------------------------------
 
-        if intent == IntentType.COMMAND:
+        if result.intent == IntentType.COMMAND:
 
             self.event_bus.emit(
                 "command_request",
-                text=text,
+                intent=result,
             )
 
             return
@@ -77,30 +83,23 @@ class AIModule(Module):
         # Memory request
         # -----------------------------------------------------
 
-        if intent == IntentType.MEMORY:
+        if result.intent == IntentType.MEMORY:
 
             self.event_bus.emit(
                 "memory_request",
-                text=text,
+                intent=result,
             )
 
             return
 
         # -----------------------------------------------------
-        # Conversation / unknown
-        #
-        # These still go to the LLM for now.
+        # Conversation / task / unknown
         # -----------------------------------------------------
 
         def on_sentence(sentence):
 
             if not sentence:
                 return
-
-            print(
-                f"[AI] Sentence: {sentence}",
-                flush=True,
-            )
 
             self.event_bus.emit(
                 "assistant_sentence",
@@ -118,10 +117,6 @@ class AIModule(Module):
                 flush=True,
             )
             return
-
-        # -----------------------------------------------------
-        # Full response
-        # -----------------------------------------------------
 
         self.event_bus.emit(
             "assistant_response",

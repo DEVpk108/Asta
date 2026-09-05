@@ -1,39 +1,9 @@
-# core/intent_router.py
-
-from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
 
-
-# ============================================================
-# Intent Types
-# ============================================================
-
-class IntentType(Enum):
-    CONVERSATION = "conversation"
-    COMMAND = "command"
-    MEMORY = "memory"
-    UNKNOWN = "unknown"
-
-
-# ============================================================
-# Intent Result
-# ============================================================
-
-@dataclass(frozen=True)
-class IntentResult:
-
-    intent: IntentType
-
-    confidence: float
-
-    normalized_text: str
-
-    entities: dict[str, Any] = field(
-        default_factory=dict
-    )
-
-    classifier: str = "rules"
+from .contracts.intent import (
+    IntentResult,
+    IntentType,
+)
 
 
 # ============================================================
@@ -44,13 +14,13 @@ class IntentRouter:
 
     def route(self, text: str) -> IntentType:
         """
-        Backwards-compatible API.
+        Backward-compatible API.
 
         Existing ASTA code can continue using:
 
             router.route(text)
 
-        while the new architecture uses:
+        New code should prefer:
 
             router.analyze(text)
         """
@@ -58,7 +28,7 @@ class IntentRouter:
         return self.analyze(text).intent
 
     # --------------------------------------------------------
-    # Main analysis entry point
+    # Main analysis
     # --------------------------------------------------------
 
     def analyze(self, text: str) -> IntentResult:
@@ -69,7 +39,6 @@ class IntentRouter:
                 intent=IntentType.UNKNOWN,
                 confidence=0.0,
                 normalized_text="",
-                classifier="rules",
             )
 
         normalized = self._normalize(text)
@@ -96,11 +65,12 @@ class IntentRouter:
                 entities=self._extract_memory_entities(
                     normalized
                 ),
+                requires_memory=True,
                 classifier="rules",
             )
 
         # ----------------------------------------------------
-        # Direct commands
+        # Commands
         # ----------------------------------------------------
 
         command_phrases = (
@@ -125,6 +95,7 @@ class IntentRouter:
                 entities=self._extract_command_entities(
                     normalized
                 ),
+                requires_tools=True,
                 classifier="rules",
             )
 
@@ -146,7 +117,9 @@ class IntentRouter:
             "thanks",
         )
 
-        if normalized.startswith(conversation_phrases):
+        if normalized.startswith(
+            conversation_phrases
+        ):
 
             return IntentResult(
                 intent=IntentType.CONVERSATION,
@@ -156,13 +129,13 @@ class IntentRouter:
             )
 
         # ----------------------------------------------------
-        # Unknown
+        # Unknown for now
         #
         # Future:
         #
         # UNKNOWN
         #    ↓
-        # Small LLM classifier
+        # Small intent model
         #    ↓
         # IntentResult
         # ----------------------------------------------------
@@ -180,13 +153,12 @@ class IntentRouter:
 
     @staticmethod
     def _normalize(text: str) -> str:
-
         return " ".join(
             text.strip().lower().split()
         )
 
     # ========================================================
-    # Entity Extraction
+    # Command entities
     # ========================================================
 
     @staticmethod
@@ -194,57 +166,66 @@ class IntentRouter:
         text: str,
     ) -> dict[str, Any]:
 
-        entities: dict[str, Any] = {}
-
         if text.startswith("open "):
+            return {
+                "action": "open",
+                "target": text[5:].strip(),
+            }
 
-            entities["action"] = "open"
-            entities["target"] = text[5:].strip()
+        if text.startswith("launch "):
+            return {
+                "action": "launch",
+                "target": text[7:].strip(),
+            }
 
-        elif text.startswith("launch "):
+        if text.startswith("start "):
+            return {
+                "action": "start",
+                "target": text[6:].strip(),
+            }
 
-            entities["action"] = "launch"
-            entities["target"] = text[7:].strip()
+        if text.startswith("close "):
+            return {
+                "action": "close",
+                "target": text[6:].strip(),
+            }
 
-        elif text.startswith("start "):
+        if text.startswith("run "):
+            return {
+                "action": "run",
+                "target": text[4:].strip(),
+            }
 
-            entities["action"] = "start"
-            entities["target"] = text[6:].strip()
+        if text.startswith("stop "):
+            return {
+                "action": "stop",
+                "target": text[5:].strip(),
+            }
 
-        elif text.startswith("close "):
-
-            entities["action"] = "close"
-            entities["target"] = text[6:].strip()
-
-        elif text.startswith("run "):
-
-            entities["action"] = "run"
-            entities["target"] = text[4:].strip()
-
-        elif text.startswith("stop "):
-
-            entities["action"] = "stop"
-            entities["target"] = text[5:].strip()
-
-        elif (
+        if (
             text == "screenshot"
             or text.startswith("screenshot ")
             or text.startswith("take a screenshot")
         ):
+            return {
+                "action": "screenshot",
+            }
 
-            entities["action"] = "screenshot"
+        if text == "mute":
+            return {
+                "action": "mute",
+            }
 
-        elif text == "mute":
+        if text == "unmute":
+            return {
+                "action": "unmute",
+            }
 
-            entities["action"] = "mute"
+        return {}
 
-        elif text == "unmute":
-
-            entities["action"] = "unmute"
-
-        return entities
-
-    # --------------------------------------------------------
+    # ========================================================
+    # Memory entities
+    # ========================================================
 
     @staticmethod
     def _extract_memory_entities(
