@@ -9,7 +9,7 @@ class AIEngine:
     def __init__(
         self,
         base_url="http://localhost:1234",
-        model="qwen/qwen3.5-9b",
+        model="nvidia/nemotron-3-nano-4b",
         timeout=120,
     ):
         self.base_url = base_url.rstrip("/")
