@@ -22,7 +22,7 @@ class SpeechModule(Module):
         self._queue = queue.Queue()
         self._running = False
         self._thread = None
-        self.coalesce_window = 0.10
+        self.coalesce_window = 0.08
 
     def initialize(self):
         print("[Speech] Initializing...", flush=True)
