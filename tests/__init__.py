@@ -1,15 +1,7 @@
 """
-=========================================================
-A.S.T.A. Cognitive OS
-Test Package
----------------------------------------------------------
-Contains unit tests and integration tests for
-the A.S.T.A. architecture.
-=========================================================
+A.S.T.A. test package.
+
+Tests should import production modules directly. This package initializer
+intentionally avoids importing helper modules so pytest collection remains
+side-effect free.
 """
-
-from .dummy_speech import DummySpeechModule
-
-__all__ = [
-    "DummySpeechModule",
-]
