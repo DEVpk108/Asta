@@ -40,10 +40,7 @@ def test_reasoning_is_off_by_default_for_voice_latency():
 
 def test_sse_stream_uses_low_latency_chunk_size(monkeypatch):
     events = [
-        {
-            "type": "message.delta",
-            "content": "Hello!",
-        },
+        {"type": "message.delta", "content": "Hello!"},
         {
             "type": "chat.end",
             "result": {
@@ -61,7 +58,7 @@ def test_sse_stream_uses_low_latency_chunk_size(monkeypatch):
     ]
 
     monkeypatch.setattr(
-        "ai.openai_engine.requests.post",
+        "ai.openai_engine.requests.Session.post",
         lambda *args, **kwargs: FakeResponse(events),
     )
 
@@ -69,6 +66,41 @@ def test_sse_stream_uses_low_latency_chunk_size(monkeypatch):
     result = engine.generate_response("hello")
 
     assert result == "Hello!"
+
+
+def test_latency_events_are_tracked(monkeypatch):
+    events = [
+        {"type": "prompt_processing.start"},
+        {"type": "prompt_processing.end"},
+        {"type": "message.start"},
+        {"type": "message.delta", "content": "Hello!"},
+        {
+            "type": "chat.end",
+            "result": {
+                "response_id": "timed-response",
+                "output": [{"type": "message", "content": "Hello!"}],
+                "stats": {
+                    "input_tokens": 4,
+                    "total_output_tokens": 2,
+                    "reasoning_output_tokens": 0,
+                    "tokens_per_second": 60.0,
+                    "time_to_first_token_seconds": 0.12,
+                },
+            },
+        },
+    ]
+
+    monkeypatch.setattr(
+        "ai.openai_engine.requests.Session.post",
+        lambda *args, **kwargs: FakeResponse(events),
+    )
+
+    engine = AIEngine()
+    attempt = engine._request("hello", None, 256)
+
+    assert attempt["prompt_processing_time"] is not None
+    assert attempt["message_start_to_first_delta"] is not None
+    assert attempt["ttft"] == 0.12
 
 
 def test_reasoning_exhaustion_retries_with_larger_budget(monkeypatch):
@@ -111,7 +143,7 @@ def test_reasoning_exhaustion_retries_with_larger_budget(monkeypatch):
         calls.append((url, kwargs))
         return responses.pop(0)
 
-    monkeypatch.setattr("ai.openai_engine.requests.post", fake_post)
+    monkeypatch.setattr("ai.openai_engine.requests.Session.post", fake_post)
 
     engine = AIEngine(max_output_tokens=4, reasoning_retry_tokens=8, reasoning="on")
     spoken = []
