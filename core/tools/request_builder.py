@@ -1,52 +1,39 @@
 from uuid import uuid4
 
 from core.contracts import IntentResult, IntentType, ToolRequest
+from core.tools.selector import ToolSelector
 
 
 class ToolRequestBuilder:
-    """Convert tool-requiring intent results into ToolRequests.
+    """Convert structured intent into executable ToolRequests.
 
-    Intent analysis remains separate from execution. This builder only
-    translates structured intent data into the executable tool contract.
-    It does not inspect natural language or execute tools.
+    The builder does not contain an action-to-tool map. It asks the registry-
+    backed ToolSelector to discover the appropriate capability and then copies
+    the intent entities into the tool contract.
     """
 
-    ACTION_TO_TOOL = {
-        "open": "system.open_application",
-        "close": "system.close_application",
-        "launch": "system.launch_application",
-        "start": "system.start_process",
-        "run": "system.run_command",
-        "stop": "system.stop_process",
-        "screenshot": "vision.screenshot",
-        "mute": "audio.mute",
-        "unmute": "audio.unmute",
-    }
+    def __init__(self, registry):
+        self.selector = ToolSelector(registry)
 
-    @classmethod
-    def build(cls, intent: IntentResult) -> ToolRequest:
+    def build(self, intent: IntentResult) -> ToolRequest:
         if intent.intent != IntentType.COMMAND:
             raise ValueError(
                 "ToolRequest can only be built from a command intent."
             )
 
-        action = intent.entities.get("action")
-        if not isinstance(action, str) or not action:
-            raise ValueError(
-                "Command intent is missing a valid action."
-            )
-
-        tool_name = cls.ACTION_TO_TOOL.get(action)
-        if tool_name is None:
-            raise ValueError(
-                f"No tool mapping exists for command action: {action}"
-            )
+        definition = self.selector.select(intent)
 
         arguments = dict(intent.entities)
         arguments.pop("action", None)
 
         return ToolRequest(
-            tool=tool_name,
+            tool=definition.name,
             arguments=arguments,
             request_id=str(uuid4()),
+            timeout_seconds=definition.timeout_seconds,
+            metadata={
+                "intent": intent.intent.value,
+                "intent_confidence": intent.confidence,
+                "classifier": intent.classifier,
+            },
         )
