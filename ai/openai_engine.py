@@ -21,6 +21,7 @@ class AIEngine:
         self.max_output_tokens = max_output_tokens
         self.reasoning_retry_tokens = reasoning_retry_tokens
         self.reasoning = reasoning
+        self.session = requests.Session()
 
         self.chat_url = f"{self.base_url}/api/v1/chat"
         self.previous_response_id = None
@@ -95,25 +96,27 @@ class AIEngine:
             payload["previous_response_id"] = self.previous_response_id
 
         request_start = time.perf_counter()
-        first_token_time = None
+        response_open = None
+        prompt_start = None
+        prompt_end = None
+        message_start = None
+        first_delta_time = None
         full_text = ""
         sentence_buffer = ""
         final_result = None
 
-        with requests.post(
+        with self.session.post(
             self.chat_url,
             json=payload,
             stream=True,
             timeout=self.timeout,
+            headers={"Accept": "text/event-stream"},
         ) as response:
+            response_open = time.perf_counter()
             response.raise_for_status()
             response.encoding = "utf-8"
             event_type = None
 
-            # requests defaults to a 512-byte streaming chunk. With local
-            # token-level SSE this can delay visible tokens by seconds while
-            # waiting for enough bytes to accumulate. A 1-byte chunk makes
-            # ASTA observe the server stream as soon as the line arrives.
             for raw_line in response.iter_lines(chunk_size=1, decode_unicode=True):
                 if not raw_line:
                     continue
@@ -130,21 +133,48 @@ class AIEngine:
                     continue
 
                 event_name = data.get("type") or event_type
+                now = time.perf_counter()
+
+                if event_name == "prompt_processing.start":
+                    prompt_start = now
+                    continue
+                if event_name == "prompt_processing.end":
+                    prompt_end = now
+                    continue
+                if event_name == "message.start":
+                    message_start = now
+                    continue
+                if event_name == "chat.end":
+                    final_result = data.get("result", {})
+                    continue
                 if event_name != "message.delta":
-                    if event_name == "chat.end":
-                        final_result = data.get("result", {})
                     continue
 
                 delta = self._normalize_text(data.get("content", ""))
                 if not delta:
                     continue
 
-                if first_token_time is None:
-                    first_token_time = time.perf_counter()
+                if first_delta_time is None:
+                    first_delta_time = now
                     print(
-                        f"[AI] TTFT: {first_token_time - request_start:.3f}s",
+                        f"[AI] Client TTFT: {first_delta_time - request_start:.3f}s",
                         flush=True,
                     )
+                    if response_open is not None:
+                        print(
+                            f"[AI] HTTP response start: {response_open - request_start:.3f}s",
+                            flush=True,
+                        )
+                    if prompt_start is not None and prompt_end is not None:
+                        print(
+                            f"[AI] Prompt processing: {prompt_end - prompt_start:.3f}s",
+                            flush=True,
+                        )
+                    if message_start is not None:
+                        print(
+                            f"[AI] Message start → first token: {first_delta_time - message_start:.3f}s",
+                            flush=True,
+                        )
 
                 full_text += delta
                 sentence_buffer += delta
@@ -188,6 +218,19 @@ class AIEngine:
             "ttft": ttft,
             "model_load_time": model_load_time,
             "request_time": total_request_time,
+            "response_open_time": (
+                response_open - request_start if response_open is not None else None
+            ),
+            "prompt_processing_time": (
+                prompt_end - prompt_start
+                if prompt_start is not None and prompt_end is not None
+                else None
+            ),
+            "message_start_to_first_delta": (
+                first_delta_time - message_start
+                if first_delta_time is not None and message_start is not None
+                else None
+            ),
             "exhausted_reasoning": (
                 not full_text.strip()
                 and output_tokens >= max_output_tokens
@@ -233,6 +276,12 @@ class AIEngine:
         print(f"[AI] LM Studio speed: {attempt['tokens_per_second']:.2f} tok/s", flush=True)
         if attempt["ttft"] is not None:
             print(f"[AI] LM Studio reported TTFT: {attempt['ttft']:.3f}s", flush=True)
+        if attempt["response_open_time"] is not None:
+            print(f"[AI] HTTP response start: {attempt['response_open_time']:.3f}s", flush=True)
+        if attempt["prompt_processing_time"] is not None:
+            print(f"[AI] Prompt processing: {attempt['prompt_processing_time']:.3f}s", flush=True)
+        if attempt["message_start_to_first_delta"] is not None:
+            print(f"[AI] Message start → first delta: {attempt['message_start_to_first_delta']:.3f}s", flush=True)
         if attempt["model_load_time"] is not None:
             print(f"[AI] Model load: {attempt['model_load_time']:.3f}s", flush=True)
         print(f"[AI] Response: {attempt['text']}", flush=True)
