@@ -2,7 +2,6 @@ import os
 import shutil
 import subprocess
 import time
-from typing import Any
 
 from core.contracts import ToolDefinition, ToolRequest, ToolResult
 
@@ -35,6 +34,11 @@ class OpenApplicationTool(Tool):
             risk_level="medium",
             requires_confirmation=False,
             timeout_seconds=10.0,
+            metadata={
+                "actions": ["open"],
+                "category": "system",
+                "platforms": ["windows", "macos", "linux"],
+            },
         )
 
     def execute(self, request: ToolRequest) -> ToolResult:
