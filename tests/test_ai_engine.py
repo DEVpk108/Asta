@@ -59,7 +59,7 @@ def test_sse_stream_uses_low_latency_chunk_size(monkeypatch):
 
     monkeypatch.setattr(
         "ai.openai_engine.requests.Session.post",
-        lambda *args, **kwargs: FakeResponse(events),
+        lambda _session, *args, **kwargs: FakeResponse(events),
     )
 
     engine = AIEngine()
@@ -92,7 +92,7 @@ def test_latency_events_are_tracked(monkeypatch):
 
     monkeypatch.setattr(
         "ai.openai_engine.requests.Session.post",
-        lambda *args, **kwargs: FakeResponse(events),
+        lambda _session, *args, **kwargs: FakeResponse(events),
     )
 
     engine = AIEngine()
@@ -139,7 +139,7 @@ def test_reasoning_exhaustion_retries_with_larger_budget(monkeypatch):
 
     responses = [FakeResponse(first_events), FakeResponse(second_events)]
 
-    def fake_post(url, **kwargs):
+    def fake_post(_session, url, **kwargs):
         calls.append((url, kwargs))
         return responses.pop(0)
 
