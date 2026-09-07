@@ -24,8 +24,10 @@ class AIEngine:
         self.session = requests.Session()
 
         self.chat_url = f"{self.base_url}/api/v1/chat"
+        self.models_url = f"{self.base_url}/api/v1/models"
         self.load_url = f"{self.base_url}/api/v1/models/load"
         self.previous_response_id = None
+        self.model_instance_id = None
         self.warmed = False
 
         self.system_prompt = (
@@ -36,26 +38,79 @@ class AIEngine:
             "Sound conversational, helpful, and direct."
         )
 
-    def warmup(self):
-        """Load the selected model and run a tiny throwaway generation.
+    def _find_loaded_instance(self):
+        """Return an already-loaded instance id for the selected model.
 
-        The explicit model load removes first-request model-loading work from a
-        user's interaction. The one-token chat then warms the inference path
-        without creating/storing conversation state.
+        LM Studio exposes loaded instances through GET /api/v1/models. We must
+        check this before calling /models/load because an explicit load creates
+        another model instance instead of simply reusing an existing one.
+        """
+        response = self.session.get(self.models_url, timeout=self.timeout)
+        response.raise_for_status()
+        payload = response.json()
+
+        for model_info in payload.get("models", []):
+            if model_info.get("key") != self.model:
+                continue
+            for instance in model_info.get("loaded_instances", []) or []:
+                instance_id = instance.get("id")
+                if instance_id:
+                    return instance_id
+        return None
+
+    def warmup(self):
+        """Reuse/load the selected model and run a tiny throwaway generation.
+
+        Existing LM Studio model instances are reused. A new instance is
+        explicitly loaded only when the selected model has no loaded instance.
+        If model listing is temporarily unavailable, the chat warm-up is still
+        allowed to proceed because /api/v1/chat automatically loads the model
+        when necessary.
         """
         start = time.perf_counter()
         try:
-            load_start = time.perf_counter()
-            response = self.session.post(
-                self.load_url,
-                json={"model": self.model},
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            print(
-                f"[AI] Model load request: {time.perf_counter() - load_start:.3f}s",
-                flush=True,
-            )
+            instance_id = None
+            try:
+                list_start = time.perf_counter()
+                instance_id = self._find_loaded_instance()
+                print(
+                    f"[AI] Loaded-model check: {time.perf_counter() - list_start:.3f}s",
+                    flush=True,
+                )
+            except requests.RequestException as exc:
+                print(
+                    f"[AI] Loaded-model check unavailable: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+
+            if instance_id:
+                self.model_instance_id = instance_id
+                print(
+                    f"[AI] Reusing loaded model instance: {instance_id}",
+                    flush=True,
+                )
+            else:
+                load_start = time.perf_counter()
+                response = self.session.post(
+                    self.load_url,
+                    json={"model": self.model},
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                try:
+                    load_result = response.json()
+                except ValueError:
+                    load_result = {}
+                self.model_instance_id = load_result.get("instance_id")
+                print(
+                    f"[AI] Model load request: {time.perf_counter() - load_start:.3f}s",
+                    flush=True,
+                )
+                if self.model_instance_id:
+                    print(
+                        f"[AI] Loaded model instance: {self.model_instance_id}",
+                        flush=True,
+                    )
 
             warmup_start = time.perf_counter()
             response = self.session.post(
