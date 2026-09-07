@@ -11,11 +11,7 @@ from core.tools import (
 
 
 def request(tool, arguments=None, request_id="test"):
-    return ToolRequest(
-        tool=tool,
-        arguments=arguments or {},
-        request_id=request_id,
-    )
+    return ToolRequest(tool=tool, arguments=arguments or {}, request_id=request_id)
 
 
 def test_launch_tool_requires_target():
@@ -24,7 +20,7 @@ def test_launch_tool_requires_target():
     assert "target" in result.error
 
 
-def test_start_process_rejects_non_string_arguments(monkeypatch):
+def test_start_process_rejects_non_string_arguments():
     result = StartProcessTool().execute(
         request("system.start_process", {"target": "python", "arguments": [123]})
     )
@@ -32,7 +28,7 @@ def test_start_process_rejects_non_string_arguments(monkeypatch):
     assert "list of strings" in result.error
 
 
-def test_run_command_never_uses_shell(monkeypatch):
+def test_run_command_uses_argument_vector_without_shell(monkeypatch):
     calls = []
 
     def fake_run(command, **kwargs):
@@ -54,7 +50,7 @@ def test_run_command_never_uses_shell(monkeypatch):
 
     assert result.success
     assert calls[0][0] == ["tool", "hello"]
-    assert calls[0][1]["shell"] is False if "shell" in calls[0][1] else True
+    assert calls[0][1].get("shell", False) is False
 
 
 def test_stop_process_rejects_invalid_pid():
@@ -88,16 +84,12 @@ def test_close_application_uses_native_process_control(monkeypatch):
 
 
 def test_screenshot_tool_can_use_injected_backend():
-    result = ScreenshotTool(capture=lambda: "shot.png").execute(
-        request("vision.screenshot")
-    )
+    result = ScreenshotTool(capture=lambda: "shot.png").execute(request("vision.screenshot"))
     assert result.success
     assert result.output == "shot.png"
 
 
 def test_audio_tool_can_use_injected_backend():
-    result = AudioControlTool("mute", handler=lambda: {"muted": True}).execute(
-        request("audio.mute")
-    )
+    result = AudioControlTool("mute", handler=lambda: {"muted": True}).execute(request("audio.mute"))
     assert result.success
     assert result.output["muted"] is True
