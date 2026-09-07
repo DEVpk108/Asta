@@ -4,8 +4,8 @@ from ai.openai_engine import AIEngine
 
 
 class FakeResponse:
-    def __init__(self, events):
-        self.events = events
+    def __init__(self, events=None):
+        self.events = events or []
         self.encoding = None
 
     def __enter__(self):
@@ -16,6 +16,9 @@ class FakeResponse:
 
     def raise_for_status(self):
         return None
+
+    def json(self):
+        return {"ok": True}
 
     def iter_lines(self, chunk_size=None, decode_unicode=True):
         assert chunk_size == 1
@@ -36,6 +39,30 @@ def test_extract_message_text_ignores_reasoning_items():
 def test_reasoning_is_off_by_default_for_voice_latency():
     engine = AIEngine()
     assert engine.reasoning == "off"
+
+
+def test_warmup_loads_model_and_uses_non_stored_chat(monkeypatch):
+    calls = []
+
+    def fake_post(_session, url, **kwargs):
+        calls.append((url, kwargs))
+        return FakeResponse()
+
+    monkeypatch.setattr("ai.openai_engine.requests.Session.post", fake_post)
+
+    engine = AIEngine()
+    assert engine.warmup() is True
+    assert engine.warmed is True
+    assert engine.previous_response_id is None
+
+    assert calls[0][0].endswith("/api/v1/models/load")
+    assert calls[0][1]["json"] == {"model": engine.model}
+
+    assert calls[1][0].endswith("/api/v1/chat")
+    assert calls[1][1]["json"]["store"] is False
+    assert calls[1][1]["json"]["stream"] is False
+    assert calls[1][1]["json"]["max_output_tokens"] == 1
+    assert calls[1][1]["json"]["reasoning"] == "off"
 
 
 def test_sse_stream_uses_low_latency_chunk_size(monkeypatch):
