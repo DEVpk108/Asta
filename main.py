@@ -1,5 +1,15 @@
 from core.kernel import Kernel
-from core.tools import OpenApplicationTool, ToolRuntimeModule
+from core.tools import (
+    AudioControlTool,
+    CloseApplicationTool,
+    LaunchApplicationTool,
+    OpenApplicationTool,
+    RunCommandTool,
+    ScreenshotTool,
+    StartProcessTool,
+    StopProcessTool,
+    ToolRuntimeModule,
+)
 
 from speech.speech_module import SpeechModule
 from hud.hud_module import HUDModule
@@ -17,7 +27,18 @@ def main():
     tools = ToolRuntimeModule(kernel)
 
     # Register capabilities before the runtime starts.
-    kernel.register_tool(OpenApplicationTool())
+    for tool in (
+        OpenApplicationTool(),
+        LaunchApplicationTool(),
+        StartProcessTool(),
+        RunCommandTool(),
+        StopProcessTool(),
+        CloseApplicationTool(),
+        ScreenshotTool(),
+        AudioControlTool("mute"),
+        AudioControlTool("unmute"),
+    ):
+        kernel.register_tool(tool)
 
     print("===== ASTA KERNEL =====")
 
