@@ -15,35 +15,51 @@ class SpeechModule(Module):
             kernel=kernel,
         )
 
-        # Local-first TTS backend. Kokoro uses the local GPU when available.
-        # Its model/inference path is warmed during construction.
+        # Local-first TTS backend. Synthesis and playback are separated so the
+        # next sentence can be prepared while the previous sentence is playing.
         self.engine = KokoroEngine()
 
         self._queue = queue.Queue()
+        self._audio_queue = queue.Queue()
         self._running = False
-        self._thread = None
+        self._synth_thread = None
+        self._play_thread = None
         self.coalesce_window = 0.08
 
     def initialize(self):
         print("[Speech] Initializing...", flush=True)
         self._running = True
         self.event_bus.subscribe("assistant_sentence", self.on_assistant_sentence)
-        self._thread = threading.Thread(
-            target=self._speech_loop,
-            name="SpeechWorker",
+
+        self._synth_thread = threading.Thread(
+            target=self._synthesis_loop,
+            name="SpeechSynthWorker",
             daemon=True,
         )
-        self._thread.start()
+        self._play_thread = threading.Thread(
+            target=self._playback_loop,
+            name="SpeechPlaybackWorker",
+            daemon=True,
+        )
+        self._synth_thread.start()
+        self._play_thread.start()
         print("[Speech] Ready", flush=True)
 
     def shutdown(self):
         print("[Speech] Shutting down...", flush=True)
         self._running = False
         self.event_bus.unsubscribe("assistant_sentence", self.on_assistant_sentence)
+
         self._queue.put(None)
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=2.0)
-        self._thread = None
+        self._audio_queue.put(None)
+
+        if self._synth_thread is not None and self._synth_thread.is_alive():
+            self._synth_thread.join(timeout=2.0)
+        if self._play_thread is not None and self._play_thread.is_alive():
+            self._play_thread.join(timeout=2.0)
+
+        self._synth_thread = None
+        self._play_thread = None
         print("[Speech] Stopped", flush=True)
 
     def on_assistant_sentence(self, text):
@@ -74,7 +90,7 @@ class SpeechModule(Module):
 
         return " ".join(part.strip() for part in parts if part and part.strip())
 
-    def _speech_loop(self):
+    def _synthesis_loop(self):
         while self._running:
             try:
                 text = self._queue.get()
@@ -87,12 +103,14 @@ class SpeechModule(Module):
                     self._queue.task_done()
                     continue
 
-                print(f"[Speech] {text}", flush=True)
+                print(f"[Speech] Synthesizing: {text}", flush=True)
                 try:
-                    self.engine.speak(text)
+                    audio = self.engine.synthesize(text)
+                    if audio is not None:
+                        self._audio_queue.put(audio)
                 except Exception as exc:
                     print(
-                        f"[Speech] Error: {type(exc).__name__}: {exc}",
+                        f"[Speech] Synthesis worker error: {type(exc).__name__}: {exc}",
                         flush=True,
                     )
                 finally:
@@ -100,5 +118,28 @@ class SpeechModule(Module):
             except Exception as exc:
                 print(
                     f"[Speech] Worker error: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+
+    def _playback_loop(self):
+        while self._running:
+            try:
+                audio = self._audio_queue.get()
+                if audio is None:
+                    self._audio_queue.task_done()
+                    break
+
+                try:
+                    self.engine.play(audio)
+                except Exception as exc:
+                    print(
+                        f"[Speech] Playback worker error: {type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
+                finally:
+                    self._audio_queue.task_done()
+            except Exception as exc:
+                print(
+                    f"[Speech] Playback loop error: {type(exc).__name__}: {exc}",
                     flush=True,
                 )
