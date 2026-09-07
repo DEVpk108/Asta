@@ -42,6 +42,12 @@ def test_reasoning_is_off_by_default_for_voice_latency():
     assert engine.reasoning == "off"
 
 
+def test_local_engine_uses_direct_loopback_transport():
+    engine = AIEngine()
+    assert engine.base_url == "http://127.0.0.1:1234"
+    assert engine.session.trust_env is False
+
+
 def test_warmup_loads_model_only_when_not_already_loaded(monkeypatch):
     calls = []
 
