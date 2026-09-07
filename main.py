@@ -1,4 +1,5 @@
 from core.kernel import Kernel
+from core.tools import ToolRuntimeModule
 
 from speech.speech_module import SpeechModule
 from hud.hud_module import HUDModule
@@ -13,6 +14,7 @@ def main():
     hud = HUDModule(kernel)
     ai = AIModule(kernel)
     voice = VoiceModule(kernel)
+    tools = ToolRuntimeModule(kernel)
 
     print("===== ASTA KERNEL =====")
 
@@ -20,6 +22,7 @@ def main():
     kernel.register_module(speech)
     kernel.register_module(hud)
     kernel.register_module(voice)
+    kernel.register_module(tools)
 
     kernel.start()
     kernel.run()
