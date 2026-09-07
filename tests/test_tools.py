@@ -1,4 +1,4 @@
-from core.contracts import ToolRequest
+from core.contracts import ToolDefinition, ToolRequest
 from core.tools import (
     AuthorityPolicy,
     EchoTool,
@@ -70,10 +70,9 @@ def test_tool_argument_validation_returns_failure():
     assert "must be a string" in result.error
 
 
-def test_policy_blocks_risk_above_automatic_limit():
+def test_policy_allows_risk_at_or_below_limit():
     dispatcher = make_dispatcher(RiskLevel.MEDIUM)
 
-    # Echo is LOW, so it remains automatically executable.
     result = dispatcher.dispatch(
         ToolRequest(
             tool="echo",
@@ -83,6 +82,26 @@ def test_policy_blocks_risk_above_automatic_limit():
     )
 
     assert result.success is True
+
+
+def test_policy_blocks_risk_above_limit():
+    policy = AuthorityPolicy(
+        maximum_automatic_risk=RiskLevel.LOW
+    )
+
+    definition = ToolDefinition(
+        name="medium_test",
+        description="Test medium-risk authorization.",
+        input_schema={"type": "object"},
+        risk_level="medium",
+        requires_confirmation=False,
+    )
+
+    authorization = policy.authorize(definition)
+
+    assert authorization.allowed is False
+    assert authorization.requires_confirmation is True
+    assert "exceeds" in authorization.reason
 
 
 def test_registry_rejects_duplicate_tool_names():
