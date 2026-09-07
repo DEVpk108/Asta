@@ -19,14 +19,34 @@ class KokoroEngine:
             repo_id="hexgrad/Kokoro-82M",
         )
 
-        # Kokoro lazily loads voice embeddings on first synthesis. Preload the
-        # selected voice during ASTA startup so the first spoken response does
-        # not pay the download/load penalty.
         voice_start = time.perf_counter()
         self.pipeline.load_voice(self.voice)
+        voice_load_time = time.perf_counter() - voice_start
+
+        # Warm the inference path once. Voice loading alone does not necessarily
+        # initialize all CUDA/model execution paths used by the first synthesis.
+        warmup_start = time.perf_counter()
+        warmup_audio = 0
+        try:
+            for _, _, audio in self.pipeline(
+                "Ready.",
+                voice=self.voice,
+                speed=self.speed,
+                split_pattern=r"(?<=[.!?])\s+",
+            ):
+                if audio is not None:
+                    warmup_audio += int(np.asarray(audio.detach().cpu() if hasattr(audio, "detach") else audio).size)
+        except Exception as exc:
+            print(
+                f"[Speech] Kokoro warmup warning: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
+        warmup_time = time.perf_counter() - warmup_start
         print(
             f"[Speech] Kokoro ready (voice={self.voice}, device={self.device}, "
-            f"voice_load={time.perf_counter() - voice_start:.3f}s)",
+            f"voice_load={voice_load_time:.3f}s, warmup={warmup_time:.3f}s, "
+            f"warmup_audio={warmup_audio} samples)",
             flush=True,
         )
 
@@ -37,7 +57,6 @@ class KokoroEngine:
         start = time.perf_counter()
         first_audio_time = None
         total_samples = 0
-        generated_audio_time = 0.0
         write_time = 0.0
 
         try:
@@ -71,7 +90,6 @@ class KokoroEngine:
                             flush=True,
                         )
 
-                    generated_audio_time += audio.size / 24000.0
                     write_start = time.perf_counter()
                     stream.write(audio)
                     write_time += time.perf_counter() - write_start
