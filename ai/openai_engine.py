@@ -70,6 +70,19 @@ class AIEngine:
             stats.get("model_load_time_seconds"),
         )
 
+    @staticmethod
+    def _normalize_text(text):
+        """Repair common UTF-8-as-Windows-1252 mojibake without touching valid Unicode."""
+        if not isinstance(text, str) or "\u00c3" not in text and "\u00e2" not in text:
+            return text
+
+        try:
+            repaired = text.encode("latin-1").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return text
+
+        return repaired if repaired != text else text
+
     def _request(self, text, on_sentence, max_output_tokens):
         payload = {
             "model": self.model,
@@ -98,6 +111,11 @@ class AIEngine:
             timeout=self.timeout,
         ) as response:
             response.raise_for_status()
+
+            # LM Studio returns UTF-8 JSON/SSE. Requests can otherwise infer a
+            # legacy single-byte encoding when the response omits charset.
+            response.encoding = "utf-8"
+
             event_type = None
 
             for raw_line in response.iter_lines(decode_unicode=True):
@@ -121,7 +139,7 @@ class AIEngine:
                 event_name = data.get("type") or event_type
 
                 if event_name == "message.delta":
-                    delta = data.get("content", "")
+                    delta = self._normalize_text(data.get("content", ""))
                     if not delta:
                         continue
 
@@ -149,19 +167,21 @@ class AIEngine:
                         sentence_buffer = sentence_buffer[sentence_end + 1:]
 
                         if on_sentence and sentence:
-                            on_sentence(sentence)
+                            on_sentence(self._normalize_text(sentence))
 
                 elif event_name == "chat.end":
                     final_result = data.get("result", {})
 
         if final_result:
-            message_text = self._extract_message_text(final_result.get("output"))
+            message_text = self._normalize_text(
+                self._extract_message_text(final_result.get("output"))
+            )
             if not full_text.strip() and message_text:
                 full_text = message_text
                 if on_sentence:
                     on_sentence(full_text)
 
-        remaining = sentence_buffer.strip()
+        remaining = self._normalize_text(sentence_buffer.strip())
         if remaining:
             print(f"[AI] Sentence: {remaining}", flush=True)
             if on_sentence:
@@ -171,7 +191,7 @@ class AIEngine:
         total_request_time = time.perf_counter() - request_start
 
         return {
-            "text": full_text.strip(),
+            "text": self._normalize_text(full_text.strip()),
             "result": final_result,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
