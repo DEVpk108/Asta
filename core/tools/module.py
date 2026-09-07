@@ -1,6 +1,6 @@
 from core.module import Module
 
-from core.contracts import ToolRequest
+from core.contracts import ToolRequest, ToolResult
 
 
 class ToolRuntimeModule(Module):
@@ -53,24 +53,18 @@ class ToolRuntimeModule(Module):
 
     def on_confirmation_response(self, request_id, approved):
         if not isinstance(request_id, str):
-            self._emit_approval_error(
-                request_id,
-                "Invalid request_id.",
-            )
+            self._emit_error(request_id, "Invalid request_id.")
             return
 
         if not isinstance(approved, bool):
-            self._emit_approval_error(
-                request_id,
-                "'approved' must be a boolean.",
-            )
+            self._emit_error(request_id, "'approved' must be a boolean.")
             return
 
         if approved:
             request = self.kernel.approval_manager.approve(request_id)
 
             if request is None:
-                self._emit_approval_error(
+                self._emit_error(
                     request_id,
                     "No pending tool request exists for this request_id.",
                 )
@@ -86,32 +80,30 @@ class ToolRuntimeModule(Module):
         rejected = self.kernel.approval_manager.reject(request_id)
 
         if not rejected:
-            self._emit_approval_error(
+            self._emit_error(
                 request_id,
                 "No pending tool request exists for this request_id.",
             )
             return
 
-        self.event_bus.emit(
-            "tool_result",
-            result={
-                "success": False,
-                "tool": None,
-                "request_id": request_id,
-                "error": "Tool execution rejected by user.",
-            },
+        self._emit_result(
+            ToolResult(
+                success=False,
+                tool="",
+                error="Tool execution rejected by user.",
+                metadata={"request_id": request_id},
+            )
         )
 
     def _emit_result(self, result):
         self.event_bus.emit("tool_result", result=result)
 
-    def _emit_approval_error(self, request_id, error):
-        self.event_bus.emit(
-            "tool_result",
-            result={
-                "success": False,
-                "tool": None,
-                "request_id": request_id,
-                "error": error,
-            },
+    def _emit_error(self, request_id, error):
+        self._emit_result(
+            ToolResult(
+                success=False,
+                tool="",
+                error=error,
+                metadata={"request_id": request_id},
+            )
         )
