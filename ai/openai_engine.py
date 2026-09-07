@@ -74,6 +74,11 @@ class AIEngine:
             return text
         return repaired if repaired != text else text
 
+    @staticmethod
+    def _is_speech_worthy(text):
+        """Keep emoji/punctuation-only fragments out of the TTS queue."""
+        return bool(text and any(char.isalnum() for char in text))
+
     def _request(self, text, on_sentence, max_output_tokens):
         payload = {
             "model": self.model,
@@ -105,7 +110,11 @@ class AIEngine:
             response.encoding = "utf-8"
             event_type = None
 
-            for raw_line in response.iter_lines(decode_unicode=True):
+            # requests defaults to a 512-byte streaming chunk. With local
+            # token-level SSE this can delay visible tokens by seconds while
+            # waiting for enough bytes to accumulate. A 1-byte chunk makes
+            # ASTA observe the server stream as soon as the line arrives.
+            for raw_line in response.iter_lines(chunk_size=1, decode_unicode=True):
                 if not raw_line:
                     continue
                 if raw_line.startswith("event:"):
@@ -151,18 +160,19 @@ class AIEngine:
 
                     sentence = sentence_buffer[:sentence_end + 1].strip()
                     sentence_buffer = sentence_buffer[sentence_end + 1:]
-                    if on_sentence and sentence:
-                        on_sentence(self._normalize_text(sentence))
+                    sentence = self._normalize_text(sentence)
+                    if on_sentence and self._is_speech_worthy(sentence):
+                        on_sentence(sentence)
 
         if final_result:
             message_text = self._normalize_text(self._extract_message_text(final_result.get("output")))
             if not full_text.strip() and message_text:
                 full_text = message_text
-                if on_sentence:
+                if on_sentence and self._is_speech_worthy(full_text):
                     on_sentence(full_text)
 
         remaining = self._normalize_text(sentence_buffer.strip())
-        if remaining and on_sentence:
+        if remaining and on_sentence and self._is_speech_worthy(remaining):
             on_sentence(remaining)
 
         input_tokens, output_tokens, reasoning_tokens, tokens_per_second, ttft, model_load_time = self._output_stats(final_result)
