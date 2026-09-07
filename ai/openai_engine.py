@@ -11,18 +11,18 @@ class AIEngine:
         base_url="http://localhost:1234",
         model="nvidia/nemotron-3-nano-4b",
         timeout=120,
-        max_output_tokens=512,
-        reasoning_retry_tokens=1024,
+        max_output_tokens=256,
+        reasoning_retry_tokens=512,
+        reasoning="off",
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
         self.max_output_tokens = max_output_tokens
         self.reasoning_retry_tokens = reasoning_retry_tokens
+        self.reasoning = reasoning
 
         self.chat_url = f"{self.base_url}/api/v1/chat"
-
-        # LM Studio conversation state.
         self.previous_response_id = None
 
         self.system_prompt = (
@@ -34,29 +34,22 @@ class AIEngine:
         )
 
     def reset_conversation(self):
-        """Start a fresh conversation."""
         self.previous_response_id = None
         print("[AI] Conversation memory reset.", flush=True)
 
     @staticmethod
     def _extract_message_text(output):
-        """Extract visible assistant text from LM Studio v1 output items."""
         if isinstance(output, str):
             return output.strip()
-
         if not isinstance(output, list):
             return ""
-
         parts = []
         for item in output:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") != "message":
+            if not isinstance(item, dict) or item.get("type") != "message":
                 continue
             content = item.get("content", "")
             if isinstance(content, str) and content.strip():
                 parts.append(content.strip())
-
         return "\n".join(parts).strip()
 
     @staticmethod
@@ -67,20 +60,18 @@ class AIEngine:
             stats.get("total_output_tokens", 0),
             stats.get("reasoning_output_tokens", 0),
             stats.get("tokens_per_second", 0.0),
+            stats.get("time_to_first_token_seconds"),
             stats.get("model_load_time_seconds"),
         )
 
     @staticmethod
     def _normalize_text(text):
-        """Repair common UTF-8-as-Windows-1252 mojibake without touching valid Unicode."""
-        if not isinstance(text, str) or "\u00c3" not in text and "\u00e2" not in text:
+        if not isinstance(text, str) or ("\u00c3" not in text and "\u00e2" not in text):
             return text
-
         try:
             repaired = text.encode("latin-1").decode("utf-8")
         except (UnicodeEncodeError, UnicodeDecodeError):
             return text
-
         return repaired if repaired != text else text
 
     def _request(self, text, on_sentence, max_output_tokens):
@@ -90,13 +81,13 @@ class AIEngine:
             "stream": True,
             "store": True,
             "max_output_tokens": max_output_tokens,
+            "reasoning": self.reasoning,
         }
 
-        conversation_id = self.previous_response_id
-        if conversation_id is None:
+        if self.previous_response_id is None:
             payload["system_prompt"] = self.system_prompt
         else:
-            payload["previous_response_id"] = conversation_id
+            payload["previous_response_id"] = self.previous_response_id
 
         request_start = time.perf_counter()
         first_token_time = None
@@ -111,83 +102,70 @@ class AIEngine:
             timeout=self.timeout,
         ) as response:
             response.raise_for_status()
-
-            # LM Studio returns UTF-8 JSON/SSE. Requests can otherwise infer a
-            # legacy single-byte encoding when the response omits charset.
             response.encoding = "utf-8"
-
             event_type = None
 
             for raw_line in response.iter_lines(decode_unicode=True):
                 if not raw_line:
                     continue
-
                 if raw_line.startswith("event:"):
                     event_type = raw_line[len("event:"):].strip()
                     continue
-
                 if not raw_line.startswith("data:"):
                     continue
 
                 data_text = raw_line[len("data:"):].strip()
-
                 try:
                     data = json.loads(data_text)
                 except json.JSONDecodeError:
                     continue
 
                 event_name = data.get("type") or event_type
+                if event_name != "message.delta":
+                    if event_name == "chat.end":
+                        final_result = data.get("result", {})
+                    continue
 
-                if event_name == "message.delta":
-                    delta = self._normalize_text(data.get("content", ""))
-                    if not delta:
-                        continue
+                delta = self._normalize_text(data.get("content", ""))
+                if not delta:
+                    continue
 
-                    if first_token_time is None:
-                        first_token_time = time.perf_counter()
-                        ttft = first_token_time - request_start
-                        print(f"[AI] TTFT: {ttft:.3f}s", flush=True)
+                if first_token_time is None:
+                    first_token_time = time.perf_counter()
+                    print(
+                        f"[AI] TTFT: {first_token_time - request_start:.3f}s",
+                        flush=True,
+                    )
 
-                    full_text += delta
-                    sentence_buffer += delta
+                full_text += delta
+                sentence_buffer += delta
 
-                    while True:
-                        sentence_end = None
-                        for punctuation in (".", "!", "?"):
-                            index = sentence_buffer.find(punctuation)
-                            if index != -1 and (
-                                sentence_end is None or index < sentence_end
-                            ):
-                                sentence_end = index
+                while True:
+                    sentence_end = None
+                    for punctuation in (".", "!", "?"):
+                        index = sentence_buffer.find(punctuation)
+                        if index != -1 and (sentence_end is None or index < sentence_end):
+                            sentence_end = index
+                    if sentence_end is None:
+                        break
 
-                        if sentence_end is None:
-                            break
-
-                        sentence = sentence_buffer[:sentence_end + 1].strip()
-                        sentence_buffer = sentence_buffer[sentence_end + 1:]
-
-                        if on_sentence and sentence:
-                            on_sentence(self._normalize_text(sentence))
-
-                elif event_name == "chat.end":
-                    final_result = data.get("result", {})
+                    sentence = sentence_buffer[:sentence_end + 1].strip()
+                    sentence_buffer = sentence_buffer[sentence_end + 1:]
+                    if on_sentence and sentence:
+                        on_sentence(self._normalize_text(sentence))
 
         if final_result:
-            message_text = self._normalize_text(
-                self._extract_message_text(final_result.get("output"))
-            )
+            message_text = self._normalize_text(self._extract_message_text(final_result.get("output")))
             if not full_text.strip() and message_text:
                 full_text = message_text
                 if on_sentence:
                     on_sentence(full_text)
 
         remaining = self._normalize_text(sentence_buffer.strip())
-        if remaining:
-            print(f"[AI] Sentence: {remaining}", flush=True)
-            if on_sentence:
-                on_sentence(remaining)
+        if remaining and on_sentence:
+            on_sentence(remaining)
 
-        input_tokens, output_tokens, reasoning_tokens, tokens_per_second, model_load_time = self._output_stats(final_result)
+        input_tokens, output_tokens, reasoning_tokens, tokens_per_second, ttft, model_load_time = self._output_stats(final_result)
         total_request_time = time.perf_counter() - request_start
 
         return {
@@ -197,6 +175,7 @@ class AIEngine:
             "output_tokens": output_tokens,
             "reasoning_tokens": reasoning_tokens,
             "tokens_per_second": tokens_per_second,
+            "ttft": ttft,
             "model_load_time": model_load_time,
             "request_time": total_request_time,
             "exhausted_reasoning": (
@@ -211,44 +190,40 @@ class AIEngine:
             return ""
 
         request_start = time.perf_counter()
-
         try:
             attempt = self._request(text, on_sentence, self.max_output_tokens)
-
             if attempt["exhausted_reasoning"] and self.reasoning_retry_tokens > self.max_output_tokens:
                 print(
-                    f"[AI] Reasoning budget exhausted; retrying with {self.reasoning_retry_tokens} output tokens.",
+                    f"[AI] Output budget exhausted; retrying with {self.reasoning_retry_tokens} output tokens.",
                     flush=True,
                 )
                 attempt = self._request(text, on_sentence, self.reasoning_retry_tokens)
-
         except requests.RequestException as exc:
-            elapsed = time.perf_counter() - request_start
-            print(f"[AI] Connection error after {elapsed:.2f}s: {exc}", flush=True)
+            print(
+                f"[AI] Connection error after {time.perf_counter() - request_start:.2f}s: {exc}",
+                flush=True,
+            )
             return ""
         except Exception as exc:
-            elapsed = time.perf_counter() - request_start
             print(
-                f"[AI] Error after {elapsed:.2f}s: {type(exc).__name__}: {exc}",
+                f"[AI] Error after {time.perf_counter() - request_start:.2f}s: {type(exc).__name__}: {exc}",
                 flush=True,
             )
             return ""
 
         final_result = attempt["result"]
-        if final_result:
-            response_id = final_result.get("response_id")
-            if response_id:
-                self.previous_response_id = response_id
-                print("[AI] Conversation state updated.", flush=True)
+        if final_result and final_result.get("response_id"):
+            self.previous_response_id = final_result["response_id"]
+            print("[AI] Conversation state updated.", flush=True)
 
         print(f"[AI] Request: {attempt['request_time']:.2f}s", flush=True)
         print(f"[AI] Input tokens: {attempt['input_tokens']}", flush=True)
         print(f"[AI] Output tokens: {attempt['output_tokens']}", flush=True)
         print(f"[AI] Reasoning tokens: {attempt['reasoning_tokens']}", flush=True)
         print(f"[AI] LM Studio speed: {attempt['tokens_per_second']:.2f} tok/s", flush=True)
-
+        if attempt["ttft"] is not None:
+            print(f"[AI] LM Studio reported TTFT: {attempt['ttft']:.3f}s", flush=True)
         if attempt["model_load_time"] is not None:
             print(f"[AI] Model load: {attempt['model_load_time']:.3f}s", flush=True)
-
         print(f"[AI] Response: {attempt['text']}", flush=True)
         return attempt["text"]
