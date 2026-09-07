@@ -19,7 +19,9 @@ class AIModule(Module):
 
     def initialize(self):
         print("[AI] Initializing...", flush=True)
-        self.engine.warmup()
+        warmup = getattr(self.engine, "warmup", None)
+        if callable(warmup):
+            warmup()
         self.event_bus.subscribe("user_message", self.on_user_message)
         self.event_bus.subscribe("tool_result", self.on_tool_result)
         self.event_bus.subscribe("tool_confirmation_required", self.on_tool_confirmation_required)
