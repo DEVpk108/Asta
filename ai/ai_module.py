@@ -19,6 +19,7 @@ class AIModule(Module):
 
     def initialize(self):
         print("[AI] Initializing...", flush=True)
+        self.engine.warmup()
         self.event_bus.subscribe("user_message", self.on_user_message)
         self.event_bus.subscribe("tool_result", self.on_tool_result)
         self.event_bus.subscribe("tool_confirmation_required", self.on_tool_confirmation_required)
@@ -77,9 +78,6 @@ class AIModule(Module):
     def _emit_assistant_text(self, text):
         if not text:
             return
-        # HUD consumes assistant_response; Speech consumes assistant_sentence.
-        # Tool responses are already complete sentences, so emit both without
-        # relying on the LLM streaming path.
         self.event_bus.emit("assistant_sentence", text=text)
         self.event_bus.emit("assistant_response", text=text)
 
