@@ -11,10 +11,14 @@ class AIEngine:
         base_url="http://localhost:1234",
         model="nvidia/nemotron-3-nano-4b",
         timeout=120,
+        max_output_tokens=512,
+        reasoning_retry_tokens=1024,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self.max_output_tokens = max_output_tokens
+        self.reasoning_retry_tokens = reasoning_retry_tokens
 
         self.chat_url = f"{self.base_url}/api/v1/chat"
 
@@ -55,24 +59,31 @@ class AIEngine:
 
         return "\n".join(parts).strip()
 
-    def generate_response(self, text, on_sentence=None):
-        if not text:
-            return ""
+    @staticmethod
+    def _output_stats(final_result):
+        stats = final_result.get("stats", {}) if final_result else {}
+        return (
+            stats.get("input_tokens", 0),
+            stats.get("total_output_tokens", 0),
+            stats.get("reasoning_output_tokens", 0),
+            stats.get("tokens_per_second", 0.0),
+            stats.get("model_load_time_seconds"),
+        )
 
+    def _request(self, text, on_sentence, max_output_tokens):
         payload = {
             "model": self.model,
             "input": text,
             "stream": True,
             "store": True,
-            # Nemotron is reasoning-heavy, so leave room for both reasoning
-            # and the visible assistant message.
-            "max_output_tokens": 256,
+            "max_output_tokens": max_output_tokens,
         }
 
-        if self.previous_response_id is None:
+        conversation_id = self.previous_response_id
+        if conversation_id is None:
             payload["system_prompt"] = self.system_prompt
         else:
-            payload["previous_response_id"] = self.previous_response_id
+            payload["previous_response_id"] = conversation_id
 
         request_start = time.perf_counter()
         first_token_time = None
@@ -80,69 +91,116 @@ class AIEngine:
         sentence_buffer = ""
         final_result = None
 
+        with requests.post(
+            self.chat_url,
+            json=payload,
+            stream=True,
+            timeout=self.timeout,
+        ) as response:
+            response.raise_for_status()
+            event_type = None
+
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if not raw_line:
+                    continue
+
+                if raw_line.startswith("event:"):
+                    event_type = raw_line[len("event:"):].strip()
+                    continue
+
+                if not raw_line.startswith("data:"):
+                    continue
+
+                data_text = raw_line[len("data:"):].strip()
+
+                try:
+                    data = json.loads(data_text)
+                except json.JSONDecodeError:
+                    continue
+
+                event_name = data.get("type") or event_type
+
+                if event_name == "message.delta":
+                    delta = data.get("content", "")
+                    if not delta:
+                        continue
+
+                    if first_token_time is None:
+                        first_token_time = time.perf_counter()
+                        ttft = first_token_time - request_start
+                        print(f"[AI] TTFT: {ttft:.3f}s", flush=True)
+
+                    full_text += delta
+                    sentence_buffer += delta
+
+                    while True:
+                        sentence_end = None
+                        for punctuation in (".", "!", "?"):
+                            index = sentence_buffer.find(punctuation)
+                            if index != -1 and (
+                                sentence_end is None or index < sentence_end
+                            ):
+                                sentence_end = index
+
+                        if sentence_end is None:
+                            break
+
+                        sentence = sentence_buffer[:sentence_end + 1].strip()
+                        sentence_buffer = sentence_buffer[sentence_end + 1:]
+
+                        if on_sentence and sentence:
+                            on_sentence(sentence)
+
+                elif event_name == "chat.end":
+                    final_result = data.get("result", {})
+
+        if final_result:
+            message_text = self._extract_message_text(final_result.get("output"))
+            if not full_text.strip() and message_text:
+                full_text = message_text
+                if on_sentence:
+                    on_sentence(full_text)
+
+        remaining = sentence_buffer.strip()
+        if remaining:
+            print(f"[AI] Sentence: {remaining}", flush=True)
+            if on_sentence:
+                on_sentence(remaining)
+
+        input_tokens, output_tokens, reasoning_tokens, tokens_per_second, model_load_time = self._output_stats(final_result)
+        total_request_time = time.perf_counter() - request_start
+
+        return {
+            "text": full_text.strip(),
+            "result": final_result,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "reasoning_tokens": reasoning_tokens,
+            "tokens_per_second": tokens_per_second,
+            "model_load_time": model_load_time,
+            "request_time": total_request_time,
+            "exhausted_reasoning": (
+                not full_text.strip()
+                and output_tokens >= max_output_tokens
+                and reasoning_tokens >= max_output_tokens
+            ),
+        }
+
+    def generate_response(self, text, on_sentence=None):
+        if not text:
+            return ""
+
+        request_start = time.perf_counter()
+
         try:
-            with requests.post(
-                self.chat_url,
-                json=payload,
-                stream=True,
-                timeout=self.timeout,
-            ) as response:
-                response.raise_for_status()
-                event_type = None
+            attempt = self._request(text, on_sentence, self.max_output_tokens)
 
-                for raw_line in response.iter_lines(decode_unicode=True):
-                    if not raw_line:
-                        continue
-
-                    if raw_line.startswith("event:"):
-                        event_type = raw_line[len("event:"):].strip()
-                        continue
-
-                    if not raw_line.startswith("data:"):
-                        continue
-
-                    data_text = raw_line[len("data:"):].strip()
-
-                    try:
-                        data = json.loads(data_text)
-                    except json.JSONDecodeError:
-                        continue
-
-                    event_name = data.get("type") or event_type
-
-                    if event_name == "message.delta":
-                        delta = data.get("content", "")
-                        if not delta:
-                            continue
-
-                        if first_token_time is None:
-                            first_token_time = time.perf_counter()
-                            ttft = first_token_time - request_start
-                            print(f"[AI] TTFT: {ttft:.3f}s", flush=True)
-
-                        full_text += delta
-                        sentence_buffer += delta
-
-                        while True:
-                            sentence_end = None
-                            for punctuation in (".", "!", "?"):
-                                index = sentence_buffer.find(punctuation)
-                                if index != -1 and (
-                                    sentence_end is None or index < sentence_end
-                                ):
-                                    sentence_end = index
-
-                            if sentence_end is None:
-                                break
-
-                            sentence = sentence_buffer[:sentence_end + 1].strip()
-                            sentence_buffer = sentence_buffer[sentence_end + 1:]
-
-                            if on_sentence and sentence:
-                                on_sentence(sentence)
-
-                    elif event_name == "chat.end":
-                        final_result = data.get("result", {})
+            if attempt["exhausted_reasoning"] and self.reasoning_retry_tokens > self.max_output_tokens:
+                print(
+                    f"[AI] Reasoning budget exhausted; retrying with {self.reasoning_retry_tokens} output tokens.",
+                    flush=True,
+                )
+                attempt = self._request(text, on_sentence, self.reasoning_retry_tokens)
 
         except requests.RequestException as exc:
             elapsed = time.perf_counter() - request_start
@@ -156,43 +214,21 @@ class AIEngine:
             )
             return ""
 
+        final_result = attempt["result"]
         if final_result:
             response_id = final_result.get("response_id")
             if response_id:
                 self.previous_response_id = response_id
                 print("[AI] Conversation state updated.", flush=True)
 
-            # Some reasoning models may spend the streaming budget on
-            # reasoning and emit the visible message only in chat.end.
-            if not full_text.strip():
-                full_text = self._extract_message_text(final_result.get("output"))
-                if full_text and on_sentence:
-                    # Emit the final message as one sentence/chunk when no
-                    # message.delta events were received.
-                    on_sentence(full_text)
+        print(f"[AI] Request: {attempt['request_time']:.2f}s", flush=True)
+        print(f"[AI] Input tokens: {attempt['input_tokens']}", flush=True)
+        print(f"[AI] Output tokens: {attempt['output_tokens']}", flush=True)
+        print(f"[AI] Reasoning tokens: {attempt['reasoning_tokens']}", flush=True)
+        print(f"[AI] LM Studio speed: {attempt['tokens_per_second']:.2f} tok/s", flush=True)
 
-        remaining = sentence_buffer.strip()
-        if remaining:
-            print(f"[AI] Sentence: {remaining}", flush=True)
-            if on_sentence:
-                on_sentence(remaining)
+        if attempt["model_load_time"] is not None:
+            print(f"[AI] Model load: {attempt['model_load_time']:.3f}s", flush=True)
 
-        stats = final_result.get("stats", {}) if final_result else {}
-        input_tokens = stats.get("input_tokens", 0)
-        output_tokens = stats.get("total_output_tokens", 0)
-        reasoning_tokens = stats.get("reasoning_output_tokens", 0)
-        tokens_per_second = stats.get("tokens_per_second", 0.0)
-        model_load_time = stats.get("model_load_time_seconds")
-
-        total_request_time = time.perf_counter() - request_start
-        print(f"[AI] Request: {total_request_time:.2f}s", flush=True)
-        print(f"[AI] Input tokens: {input_tokens}", flush=True)
-        print(f"[AI] Output tokens: {output_tokens}", flush=True)
-        print(f"[AI] Reasoning tokens: {reasoning_tokens}", flush=True)
-        print(f"[AI] LM Studio speed: {tokens_per_second:.2f} tok/s", flush=True)
-
-        if model_load_time is not None:
-            print(f"[AI] Model load: {model_load_time:.3f}s", flush=True)
-
-        print(f"[AI] Response: {full_text.strip()}", flush=True)
-        return full_text.strip()
+        print(f"[AI] Response: {attempt['text']}", flush=True)
+        return attempt["text"]
