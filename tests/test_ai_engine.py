@@ -6,6 +6,7 @@ from ai.openai_engine import AIEngine
 class FakeResponse:
     def __init__(self, events):
         self.events = events
+        self.encoding = None
 
     def __enter__(self):
         return self
@@ -29,6 +30,11 @@ def test_extract_message_text_ignores_reasoning_items():
     ]
 
     assert AIEngine._extract_message_text(output) == "Hello ASTA!"
+
+
+def test_reasoning_is_off_by_default_for_voice_latency():
+    engine = AIEngine()
+    assert engine.reasoning == "off"
 
 
 def test_reasoning_exhaustion_retries_with_larger_budget(monkeypatch):
@@ -73,7 +79,7 @@ def test_reasoning_exhaustion_retries_with_larger_budget(monkeypatch):
 
     monkeypatch.setattr("ai.openai_engine.requests.post", fake_post)
 
-    engine = AIEngine(max_output_tokens=4, reasoning_retry_tokens=8)
+    engine = AIEngine(max_output_tokens=4, reasoning_retry_tokens=8, reasoning="on")
     spoken = []
     result = engine.generate_response("hello", on_sentence=spoken.append)
 
@@ -82,4 +88,5 @@ def test_reasoning_exhaustion_retries_with_larger_budget(monkeypatch):
     assert len(calls) == 2
     assert calls[0][1]["json"]["max_output_tokens"] == 4
     assert calls[1][1]["json"]["max_output_tokens"] == 8
+    assert calls[0][1]["json"]["reasoning"] == "on"
     assert engine.previous_response_id == "successful-response"
