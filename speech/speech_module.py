@@ -1,5 +1,6 @@
 import queue
 import threading
+import time
 
 from core.module import Module
 from .kokoro_engine import KokoroEngine
@@ -15,11 +16,13 @@ class SpeechModule(Module):
         )
 
         # Local-first TTS backend. Kokoro uses the local GPU when available.
+        # Its model/inference path is warmed during construction.
         self.engine = KokoroEngine()
 
         self._queue = queue.Queue()
         self._running = False
         self._thread = None
+        self.coalesce_window = 0.10
 
     def initialize(self):
         print("[Speech] Initializing...", flush=True)
@@ -47,12 +50,43 @@ class SpeechModule(Module):
         if text:
             self._queue.put(text)
 
+    def _get_coalesced_text(self, first_text):
+        """Combine chunks that are already waiting, with a tiny debounce window.
+
+        This prevents very short first sentences such as "Of course!" from being
+        synthesized separately when the next sentence arrives immediately after it.
+        """
+        parts = [first_text]
+        deadline = time.monotonic() + self.coalesce_window
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                next_text = self._queue.get(timeout=remaining)
+            except queue.Empty:
+                break
+            if next_text is None:
+                self._queue.put(None)
+                break
+            parts.append(next_text)
+
+        return " ".join(part.strip() for part in parts if part and part.strip())
+
     def _speech_loop(self):
         while self._running:
             try:
                 text = self._queue.get()
                 if text is None:
+                    self._queue.task_done()
                     break
+
+                text = self._get_coalesced_text(text)
+                if not text:
+                    self._queue.task_done()
+                    continue
+
                 print(f"[Speech] {text}", flush=True)
                 try:
                     self.engine.speak(text)
