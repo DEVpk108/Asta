@@ -2,23 +2,23 @@ import threading
 
 from .event_bus import EventBus
 from .intent_router import IntentRouter
-from .tools import AuthorityPolicy, ToolDispatcher, ToolRegistry
+from .tools import (
+    ApprovalManager,
+    AuthorityPolicy,
+    ToolDispatcher,
+    ToolRegistry,
+)
 
 
 class Kernel:
-    """Central runtime for A.S.T.A. infrastructure.
-
-    The kernel owns shared infrastructure and lifecycle. It does not
-    interpret natural-language requests or implement tool-specific logic.
-    """
+    """Central runtime for A.S.T.A. infrastructure."""
 
     def __init__(self, *, maximum_automatic_risk=None):
         self.event_bus = EventBus()
         self.intent_router = IntentRouter()
 
-        # Tool infrastructure is owned by the kernel so every module can
-        # access the same registry/dispatcher without creating its own.
         self.tool_registry = ToolRegistry()
+        self.approval_manager = ApprovalManager()
 
         policy = (
             AuthorityPolicy()
@@ -45,29 +45,21 @@ class Kernel:
     def register_module(self, module):
         if module not in self.modules:
             self.modules.append(module)
-            print(
-                f"[Kernel] Registered {module.name}"
-            )
+            print(f"[Kernel] Registered {module.name}")
 
     # ---------------------------------------------------------
     # Tool management
     # ---------------------------------------------------------
 
     def register_tool(self, tool):
-        """Register a capability with the shared tool registry."""
         self.tool_registry.register(tool)
-        print(
-            f"[Kernel] Registered tool {tool.definition.name}"
-        )
+        print(f"[Kernel] Registered tool {tool.definition.name}")
 
     def unregister_tool(self, name: str) -> bool:
-        """Remove a capability from the shared tool registry."""
         removed = self.tool_registry.unregister(name)
 
         if removed:
-            print(
-                f"[Kernel] Unregistered tool {name}"
-            )
+            print(f"[Kernel] Unregistered tool {name}")
 
         return removed
 
@@ -79,10 +71,7 @@ class Kernel:
         print("[Kernel] Starting...")
 
         for module in self.modules:
-            print(
-                f"[Kernel] Initializing "
-                f"{module.name}..."
-            )
+            print(f"[Kernel] Initializing {module.name}...")
             module.initialize()
 
         self._running = True
@@ -92,9 +81,7 @@ class Kernel:
 
     def run(self):
         if not self._running:
-            raise RuntimeError(
-               "Kernel must be started before run()."
-            )
+            raise RuntimeError("Kernel must be started before run().")
 
         try:
             while self._running:
@@ -114,14 +101,12 @@ class Kernel:
 
         self._running = False
         self._stop_event.set()
+        self.approval_manager.clear()
 
         for module in reversed(self.modules):
             try:
                 module.shutdown()
             except Exception as exc:
-                print(
-                    f"[Kernel] Error shutting down "
-                    f"{module.name}: {exc}"
-                )
+                print(f"[Kernel] Error shutting down {module.name}: {exc}")
 
         print("[Kernel] Stopped")

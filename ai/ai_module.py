@@ -1,5 +1,6 @@
 from core.module import Module
-from core.contracts import IntentType, IntentResult
+from core.contracts import IntentType, IntentResult, ToolResult
+from core.tools import ToolRequestBuilder
 
 from .openai_engine import AIEngine
 
@@ -14,6 +15,7 @@ class AIModule(Module):
         )
 
         self.engine = AIEngine()
+        self.tool_request_builder = ToolRequestBuilder()
 
     # ---------------------------------------------------------
     # Lifecycle
@@ -22,17 +24,21 @@ class AIModule(Module):
     def initialize(self):
         print("[AI] Initializing...", flush=True)
 
+        self.event_bus.subscribe("user_message", self.on_user_message)
+        self.event_bus.subscribe("tool_result", self.on_tool_result)
         self.event_bus.subscribe(
-            "user_message",
-            self.on_user_message,
+            "tool_confirmation_required",
+            self.on_tool_confirmation_required,
         )
 
         print("[AI] Ready", flush=True)
 
     def shutdown(self):
+        self.event_bus.unsubscribe("user_message", self.on_user_message)
+        self.event_bus.unsubscribe("tool_result", self.on_tool_result)
         self.event_bus.unsubscribe(
-            "user_message",
-            self.on_user_message,
+            "tool_confirmation_required",
+            self.on_tool_confirmation_required,
         )
 
         print("[AI] Stopped", flush=True)
@@ -42,22 +48,12 @@ class AIModule(Module):
     # ---------------------------------------------------------
 
     def on_user_message(self, text):
-
         if not text:
             return
 
-        print(
-            f"[AI] User: {text}",
-            flush=True,
-        )
+        print(f"[AI] User: {text}", flush=True)
 
-        # -----------------------------------------------------
-        # Intent analysis
-        # -----------------------------------------------------
-
-        result: IntentResult = (
-            self.kernel.intent_router.analyze(text)
-        )
+        result: IntentResult = self.kernel.intent_router.analyze(text)
 
         print(
             f"[AI] Intent: {result.intent.value} "
@@ -66,45 +62,84 @@ class AIModule(Module):
             flush=True,
         )
 
-        # -----------------------------------------------------
-        # Direct command
-        # -----------------------------------------------------
-
         if result.intent == IntentType.COMMAND:
-
-            self.event_bus.emit(
-                "command_request",
-                intent=result,
-            )
-
+            self._handle_command_intent(result)
             return
-
-        # -----------------------------------------------------
-        # Memory request
-        # -----------------------------------------------------
 
         if result.intent == IntentType.MEMORY:
-
-            self.event_bus.emit(
-                "memory_request",
-                intent=result,
-            )
-
+            self.event_bus.emit("memory_request", intent=result)
             return
 
-        # -----------------------------------------------------
-        # Conversation / task / unknown
-        # -----------------------------------------------------
+        self._generate_response(text)
 
-        def on_sentence(sentence):
+    # ---------------------------------------------------------
+    # Tool request flow
+    # ---------------------------------------------------------
 
-            if not sentence:
-                return
-
+    def _handle_command_intent(self, intent: IntentResult):
+        try:
+            request = self.tool_request_builder.build(intent)
+        except ValueError as exc:
+            print(f"[AI] Unable to build tool request: {exc}", flush=True)
             self.event_bus.emit(
-                "assistant_sentence",
-                text=sentence,
+                "assistant_response",
+                text=f"I couldn't map that command to a tool: {exc}",
             )
+            return
+
+        print(
+            f"[AI] Tool request: {request.tool} "
+            f"(request_id={request.request_id})",
+            flush=True,
+        )
+
+        self.event_bus.emit("tool_request", request=request)
+
+    def on_tool_confirmation_required(self, request, reason):
+        target = request.arguments.get("target")
+        if target:
+            text = f"I need your confirmation before opening {target}."
+        else:
+            text = "I need your confirmation before performing that action."
+
+        print(f"[AI] Approval required: {reason}", flush=True)
+        self.event_bus.emit("assistant_response", text=text)
+
+    def on_tool_result(self, result):
+        if not isinstance(result, ToolResult):
+            return
+
+        if result.success:
+            text = self._format_tool_success(result)
+        else:
+            text = self._format_tool_failure(result)
+
+        self.event_bus.emit("assistant_response", text=text)
+
+    @staticmethod
+    def _format_tool_success(result: ToolResult) -> str:
+        if result.tool == "system.open_application" and isinstance(result.output, dict):
+            return f"Opened {result.output.get('target', 'the requested target')}."
+
+        if result.output is None:
+            return f"{result.tool} completed successfully."
+
+        return str(result.output)
+
+    @staticmethod
+    def _format_tool_failure(result: ToolResult) -> str:
+        if result.error:
+            return f"I couldn't complete that action: {result.error}"
+        return "I couldn't complete that action."
+
+    # ---------------------------------------------------------
+    # LLM response
+    # ---------------------------------------------------------
+
+    def _generate_response(self, text):
+        def on_sentence(sentence):
+            if sentence:
+                self.event_bus.emit("assistant_sentence", text=sentence)
 
         response = self.engine.generate_response(
             text,
@@ -112,13 +147,7 @@ class AIModule(Module):
         )
 
         if not response:
-            print(
-                "[AI] No response generated.",
-                flush=True,
-            )
+            print("[AI] No response generated.", flush=True)
             return
 
-        self.event_bus.emit(
-            "assistant_response",
-            text=response,
-        )
+        self.event_bus.emit("assistant_response", text=response)

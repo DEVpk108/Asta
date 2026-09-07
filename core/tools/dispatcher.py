@@ -16,16 +16,7 @@ from core.tools.registry import (
 
 
 class ToolDispatcher:
-    """
-    Executes authorized ToolRequests through registered tools.
-
-    Responsibilities:
-        - validate tool existence
-        - authorize execution
-        - invoke the tool
-        - measure execution time
-        - normalize failures
-    """
+    """Execute ToolRequests through registered tools and policy."""
 
     def __init__(
         self,
@@ -33,48 +24,36 @@ class ToolDispatcher:
         policy: AuthorityPolicy | None = None,
     ):
         self.registry = registry
-
-        self.policy = (
-            policy
-            if policy is not None
-            else AuthorityPolicy()
-        )
+        self.policy = policy if policy is not None else AuthorityPolicy()
 
     def dispatch(
         self,
         request: ToolRequest,
+        *,
+        confirmed: bool = False,
     ) -> ToolResult:
+        """Dispatch one request.
 
+        ``confirmed=True`` is only intended for requests that have already
+        passed through A.S.T.A.'s ApprovalManager.
+        """
         start = time.perf_counter()
 
         try:
-            tool = self.registry.get(
-                request.tool
-            )
-
-        except KeyError as exc:
-
+            tool = self.registry.get(request.tool)
+        except KeyError:
             return self._failure(
                 request=request,
                 start=start,
-                error=(
-            f"Unknown tool: {request.tool}"
-                ),
+                error=f"Unknown tool: {request.tool}",
             )
-
-        # -----------------------------------------------------
-        # Authorization
-        # -----------------------------------------------------
 
         try:
-            authorization = (
-                self.policy.authorize(
-                    tool.definition
-                )
+            authorization = self.policy.authorize(
+                tool.definition,
+                confirmed=confirmed,
             )
-
         except Exception as exc:
-
             return self._failure(
                 request=request,
                 start=start,
@@ -85,45 +64,26 @@ class ToolDispatcher:
             )
 
         if not authorization.allowed:
-
             return self._failure(
                 request=request,
                 start=start,
                 error=authorization.reason,
                 metadata={
-                    "requires_confirmation": (
-                        authorization
-                        .requires_confirmation
-                    )
+                    "requires_confirmation": authorization.requires_confirmation,
                 },
             )
 
-        # -----------------------------------------------------
-        # Execute
-        # -----------------------------------------------------
-
         try:
-            result = tool.execute(
-                request
-            )
-
+            result = tool.execute(request)
         except Exception as exc:
-
             return self._failure(
                 request=request,
                 start=start,
-                error=(
-                    f"{type(exc).__name__}: {exc}"
-                ),
+                error=f"{type(exc).__name__}: {exc}",
             )
 
-        elapsed = (
-            time.perf_counter()
-            - start
-        )
+        elapsed = time.perf_counter() - start
 
-        # ToolResult is supposed to already contain the
-        # semantic result. The dispatcher owns final timing.
         return ToolResult(
             success=result.success,
             tool=result.tool,
@@ -136,10 +96,6 @@ class ToolDispatcher:
             },
         )
 
-    # =========================================================
-    # Internal helpers
-    # =========================================================
-
     @staticmethod
     def _failure(
         *,
@@ -148,11 +104,7 @@ class ToolDispatcher:
         error: str,
         metadata: dict[str, Any] | None = None,
     ) -> ToolResult:
-
-        elapsed = (
-            time.perf_counter()
-            - start
-        )
+        elapsed = time.perf_counter() - start
 
         return ToolResult(
             success=False,
