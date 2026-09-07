@@ -51,11 +51,7 @@ class SpeechModule(Module):
             self._queue.put(text)
 
     def _get_coalesced_text(self, first_text):
-        """Combine chunks that are already waiting, with a tiny debounce window.
-
-        This prevents very short first sentences such as "Of course!" from being
-        synthesized separately when the next sentence arrives immediately after it.
-        """
+        """Combine chunks already arriving, with a tiny debounce window."""
         parts = [first_text]
         deadline = time.monotonic() + self.coalesce_window
 
@@ -67,10 +63,14 @@ class SpeechModule(Module):
                 next_text = self._queue.get(timeout=remaining)
             except queue.Empty:
                 break
+
             if next_text is None:
+                self._queue.task_done()
                 self._queue.put(None)
                 break
+
             parts.append(next_text)
+            self._queue.task_done()
 
         return " ".join(part.strip() for part in parts if part and part.strip())
 
