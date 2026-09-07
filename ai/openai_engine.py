@@ -24,7 +24,9 @@ class AIEngine:
         self.session = requests.Session()
 
         self.chat_url = f"{self.base_url}/api/v1/chat"
+        self.load_url = f"{self.base_url}/api/v1/models/load"
         self.previous_response_id = None
+        self.warmed = False
 
         self.system_prompt = (
             "You are ASTA, a local AI voice assistant. "
@@ -33,6 +35,59 @@ class AIEngine:
             "Avoid long explanations unless the user asks for detail. "
             "Sound conversational, helpful, and direct."
         )
+
+    def warmup(self):
+        """Load the selected model and run a tiny throwaway generation.
+
+        The explicit model load removes first-request model-loading work from a
+        user's interaction. The one-token chat then warms the inference path
+        without creating/storing conversation state.
+        """
+        start = time.perf_counter()
+        try:
+            load_start = time.perf_counter()
+            response = self.session.post(
+                self.load_url,
+                json={"model": self.model},
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            print(
+                f"[AI] Model load request: {time.perf_counter() - load_start:.3f}s",
+                flush=True,
+            )
+
+            warmup_start = time.perf_counter()
+            response = self.session.post(
+                self.chat_url,
+                json={
+                    "model": self.model,
+                    "input": "Ready.",
+                    "stream": False,
+                    "store": False,
+                    "max_output_tokens": 1,
+                    "reasoning": "off",
+                },
+                timeout=self.timeout,
+                headers={"Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            print(
+                f"[AI] Inference warm-up: {time.perf_counter() - warmup_start:.3f}s",
+                flush=True,
+            )
+            self.warmed = True
+            print(
+                f"[AI] Warm-up complete: {time.perf_counter() - start:.3f}s",
+                flush=True,
+            )
+            return True
+        except requests.RequestException as exc:
+            print(f"[AI] Warm-up unavailable: {type(exc).__name__}: {exc}", flush=True)
+            return False
+        except Exception as exc:
+            print(f"[AI] Warm-up error: {type(exc).__name__}: {exc}", flush=True)
+            return False
 
     def reset_conversation(self):
         self.previous_response_id = None
@@ -176,47 +231,6 @@ class AIEngine:
                         f"[AI] Client TTFT: {first_delta_time - request_start:.3f}s",
                         flush=True,
                     )
-                    if response_open is not None:
-                        print(
-                            f"[AI] HTTP response start: {response_open - request_start:.3f}s",
-                            flush=True,
-                        )
-                    if first_event_time is not None:
-                        print(
-                            f"[AI] HTTP response -> first SSE event: {first_event_time - response_open:.3f}s",
-                            flush=True,
-                        )
-                    if chat_start_time is not None:
-                        print(
-                            f"[AI] HTTP response -> chat.start: {chat_start_time - response_open:.3f}s",
-                            flush=True,
-                        )
-                    if model_load_start is not None:
-                        load_end = model_load_end or first_delta_time
-                        print(
-                            f"[AI] Model load event duration: {load_end - model_load_start:.3f}s",
-                            flush=True,
-                        )
-                    if chat_start_time is not None and prompt_start is not None:
-                        print(
-                            f"[AI] chat.start -> prompt.start: {prompt_start - chat_start_time:.3f}s",
-                            flush=True,
-                        )
-                    if prompt_start is not None and prompt_end is not None:
-                        print(
-                            f"[AI] Prompt processing: {prompt_end - prompt_start:.3f}s",
-                            flush=True,
-                        )
-                    if prompt_end is not None and message_start is not None:
-                        print(
-                            f"[AI] prompt.end -> message.start: {message_start - prompt_end:.3f}s",
-                            flush=True,
-                        )
-                    if message_start is not None:
-                        print(
-                            f"[AI] Message start -> first delta: {first_delta_time - message_start:.3f}s",
-                            flush=True,
-                        )
 
                 full_text += delta
                 sentence_buffer += delta
@@ -338,16 +352,16 @@ class AIEngine:
         if attempt["ttft"] is not None:
             print(f"[AI] LM Studio reported TTFT: {attempt['ttft']:.3f}s", flush=True)
         if attempt["response_open_time"] is not None:
-            print(f"[AI] HTTP response start: {attempt['response_open_time']:.3f}s", flush=True)
+            print(f"[AI] HTTP headers received: {attempt['response_open_time']:.3f}s", flush=True)
         if attempt["first_event_time"] is not None and attempt["response_open_time"] is not None:
             print(
-                f"[AI] HTTP response -> first SSE event: "
+                f"[AI] Headers -> first SSE event: "
                 f"{attempt['first_event_time'] - attempt['response_open_time']:.3f}s",
                 flush=True,
             )
         if attempt["chat_start_time"] is not None and attempt["response_open_time"] is not None:
             print(
-                f"[AI] HTTP response -> chat.start: "
+                f"[AI] Headers -> chat.start: "
                 f"{attempt['chat_start_time'] - attempt['response_open_time']:.3f}s",
                 flush=True,
             )
