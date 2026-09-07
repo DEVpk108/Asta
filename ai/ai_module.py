@@ -15,7 +15,9 @@ class AIModule(Module):
         )
 
         self.engine = AIEngine()
-        self.tool_request_builder = ToolRequestBuilder()
+        self.tool_request_builder = ToolRequestBuilder(
+            kernel.tool_registry,
+        )
 
     # ---------------------------------------------------------
     # Lifecycle
@@ -83,12 +85,12 @@ class AIModule(Module):
             print(f"[AI] Unable to build tool request: {exc}", flush=True)
             self.event_bus.emit(
                 "assistant_response",
-                text=f"I couldn't map that command to a tool: {exc}",
+                text=f"I couldn't map that command to an available tool: {exc}",
             )
             return
 
         print(
-            f"[AI] Tool request: {request.tool} "
+            f"[AI] Selected tool: {request.tool} "
             f"(request_id={request.request_id})",
             flush=True,
         )
