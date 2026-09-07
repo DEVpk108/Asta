@@ -24,7 +24,7 @@ class ToolRequestBuilder:
         definition = self.selector.select(intent)
 
         arguments = dict(intent.entities)
-        arguments.pop("action", None)
+        action = arguments.pop("action", None)
 
         return ToolRequest(
             tool=definition.name,
@@ -35,5 +35,6 @@ class ToolRequestBuilder:
                 "intent": intent.intent.value,
                 "intent_confidence": intent.confidence,
                 "classifier": intent.classifier,
+                "action": action,
             },
         )
