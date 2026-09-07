@@ -41,7 +41,12 @@ def _encode_rgb_png(width: int, height: int, bgra: bytes) -> bytes:
             rows.extend((r, g, b))
 
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    return b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", ihdr) + _png_chunk(b"IDAT", zlib.compress(bytes(rows), 6)) + _png_chunk(b"IEND", b"")
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"IDAT", zlib.compress(bytes(rows), 6))
+        + _png_chunk(b"IEND", b"")
+    )
 
 
 def _capture_windows(output_path: Path) -> dict:
@@ -50,6 +55,39 @@ def _capture_windows(output_path: Path) -> dict:
 
     user32 = ctypes.windll.user32
     gdi32 = ctypes.windll.gdi32
+    handle = ctypes.c_void_p
+
+    # Explicit prototypes prevent 64-bit Windows HDC/HBITMAP handles from
+    # being truncated by ctypes' default c_int return type.
+    user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+    user32.GetSystemMetrics.restype = ctypes.c_int
+    user32.GetDC.argtypes = [wintypes.HWND]
+    user32.GetDC.restype = handle
+    user32.ReleaseDC.argtypes = [wintypes.HWND, handle]
+    user32.ReleaseDC.restype = ctypes.c_int
+
+    gdi32.CreateCompatibleDC.argtypes = [handle]
+    gdi32.CreateCompatibleDC.restype = handle
+    gdi32.CreateCompatibleBitmap.argtypes = [handle, ctypes.c_int, ctypes.c_int]
+    gdi32.CreateCompatibleBitmap.restype = handle
+    gdi32.SelectObject.argtypes = [handle, handle]
+    gdi32.SelectObject.restype = handle
+    gdi32.DeleteObject.argtypes = [handle]
+    gdi32.DeleteObject.restype = wintypes.BOOL
+    gdi32.DeleteDC.argtypes = [handle]
+    gdi32.DeleteDC.restype = wintypes.BOOL
+    gdi32.BitBlt.argtypes = [
+        handle,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        handle,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.DWORD,
+    ]
+    gdi32.BitBlt.restype = wintypes.BOOL
 
     SM_XVIRTUALSCREEN = 76
     SM_YVIRTUALSCREEN = 77
@@ -77,6 +115,17 @@ def _capture_windows(output_path: Path) -> dict:
 
     class BITMAPINFO(ctypes.Structure):
         _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
+
+    gdi32.GetDIBits.argtypes = [
+        handle,
+        handle,
+        wintypes.UINT,
+        wintypes.UINT,
+        ctypes.c_void_p,
+        ctypes.POINTER(BITMAPINFO),
+        wintypes.UINT,
+    ]
+    gdi32.GetDIBits.restype = ctypes.c_int
 
     x = user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
     y = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
@@ -128,7 +177,7 @@ def _capture_windows(output_path: Path) -> dict:
             bitmap,
             0,
             height,
-            ctypes.byref(pixels),
+            ctypes.cast(pixels, ctypes.c_void_p),
             ctypes.byref(bmi),
             DIB_RGB_COLORS,
         )
