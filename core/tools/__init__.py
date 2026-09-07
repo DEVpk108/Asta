@@ -1,5 +1,6 @@
 from .base import Tool
 from .dispatcher import ToolDispatcher
+from .module import ToolRuntimeModule
 from .policy import (
     AuthorizationResult,
     AuthorityPolicy,
@@ -14,6 +15,7 @@ __all__ = [
     "RiskLevel",
     "Tool",
     "ToolDispatcher",
+    "ToolRuntimeModule",
     "ToolRegistry",
     "EchoTool",
 ]
