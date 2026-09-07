@@ -97,6 +97,10 @@ class AIEngine:
 
         request_start = time.perf_counter()
         response_open = None
+        first_event_time = None
+        chat_start_time = None
+        model_load_start = None
+        model_load_end = None
         prompt_start = None
         prompt_end = None
         message_start = None
@@ -132,9 +136,21 @@ class AIEngine:
                 except json.JSONDecodeError:
                     continue
 
-                event_name = data.get("type") or event_type
                 now = time.perf_counter()
+                if first_event_time is None:
+                    first_event_time = now
 
+                event_name = data.get("type") or event_type
+
+                if event_name == "chat.start":
+                    chat_start_time = now
+                    continue
+                if event_name == "model_load.start":
+                    model_load_start = now
+                    continue
+                if event_name == "model_load.end":
+                    model_load_end = now
+                    continue
                 if event_name == "prompt_processing.start":
                     prompt_start = now
                     continue
@@ -165,14 +181,40 @@ class AIEngine:
                             f"[AI] HTTP response start: {response_open - request_start:.3f}s",
                             flush=True,
                         )
+                    if first_event_time is not None:
+                        print(
+                            f"[AI] HTTP response -> first SSE event: {first_event_time - response_open:.3f}s",
+                            flush=True,
+                        )
+                    if chat_start_time is not None:
+                        print(
+                            f"[AI] HTTP response -> chat.start: {chat_start_time - response_open:.3f}s",
+                            flush=True,
+                        )
+                    if model_load_start is not None:
+                        load_end = model_load_end or first_delta_time
+                        print(
+                            f"[AI] Model load event duration: {load_end - model_load_start:.3f}s",
+                            flush=True,
+                        )
+                    if chat_start_time is not None and prompt_start is not None:
+                        print(
+                            f"[AI] chat.start -> prompt.start: {prompt_start - chat_start_time:.3f}s",
+                            flush=True,
+                        )
                     if prompt_start is not None and prompt_end is not None:
                         print(
                             f"[AI] Prompt processing: {prompt_end - prompt_start:.3f}s",
                             flush=True,
                         )
+                    if prompt_end is not None and message_start is not None:
+                        print(
+                            f"[AI] prompt.end -> message.start: {message_start - prompt_end:.3f}s",
+                            flush=True,
+                        )
                     if message_start is not None:
                         print(
-                            f"[AI] Message start → first token: {first_delta_time - message_start:.3f}s",
+                            f"[AI] Message start -> first delta: {first_delta_time - message_start:.3f}s",
                             flush=True,
                         )
 
@@ -221,15 +263,34 @@ class AIEngine:
             "response_open_time": (
                 response_open - request_start if response_open is not None else None
             ),
+            "first_event_time": (
+                first_event_time - request_start if first_event_time is not None else None
+            ),
+            "chat_start_time": (
+                chat_start_time - request_start if chat_start_time is not None else None
+            ),
+            "model_load_event_time": (
+                model_load_end - model_load_start
+                if model_load_start is not None and model_load_end is not None
+                else None
+            ),
             "prompt_processing_time": (
                 prompt_end - prompt_start
                 if prompt_start is not None and prompt_end is not None
+                else None
+            ),
+            "prompt_end_to_message_start": (
+                message_start - prompt_end
+                if prompt_end is not None and message_start is not None
                 else None
             ),
             "message_start_to_first_delta": (
                 first_delta_time - message_start
                 if first_delta_time is not None and message_start is not None
                 else None
+            ),
+            "request_to_first_delta": (
+                first_delta_time - request_start if first_delta_time is not None else None
             ),
             "exhausted_reasoning": (
                 not full_text.strip()
@@ -278,10 +339,32 @@ class AIEngine:
             print(f"[AI] LM Studio reported TTFT: {attempt['ttft']:.3f}s", flush=True)
         if attempt["response_open_time"] is not None:
             print(f"[AI] HTTP response start: {attempt['response_open_time']:.3f}s", flush=True)
+        if attempt["first_event_time"] is not None and attempt["response_open_time"] is not None:
+            print(
+                f"[AI] HTTP response -> first SSE event: "
+                f"{attempt['first_event_time'] - attempt['response_open_time']:.3f}s",
+                flush=True,
+            )
+        if attempt["chat_start_time"] is not None and attempt["response_open_time"] is not None:
+            print(
+                f"[AI] HTTP response -> chat.start: "
+                f"{attempt['chat_start_time'] - attempt['response_open_time']:.3f}s",
+                flush=True,
+            )
+        if attempt["model_load_event_time"] is not None:
+            print(f"[AI] Model load event: {attempt['model_load_event_time']:.3f}s", flush=True)
         if attempt["prompt_processing_time"] is not None:
             print(f"[AI] Prompt processing: {attempt['prompt_processing_time']:.3f}s", flush=True)
+        if attempt["prompt_end_to_message_start"] is not None:
+            print(
+                f"[AI] prompt.end -> message.start: {attempt['prompt_end_to_message_start']:.3f}s",
+                flush=True,
+            )
         if attempt["message_start_to_first_delta"] is not None:
-            print(f"[AI] Message start → first delta: {attempt['message_start_to_first_delta']:.3f}s", flush=True)
+            print(
+                f"[AI] Message start -> first delta: {attempt['message_start_to_first_delta']:.3f}s",
+                flush=True,
+            )
         if attempt["model_load_time"] is not None:
             print(f"[AI] Model load: {attempt['model_load_time']:.3f}s", flush=True)
         print(f"[AI] Response: {attempt['text']}", flush=True)
