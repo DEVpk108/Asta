@@ -2,13 +2,36 @@ import threading
 
 from .event_bus import EventBus
 from .intent_router import IntentRouter
+from .tools import AuthorityPolicy, ToolDispatcher, ToolRegistry
 
 
 class Kernel:
+    """Central runtime for A.S.T.A. infrastructure.
 
-    def __init__(self):
+    The kernel owns shared infrastructure and lifecycle. It does not
+    interpret natural-language requests or implement tool-specific logic.
+    """
+
+    def __init__(self, *, maximum_automatic_risk=None):
         self.event_bus = EventBus()
         self.intent_router = IntentRouter()
+
+        # Tool infrastructure is owned by the kernel so every module can
+        # access the same registry/dispatcher without creating its own.
+        self.tool_registry = ToolRegistry()
+
+        policy = (
+            AuthorityPolicy()
+            if maximum_automatic_risk is None
+            else AuthorityPolicy(
+                maximum_automatic_risk=maximum_automatic_risk
+            )
+        )
+
+        self.tool_dispatcher = ToolDispatcher(
+            registry=self.tool_registry,
+            policy=policy,
+        )
 
         self.modules = []
 
@@ -25,6 +48,28 @@ class Kernel:
             print(
                 f"[Kernel] Registered {module.name}"
             )
+
+    # ---------------------------------------------------------
+    # Tool management
+    # ---------------------------------------------------------
+
+    def register_tool(self, tool):
+        """Register a capability with the shared tool registry."""
+        self.tool_registry.register(tool)
+        print(
+            f"[Kernel] Registered tool {tool.definition.name}"
+        )
+
+    def unregister_tool(self, name: str) -> bool:
+        """Remove a capability from the shared tool registry."""
+        removed = self.tool_registry.unregister(name)
+
+        if removed:
+            print(
+                f"[Kernel] Unregistered tool {name}"
+            )
+
+        return removed
 
     # ---------------------------------------------------------
     # Lifecycle
