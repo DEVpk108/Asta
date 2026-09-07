@@ -17,7 +17,8 @@ class FakeResponse:
     def raise_for_status(self):
         return None
 
-    def iter_lines(self, decode_unicode=True):
+    def iter_lines(self, chunk_size=None, decode_unicode=True):
+        assert chunk_size == 1
         assert decode_unicode is True
         for event in self.events:
             yield f"data: {json.dumps(event)}"
@@ -35,6 +36,39 @@ def test_extract_message_text_ignores_reasoning_items():
 def test_reasoning_is_off_by_default_for_voice_latency():
     engine = AIEngine()
     assert engine.reasoning == "off"
+
+
+def test_sse_stream_uses_low_latency_chunk_size(monkeypatch):
+    events = [
+        {
+            "type": "message.delta",
+            "content": "Hello!",
+        },
+        {
+            "type": "chat.end",
+            "result": {
+                "response_id": "stream-response",
+                "output": [{"type": "message", "content": "Hello!"}],
+                "stats": {
+                    "input_tokens": 4,
+                    "total_output_tokens": 2,
+                    "reasoning_output_tokens": 0,
+                    "tokens_per_second": 60.0,
+                    "time_to_first_token_seconds": 0.15,
+                },
+            },
+        },
+    ]
+
+    monkeypatch.setattr(
+        "ai.openai_engine.requests.post",
+        lambda *args, **kwargs: FakeResponse(events),
+    )
+
+    engine = AIEngine()
+    result = engine.generate_response("hello")
+
+    assert result == "Hello!"
 
 
 def test_reasoning_exhaustion_retries_with_larger_budget(monkeypatch):
