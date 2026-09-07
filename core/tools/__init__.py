@@ -1,3 +1,4 @@
+from .approval import ApprovalManager, PendingApproval
 from .base import Tool
 from .dispatcher import ToolDispatcher
 from .module import ToolRuntimeModule
@@ -7,9 +8,12 @@ from .policy import (
     RiskLevel,
 )
 from .registry import ToolRegistry
+from .system import OpenApplicationTool
 from .test_tool import EchoTool
 
 __all__ = [
+    "ApprovalManager",
+    "PendingApproval",
     "AuthorizationResult",
     "AuthorityPolicy",
     "RiskLevel",
@@ -17,5 +21,6 @@ __all__ = [
     "ToolDispatcher",
     "ToolRuntimeModule",
     "ToolRegistry",
+    "OpenApplicationTool",
     "EchoTool",
 ]
