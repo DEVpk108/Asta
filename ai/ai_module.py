@@ -49,7 +49,9 @@ class AIModule(Module):
             request = self.tool_request_builder.build(intent)
         except ValueError as exc:
             print(f"[AI] Unable to build tool request: {exc}", flush=True)
-            self.event_bus.emit("assistant_response", text=f"I couldn't map that command to an available tool: {exc}")
+            self._emit_assistant_text(
+                f"I couldn't map that command to an available tool: {exc}"
+            )
             return
         print(f"[AI] Selected tool: {request.tool} (request_id={request.request_id})", flush=True)
         self.event_bus.emit("tool_request", request=request)
@@ -64,12 +66,21 @@ class AIModule(Module):
         else:
             text = "I need your confirmation before performing that action."
         print(f"[AI] Approval required: {reason}", flush=True)
-        self.event_bus.emit("assistant_response", text=text)
+        self._emit_assistant_text(text)
 
     def on_tool_result(self, result):
         if not isinstance(result, ToolResult):
             return
         text = self._format_tool_success(result) if result.success else self._format_tool_failure(result)
+        self._emit_assistant_text(text)
+
+    def _emit_assistant_text(self, text):
+        if not text:
+            return
+        # HUD consumes assistant_response; Speech consumes assistant_sentence.
+        # Tool responses are already complete sentences, so emit both without
+        # relying on the LLM streaming path.
+        self.event_bus.emit("assistant_sentence", text=text)
         self.event_bus.emit("assistant_response", text=text)
 
     @staticmethod
