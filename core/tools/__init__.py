@@ -8,6 +8,7 @@ from .policy import (
     RiskLevel,
 )
 from .registry import ToolRegistry
+from .selector import ToolSelector
 from .system import OpenApplicationTool
 from .test_tool import EchoTool
 
@@ -21,6 +22,7 @@ __all__ = [
     "ToolDispatcher",
     "ToolRuntimeModule",
     "ToolRegistry",
+    "ToolSelector",
     "OpenApplicationTool",
     "EchoTool",
 ]
