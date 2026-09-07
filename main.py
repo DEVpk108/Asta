@@ -1,5 +1,5 @@
 from core.kernel import Kernel
-from core.tools import ToolRuntimeModule
+from core.tools import OpenApplicationTool, ToolRuntimeModule
 
 from speech.speech_module import SpeechModule
 from hud.hud_module import HUDModule
@@ -15,6 +15,9 @@ def main():
     ai = AIModule(kernel)
     voice = VoiceModule(kernel)
     tools = ToolRuntimeModule(kernel)
+
+    # Register capabilities before the runtime starts.
+    kernel.register_tool(OpenApplicationTool())
 
     print("===== ASTA KERNEL =====")
 
