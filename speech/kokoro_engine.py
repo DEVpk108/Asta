@@ -13,10 +13,20 @@ class KokoroEngine:
         self.voice = voice
         self.speed = speed
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.pipeline = KPipeline(lang_code=lang_code, device=self.device)
+        self.pipeline = KPipeline(
+            lang_code=lang_code,
+            device=self.device,
+            repo_id="hexgrad/Kokoro-82M",
+        )
 
+        # Kokoro lazily loads voice embeddings on first synthesis. Preload the
+        # selected voice during ASTA startup so the first spoken response does
+        # not pay the download/load penalty.
+        voice_start = time.perf_counter()
+        self.pipeline.load_voice(self.voice)
         print(
-            f"[Speech] Kokoro ready (voice={self.voice}, device={self.device})",
+            f"[Speech] Kokoro ready (voice={self.voice}, device={self.device}, "
+            f"voice_load={time.perf_counter() - voice_start:.3f}s)",
             flush=True,
         )
 
@@ -27,6 +37,8 @@ class KokoroEngine:
         start = time.perf_counter()
         first_audio_time = None
         total_samples = 0
+        generated_audio_time = 0.0
+        write_time = 0.0
 
         try:
             generator = self.pipeline(
@@ -59,7 +71,10 @@ class KokoroEngine:
                             flush=True,
                         )
 
+                    generated_audio_time += audio.size / 24000.0
+                    write_start = time.perf_counter()
                     stream.write(audio)
+                    write_time += time.perf_counter() - write_start
                     total_samples += int(audio.size)
 
         except Exception as exc:
@@ -72,6 +87,8 @@ class KokoroEngine:
         elapsed = time.perf_counter() - start
         duration = total_samples / 24000 if total_samples else 0.0
         print(
-            f"[Speech] Kokoro playback: {elapsed:.2f}s for {duration:.2f}s audio",
+            f"[Speech] Kokoro total: {elapsed:.2f}s | audio: {duration:.2f}s | "
+            f"first_audio: {(first_audio_time or 0.0):.3f}s | "
+            f"stream_write: {write_time:.3f}s",
             flush=True,
         )
