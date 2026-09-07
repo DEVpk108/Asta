@@ -1,5 +1,6 @@
 import json
 import time
+from urllib.parse import urlparse
 
 import requests
 
@@ -8,7 +9,7 @@ class AIEngine:
 
     def __init__(
         self,
-        base_url="http://localhost:1234",
+        base_url="http://127.0.0.1:1234",
         model="nvidia/nemotron-3-nano-4b",
         timeout=120,
         max_output_tokens=256,
@@ -22,6 +23,12 @@ class AIEngine:
         self.reasoning_retry_tokens = reasoning_retry_tokens
         self.reasoning = reasoning
         self.session = requests.Session()
+
+        # A.S.T.A. talks to LM Studio locally. Bypass environment proxies for
+        # loopback traffic so local requests go directly to LM Studio.
+        host = urlparse(self.base_url).hostname
+        if host in {"localhost", "127.0.0.1", "::1"}:
+            self.session.trust_env = False
 
         self.chat_url = f"{self.base_url}/api/v1/chat"
         self.models_url = f"{self.base_url}/api/v1/models"
