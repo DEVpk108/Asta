@@ -98,6 +98,11 @@ class AIModule(Module):
                 return f"Stopped process {output['pid']}."
             if result.tool == "system.start_process" and target:
                 return f"Started {target}."
+            if result.tool == "vision.screenshot":
+                path = output.get("path")
+                if path:
+                    print(f"[AI] Screenshot saved: {path}", flush=True)
+                return "Screenshot captured."
         if output is None:
             return f"{result.tool} completed successfully."
         return str(output)
