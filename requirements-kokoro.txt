@@ -1,0 +1,5 @@
+# Local GPU TTS for A.S.T.A.
+# Reuses the existing PyTorch installation used by the voice stack.
+kokoro
+soundfile
+misaki[en]
