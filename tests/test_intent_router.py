@@ -18,3 +18,21 @@ def test_open_command_preserves_target_after_normalization():
     result = IntentRouter().analyze("Open Calculator.")
     assert result.intent == IntentType.COMMAND
     assert result.entities == {"action": "open", "target": "calculator"}
+
+
+def test_polite_open_command_is_actionable():
+    result = IntentRouter().analyze("Could you please open Chrome?")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {"action": "open", "target": "chrome"}
+
+
+def test_embedded_command_is_actionable():
+    result = IntentRouter().analyze("Nothing else, open Chrome.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {"action": "open", "target": "chrome"}
+
+
+def test_can_you_open_is_command_not_capability_question():
+    result = IntentRouter().analyze("Can you open Spotify?")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {"action": "open", "target": "spotify"}
