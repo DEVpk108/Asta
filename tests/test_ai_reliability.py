@@ -1,5 +1,6 @@
 from core import Kernel
 from core.contracts import ToolRequest
+from core.tools import OpenApplicationTool
 from ai.ai_module import AIModule
 
 
@@ -80,6 +81,7 @@ def test_rejection_is_applied_to_single_pending_request():
 
 def test_can_you_open_is_not_treated_as_generic_capability_question():
     kernel, ai = make_ai()
+    kernel.register_tool(OpenApplicationTool())
     requests = []
     kernel.event_bus.subscribe(
         "tool_request",
