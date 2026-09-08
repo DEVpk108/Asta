@@ -32,6 +32,7 @@ venv/
 *txt
 *npy
 *.npy*.tflite
+*.tflite
 
 # Runtime artifacts
 runtime/screenshots/
