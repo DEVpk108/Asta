@@ -1,16 +1,16 @@
-from core import Modules
+from core import Module
 
-class DummyHUDModule(Modules):
-     def __init__(self, kernel):
+
+class DummyHUDModule(Module):
+    def __init__(self, kernel):
         super().__init__(
-            
-        name="HUD",
+            name="HUD",
             event_bus=kernel.event_bus,
-            kernel=kernel
+            kernel=kernel,
         )
-        
-     def initialize(self):
+
+    def initialize(self):
         print("[HUD] Ini")
 
-     def shutdown(self):
+    def shutdown(self):
         print("[HUD] Sh")

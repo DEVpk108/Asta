@@ -1,3 +1,4 @@
+import re
 from typing import Any
 
 from .contracts.intent import (
@@ -13,28 +14,11 @@ from .contracts.intent import (
 class IntentRouter:
 
     def route(self, text: str) -> IntentType:
-        """
-        Backward-compatible API.
-
-        Existing ASTA code can continue using:
-
-            router.route(text)
-
-        New code should prefer:
-
-            router.analyze(text)
-        """
-
+        """Backward-compatible intent-only API."""
         return self.analyze(text).intent
 
-    # --------------------------------------------------------
-    # Main analysis
-    # --------------------------------------------------------
-
     def analyze(self, text: str) -> IntentResult:
-
         if not text:
-
             return IntentResult(
                 intent=IntentType.UNKNOWN,
                 confidence=0.0,
@@ -42,10 +26,6 @@ class IntentRouter:
             )
 
         normalized = self._normalize(text)
-
-        # ----------------------------------------------------
-        # Memory
-        # ----------------------------------------------------
 
         memory_phrases = (
             "remember that",
@@ -57,21 +37,14 @@ class IntentRouter:
         )
 
         if normalized.startswith(memory_phrases):
-
             return IntentResult(
                 intent=IntentType.MEMORY,
                 confidence=0.98,
                 normalized_text=normalized,
-                entities=self._extract_memory_entities(
-                    normalized
-                ),
+                entities=self._extract_memory_entities(normalized),
                 requires_memory=True,
                 classifier="rules",
             )
-
-        # ----------------------------------------------------
-        # Commands
-        # ----------------------------------------------------
 
         command_phrases = (
             "open ",
@@ -87,21 +60,14 @@ class IntentRouter:
         )
 
         if normalized.startswith(command_phrases):
-
             return IntentResult(
                 intent=IntentType.COMMAND,
                 confidence=0.98,
                 normalized_text=normalized,
-                entities=self._extract_command_entities(
-                    normalized
-                ),
+                entities=self._extract_command_entities(normalized),
                 requires_tools=True,
                 classifier="rules",
             )
-
-        # ----------------------------------------------------
-        # Conversation
-        # ----------------------------------------------------
 
         conversation_phrases = (
             "who are you",
@@ -117,28 +83,13 @@ class IntentRouter:
             "thanks",
         )
 
-        if normalized.startswith(
-            conversation_phrases
-        ):
-
+        if normalized.startswith(conversation_phrases):
             return IntentResult(
                 intent=IntentType.CONVERSATION,
                 confidence=0.98,
                 normalized_text=normalized,
                 classifier="rules",
             )
-
-        # ----------------------------------------------------
-        # Unknown for now
-        #
-        # Future:
-        #
-        # UNKNOWN
-        #    ↓
-        # Small intent model
-        #    ↓
-        # IntentResult
-        # ----------------------------------------------------
 
         return IntentResult(
             intent=IntentType.UNKNOWN,
@@ -147,91 +98,45 @@ class IntentRouter:
             classifier="rules",
         )
 
-    # ========================================================
-    # Normalization
-    # ========================================================
-
     @staticmethod
     def _normalize(text: str) -> str:
-        return " ".join(
-            text.strip().lower().split()
-        )
-
-    # ========================================================
-    # Command entities
-    # ========================================================
+        # Speech-to-text commonly adds terminal punctuation. Keep the
+        # normalized form stable so "screenshot." maps exactly like
+        # "screenshot" while preserving useful characters inside commands.
+        text = text.strip().lower()
+        text = re.sub(r"\s+", " ", text)
+        text = re.sub(r"[.!?,;:]+$", "", text)
+        return text.strip()
 
     @staticmethod
-    def _extract_command_entities(
-        text: str,
-    ) -> dict[str, Any]:
-
-        if text.startswith("open "):
-            return {
-                "action": "open",
-                "target": text[5:].strip(),
-            }
-
-        if text.startswith("launch "):
-            return {
-                "action": "launch",
-                "target": text[7:].strip(),
-            }
-
-        if text.startswith("start "):
-            return {
-                "action": "start",
-                "target": text[6:].strip(),
-            }
-
-        if text.startswith("close "):
-            return {
-                "action": "close",
-                "target": text[6:].strip(),
-            }
-
-        if text.startswith("run "):
-            return {
-                "action": "run",
-                "target": text[4:].strip(),
-            }
-
-        if text.startswith("stop "):
-            return {
-                "action": "stop",
-                "target": text[5:].strip(),
-            }
-
-        if (
-            text == "screenshot"
-            or text.startswith("screenshot ")
-            or text.startswith("take a screenshot")
+    def _extract_command_entities(text: str) -> dict[str, Any]:
+        for prefix, action in (
+            ("open ", "open"),
+            ("launch ", "launch"),
+            ("start ", "start"),
+            ("close ", "close"),
+            ("run ", "run"),
+            ("stop ", "stop"),
         ):
-            return {
-                "action": "screenshot",
-            }
+            if text.startswith(prefix):
+                return {
+                    "action": action,
+                    "target": text[len(prefix):].strip(),
+                }
+
+        if text == "screenshot" or text.startswith("screenshot ") or text.startswith("take a screenshot"):
+            return {"action": "screenshot"}
 
         if text == "mute":
-            return {
-                "action": "mute",
-            }
+            return {"action": "mute"}
 
         if text == "unmute":
-            return {
-                "action": "unmute",
-            }
+            return {"action": "unmute"}
 
         return {}
 
-    # ========================================================
-    # Memory entities
-    # ========================================================
-
     @staticmethod
-    def _extract_memory_entities(
-        text: str,
-    ) -> dict[str, Any]:
-
+    def _extract_memory_entities(text: str) -> dict[str, Any]:
         prefixes = (
             "remember that",
             "remember this",
@@ -242,15 +147,7 @@ class IntentRouter:
         )
 
         for prefix in prefixes:
-
             if text.startswith(prefix):
-
-                content = text[
-                    len(prefix):
-                ].strip()
-
-                return {
-                    "memory": content
-                }
+                return {"memory": text[len(prefix):].strip()}
 
         return {}

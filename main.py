@@ -15,6 +15,7 @@ from speech.speech_module import SpeechModule
 from hud.hud_module import HUDModule
 from ai.ai_module import AIModule
 from voice.voice_module import VoiceModule
+from vision.screenshot_backend import capture_screenshot
 
 
 def main():
@@ -34,7 +35,7 @@ def main():
         RunCommandTool(),
         StopProcessTool(),
         CloseApplicationTool(),
-        ScreenshotTool(),
+        ScreenshotTool(capture=capture_screenshot),
         AudioControlTool("mute"),
         AudioControlTool("unmute"),
     ):

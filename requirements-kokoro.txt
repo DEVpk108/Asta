@@ -1,0 +1,7 @@
+# Local GPU TTS for A.S.T.A.
+# Kokoro requires PyTorch >= 2.5.
+# For Windows + NVIDIA GPU, install the CUDA-enabled PyTorch wheel first.
+torch>=2.5,<3
+kokoro
+soundfile
+misaki[en]
