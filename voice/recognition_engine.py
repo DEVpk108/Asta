@@ -6,19 +6,7 @@ import torch
 
 
 class RecognitionEngine:
-    """Pluggable local STT router.
-
-    Backends:
-      - whisper: use multilingual Faster-Whisper for every utterance.
-      - indic: use AI4Bharat IndicConformer for an Indian language.
-      - hybrid (default): Whisper performs language detection and English
-        transcription; Hindi is re-decoded with IndicConformer.
-
-    This keeps the existing English path intact while giving Hindi a native
-    Indian-language ASR backend. IndicConformer is lazy-loaded only in hybrid
-    mode after Hindi is detected, so A.S.T.A. does not pay its model startup
-    cost until it is needed.
-    """
+    """Pluggable local STT router with graceful optional-backend fallback."""
 
     SUPPORTED_BACKENDS = {"whisper", "indic", "hybrid"}
 
@@ -54,15 +42,15 @@ class RecognitionEngine:
         self.indic_decoder = indic_decoder
         self.indic_language = indic_language
         self._indic = None
+        self._indic_unavailable = False
+        self._indic_error = None
         self.debug = True
         self.last_backend = None
         self.last_language = None
         self.last_language_probability = 0.0
 
-        # Whisper remains the detector/English recognizer for hybrid mode. For
-        # explicit Indic mode it is not loaded, keeping startup lighter.
         self.model = None
-        if self.backend in {"whisper", "hybrid"}:
+        if self.backend in {"whisper", "hybrid", "indic"}:
             start = time.perf_counter()
             self.model = WhisperModel(
                 model_size_or_path=model_name,
@@ -76,21 +64,35 @@ class RecognitionEngine:
                 flush=True,
             )
 
-        print(
-            f"[STT] Backend: {self.backend}",
-            flush=True,
-        )
+        print(f"[STT] Backend: {self.backend}", flush=True)
 
     def _load_indic(self):
-        if self._indic is None:
-            from .indic_conformer_engine import IndicConformerEngine
+        if self._indic is not None:
+            return self._indic
+        if self._indic_unavailable:
+            return None
+
+        try:
+            from .indic_conformer_engine import (
+                IndicConformerEngine,
+                IndicConformerUnavailable,
+            )
 
             self._indic = IndicConformerEngine(
                 model_id=self.indic_model_id,
                 decoder=self.indic_decoder,
                 language=self.indic_language,
             )
-        return self._indic
+            return self._indic
+        except (ImportError, RuntimeError) as exc:
+            self._indic_unavailable = True
+            self._indic_error = exc
+            print(
+                f"[STT/IndicConformer] Unavailable: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            print("[STT] Falling back to Whisper.", flush=True)
+            return None
 
     def _transcribe_whisper(self, audio):
         if self.model is None:
@@ -100,7 +102,6 @@ class RecognitionEngine:
             audio,
             language=self.language,
             beam_size=self.beam_size,
-            # The outer Silero VAD already returns an utterance.
             vad_filter=False,
             condition_on_previous_text=False,
             temperature=0.0,
@@ -126,6 +127,23 @@ class RecognitionEngine:
         )
         return text
 
+    def _use_indic(self, audio, whisper_text):
+        indic = self._load_indic()
+        if indic is None:
+            self.last_backend = "whisper-fallback"
+            return whisper_text
+
+        indic_text = indic.transcribe(
+            audio,
+            language=self.indic_language,
+        )
+        if indic_text:
+            self.last_backend = "indic-conformer"
+            return indic_text
+
+        self.last_backend = "whisper-fallback"
+        return whisper_text
+
     def transcribe(self, audio):
         if audio is None:
             return ""
@@ -133,40 +151,21 @@ class RecognitionEngine:
         start = time.perf_counter()
         try:
             if self.backend == "indic":
-                text = self._load_indic().transcribe(
-                    audio,
-                    language=self.indic_language,
-                )
-                self.last_backend = "indic-conformer"
-                self.last_language = self.indic_language
-                self.last_language_probability = 1.0
-                return text
+                whisper_text = self._transcribe_whisper(audio)
+                text = self._use_indic(audio, whisper_text)
+            else:
+                whisper_text = self._transcribe_whisper(audio)
+                detected = (self.last_language or "").lower()
 
-            # Whisper or hybrid starts with the same multilingual recognition
-            # path. In hybrid mode a Hindi detection triggers a second decode
-            # using IndicConformer.
-            whisper_text = self._transcribe_whisper(audio)
-            detected = (self.last_language or "").lower()
-
-            if (
-                self.backend == "hybrid"
-                and detected == self.indic_language
-                and self.last_language_probability >= 0.30
-            ):
-                indic = self._load_indic()
-                indic_text = indic.transcribe(
-                    audio,
-                    language=self.indic_language,
-                )
-                if indic_text:
-                    self.last_backend = "indic-conformer"
-                    text = indic_text
+                if (
+                    self.backend == "hybrid"
+                    and detected == self.indic_language
+                    and self.last_language_probability >= 0.30
+                ):
+                    text = self._use_indic(audio, whisper_text)
                 else:
                     self.last_backend = "whisper"
                     text = whisper_text
-            else:
-                self.last_backend = "whisper"
-                text = whisper_text
 
             elapsed = time.perf_counter() - start
             print(
