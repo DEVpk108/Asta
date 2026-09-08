@@ -19,6 +19,8 @@ class AIModule(Module):
 
     def initialize(self):
         print("[AI] Initializing...", flush=True)
+        self._ground_engine_in_capabilities()
+
         warmup = getattr(self.engine, "warmup", None)
         if callable(warmup):
             warmup()
@@ -33,12 +35,71 @@ class AIModule(Module):
         self.event_bus.unsubscribe("tool_confirmation_required", self.on_tool_confirmation_required)
         print("[AI] Stopped", flush=True)
 
+    def _ground_engine_in_capabilities(self):
+        """Give the language model an authoritative snapshot of real tools.
+
+        The tool registry is the source of truth for executable capabilities.
+        The model is explicitly forbidden from treating natural-language claims
+        as proof that an action exists or succeeded.
+        """
+        definitions = self.kernel.tool_registry.definitions()
+        if definitions:
+            capabilities = "\n".join(
+                f"- {definition.name}: {definition.description}"
+                for definition in definitions
+            )
+        else:
+            capabilities = "- No executable tools are currently registered."
+
+        prompt = (
+            "You are ASTA, a local AI voice assistant. "
+            "Respond naturally and concisely. "
+            "Prefer 1–3 short sentences for normal questions. "
+            "Sound conversational, helpful, and direct.\n\n"
+            "TRUTHFUL CAPABILITY POLICY:\n"
+            "The registered capabilities below are the authoritative list of "
+            "actions ASTA can currently execute. Never claim ASTA can perform "
+            "an action that is not represented by a registered capability. "
+            "Do not say an action was completed unless a tool result confirms "
+            "success. If a requested capability is unavailable, say so plainly. "
+            "Never invent tool names, integrations, application support, memory, "
+            "personal facts, or completed actions.\n\n"
+            "REGISTERED CAPABILITIES:\n"
+            f"{capabilities}"
+        )
+
+        setter = getattr(self.engine, "set_system_prompt", None)
+        if callable(setter):
+            setter(prompt)
+        elif hasattr(self.engine, "system_prompt"):
+            self.engine.system_prompt = prompt
+
     def on_user_message(self, text):
         if not text:
             return
         print(f"[AI] User: {text}", flush=True)
+
+        # Do not let the LLM fabricate personal information before memory
+        # exists. This can be expanded when the real memory subsystem lands.
+        if self._is_unknown_name_question(text):
+            self._emit_assistant_text(
+                "I don't know your name yet. I don't have that information stored."
+            )
+            return
+
+        # Capability questions are answered from the live registry instead of
+        # asking the LLM to guess what ASTA can or cannot do.
+        capability_response = self._capability_response(text)
+        if capability_response is not None:
+            self._emit_assistant_text(capability_response)
+            return
+
         result: IntentResult = self.kernel.intent_router.analyze(text)
-        print(f"[AI] Intent: {result.intent.value} (confidence={result.confidence:.2f}, classifier={result.classifier})", flush=True)
+        print(
+            f"[AI] Intent: {result.intent.value} "
+            f"(confidence={result.confidence:.2f}, classifier={result.classifier})",
+            flush=True,
+        )
         if result.intent == IntentType.COMMAND:
             self._handle_command_intent(result)
             return
@@ -46,6 +107,46 @@ class AIModule(Module):
             self.event_bus.emit("memory_request", intent=result)
             return
         self._generate_response(text)
+
+    @staticmethod
+    def _normalize_question(text):
+        normalized = " ".join(str(text).strip().lower().split())
+        return normalized.rstrip(" .!?;:")
+
+    @classmethod
+    def _is_unknown_name_question(cls, text):
+        normalized = cls._normalize_question(text)
+        variants = {
+            "what is my name",
+            "what's my name",
+            "whats my name",
+            "do you know my name",
+            "do you remember my name",
+            "tell me my name",
+        }
+        return normalized in variants
+
+    def _capability_response(self, text):
+        normalized = self._normalize_question(text)
+        prefixes = (
+            "can you ",
+            "can asta ",
+            "do you support ",
+            "do you have ",
+        )
+        if not normalized.startswith(prefixes):
+            return None
+
+        definitions = self.kernel.tool_registry.definitions()
+        names = [definition.name for definition in definitions]
+        if not names:
+            return "I don't currently have any executable tools registered."
+
+        return (
+            "I can currently execute these registered capabilities: "
+            + ", ".join(names)
+            + "."
+        )
 
     def _handle_command_intent(self, intent: IntentResult):
         try:
