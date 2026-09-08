@@ -1,3 +1,4 @@
+import os
 import time
 
 import numpy as np
@@ -7,12 +8,15 @@ import torch
 MODEL_ID = "ai4bharat/indic-conformer-600m-multilingual"
 
 
+class IndicConformerUnavailable(RuntimeError):
+    """Raised when the optional IndicConformer backend cannot be loaded."""
+
+
 class IndicConformerEngine:
     """AI4Bharat IndicConformer backend for Indian-language ASR.
 
-    The official multilingual checkpoint is a 600M-parameter hybrid
-    CTC/RNNT model covering 22 scheduled Indian languages, including Hindi.
-    A.S.T.A. supplies already-segmented 16 kHz mono float32 audio.
+    The backend is optional. Hugging Face authentication is read from the
+    environment and is never stored in the repository.
     """
 
     def __init__(self, model_id=MODEL_ID, decoder="rnnt", language="hi"):
@@ -22,7 +26,7 @@ class IndicConformerEngine:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = None
         self.last_duration = 0.0
-
+        self._load_error = None
         self._load()
 
     def _load(self):
@@ -30,26 +34,30 @@ class IndicConformerEngine:
         try:
             from transformers import AutoModel
         except ImportError as exc:
-            raise RuntimeError(
-                "IndicConformer requires transformers. Install it with: "
-                "pip install transformers torchaudio onnx onnxruntime onnxruntime-gpu"
+            self._load_error = exc
+            raise IndicConformerUnavailable(
+                "IndicConformer requires transformers and its audio dependencies. "
+                "Install voice/requirements-indic.txt."
             ) from exc
 
-        try:
-            self.model = AutoModel.from_pretrained(
-                self.model_id,
-                trust_remote_code=True,
-                device=self.device,
-            )
-        except TypeError:
-            # Some released remote-code revisions do not expose the device
-            # keyword even though the model itself can be moved to a device.
-            self.model = AutoModel.from_pretrained(
-                self.model_id,
-                trust_remote_code=True,
-            )
-            self.model = self.model.to(self.device)
+        token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+        kwargs = {"trust_remote_code": True}
+        if token:
+            kwargs["token"] = token
 
+        try:
+            self.model = AutoModel.from_pretrained(self.model_id, **kwargs)
+        except Exception as exc:
+            self._load_error = exc
+            message = str(exc)
+            if "gated repo" in message.lower() or "401 client error" in message.lower():
+                message = (
+                    "IndicConformer is gated on Hugging Face. Accept the model terms "
+                    "and set HF_TOKEN or HUGGINGFACE_HUB_TOKEN locally."
+                )
+            raise IndicConformerUnavailable(message) from exc
+
+        self.model = self.model.to(self.device)
         self.model.eval()
         print(
             f"[STT/IndicConformer] Ready "
@@ -70,19 +78,13 @@ class IndicConformerEngine:
 
         tensor = torch.from_numpy(np.ascontiguousarray(wav)).unsqueeze(0)
         if self.device == "cuda":
-            tensor = tensor.cuda(non_blocking=True)
+            tensor = tensor.to(device="cuda", non_blocking=True)
 
         start = time.perf_counter()
         try:
             with torch.inference_mode():
-                result = self.model(
-                    tensor,
-                    target_language,
-                    self.decoder,
-                )
+                result = self.model(tensor, target_language, self.decoder)
         except TypeError:
-            # Keep the backend compatible with remote-code revisions that use
-            # keyword arguments for the decoding mode.
             with torch.inference_mode():
                 result = self.model(
                     tensor,
