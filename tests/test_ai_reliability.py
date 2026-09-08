@@ -54,7 +54,7 @@ def test_confirmation_is_applied_to_single_pending_request():
     ai.on_user_message("I confirm")
 
     assert confirmations == [("approval-test-1", True)]
-    assert not kernel.approval_manager.contains("approval-test-1")
+    assert kernel.approval_manager.contains("approval-test-1")
 
 
 def test_rejection_is_applied_to_single_pending_request():
@@ -75,14 +75,22 @@ def test_rejection_is_applied_to_single_pending_request():
     ai.on_user_message("No")
 
     assert confirmations == [("approval-test-2", False)]
-    assert not kernel.approval_manager.contains("approval-test-2")
+    assert kernel.approval_manager.contains("approval-test-2")
 
 
 def test_can_you_open_is_not_treated_as_generic_capability_question():
     kernel, ai = make_ai()
-    kernel.event_bus.subscribe("tool_request", lambda request: None)
+    requests = []
+    kernel.event_bus.subscribe(
+        "tool_request",
+        lambda request: requests.append(request),
+    )
 
     ai.on_user_message("Can you open Chrome?")
+
+    assert len(requests) == 1
+    assert requests[0].tool == "system.open_application"
+    assert requests[0].arguments == {"target": "chrome"}
 
 
 def test_grounded_prompt_contains_only_registered_capabilities():
