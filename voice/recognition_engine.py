@@ -5,11 +5,10 @@ import torch
 class RecognitionEngine:
     """Local speech-to-text engine for English, Hindi, and mixed speech.
 
-    The previous configuration used ``medium.en`` and explicitly forced
-    ``language="en"``. That made Hindi and Hinglish speech fundamentally
-    difficult to recognize. A multilingual Whisper checkpoint with automatic
-    language detection lets the recognizer choose between supported languages
-    from the audio itself.
+    The recognizer uses a multilingual Whisper checkpoint with automatic
+    language detection. Audio is already segmented by A.S.T.A.'s outer
+    Silero VAD, so Whisper's second VAD pass is intentionally disabled to
+    reduce the chance of chopping short Hindi/Hinglish phrases.
     """
 
     def __init__(
@@ -30,6 +29,8 @@ class RecognitionEngine:
             compute_type=compute_type,
         )
         self.debug = False
+        self.last_language = None
+        self.last_language_probability = 0.0
 
     def transcribe(self, audio):
         if audio is None:
@@ -38,15 +39,23 @@ class RecognitionEngine:
         try:
             segments, info = self.model.transcribe(
                 audio,
-                # None enables Whisper language detection. This is important
-                # for English, Hindi, and mixed English/Hindi utterances.
+                # None enables Whisper language detection for English, Hindi,
+                # and mixed English/Hindi utterances.
                 language=self.language,
                 beam_size=self.beam_size,
-                vad_filter=True,
+                # The outer Silero VAD already returns an utterance. Running
+                # another VAD here can discard weak/short syllables.
+                vad_filter=False,
                 condition_on_previous_text=False,
+                temperature=0.0,
+                compression_ratio_threshold=2.4,
+                log_prob_threshold=-1.0,
+                no_speech_threshold=0.6,
                 initial_prompt=(
                     "Conversation with ASTA. The speaker may use English, "
-                    "Hindi, or natural Hinglish mixing both languages. "
+                    "Hindi, or natural Hinglish. Common Hindi words may be "
+                    "spoken in Roman script, for example namaste, kya, "
+                    "kaise, haal, hai, mujhe, tumhe, aap, mera, meri. "
                     "Preserve the spoken meaning and do not invent words."
                 ),
             )
@@ -60,12 +69,18 @@ class RecognitionEngine:
             print(f"[Voice] Recognition error: {type(exc).__name__}: {exc}", flush=True)
             return ""
 
+        self.last_language = getattr(info, "language", None)
+        self.last_language_probability = float(
+            getattr(info, "language_probability", 0.0) or 0.0
+        )
+
         if self.debug:
-            detected = getattr(info, "language", "unknown")
-            probability = getattr(info, "language_probability", 0.0)
             print(f"[Voice] STT model: {self.model_name}", flush=True)
-            print(f"[Language] {detected}", flush=True)
-            print(f"[Probability] {probability:.2f}", flush=True)
+            print(
+                f"[Language] {self.last_language} "
+                f"(prob={self.last_language_probability:.2f})",
+                flush=True,
+            )
             print(f"[Voice] {text}", flush=True)
 
         return text
