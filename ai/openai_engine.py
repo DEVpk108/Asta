@@ -46,21 +46,14 @@ class AIEngine:
         )
 
     def set_system_prompt(self, prompt):
-        """Replace the grounding prompt used when starting a new conversation."""
+        """Replace the system prompt and reset the response chain."""
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("System prompt must be a non-empty string.")
         self.system_prompt = prompt.strip()
-        # A changed system prompt must start a fresh LM Studio response chain;
-        # otherwise the server would continue the old conversation context.
         self.previous_response_id = None
 
     def _find_loaded_instance(self):
-        """Return an already-loaded instance id for the selected model.
-
-        LM Studio exposes loaded instances through GET /api/v1/models. We must
-        check this before calling /models/load because an explicit load creates
-        another model instance instead of simply reusing an existing one.
-        """
+        """Return an already-loaded instance id for the selected model."""
         response = self.session.get(self.models_url, timeout=self.timeout)
         response.raise_for_status()
         payload = response.json()
@@ -75,14 +68,7 @@ class AIEngine:
         return None
 
     def warmup(self):
-        """Reuse/load the selected model and run a tiny throwaway generation.
-
-        Existing LM Studio model instances are reused. A new instance is
-        explicitly loaded only when the selected model has no loaded instance.
-        If model listing is temporarily unavailable, the chat warm-up is still
-        allowed to proceed because /api/v1/chat automatically loads the model
-        when necessary.
-        """
+        """Reuse/load the selected model and run a tiny throwaway generation."""
         start = time.perf_counter()
         try:
             instance_id = None
@@ -267,3 +253,190 @@ class AIEngine:
                     first_event_time = now
 
                 event_name = data.get("type") or event_type
+
+                if event_name == "chat.start":
+                    chat_start_time = now
+                    continue
+                if event_name == "model_load.start":
+                    model_load_start = now
+                    continue
+                if event_name == "model_load.end":
+                    model_load_end = now
+                    continue
+                if event_name == "prompt_processing.start":
+                    prompt_start = now
+                    continue
+                if event_name == "prompt_processing.end":
+                    prompt_end = now
+                    continue
+                if event_name == "message.start":
+                    message_start = now
+                    continue
+                if event_name == "chat.end":
+                    final_result = data.get("result", {})
+                    continue
+                if event_name != "message.delta":
+                    continue
+
+                delta = self._normalize_text(data.get("content", ""))
+                if not delta:
+                    continue
+
+                if first_delta_time is None:
+                    first_delta_time = now
+                    print(
+                        f"[AI] Client TTFT: {first_delta_time - request_start:.3f}s",
+                        flush=True,
+                    )
+
+                full_text += delta
+                sentence_buffer += delta
+
+                while True:
+                    sentence_end = None
+                    for punctuation in (".", "!", "?"):
+                        index = sentence_buffer.find(punctuation)
+                        if index != -1 and (sentence_end is None or index < sentence_end):
+                            sentence_end = index
+                    if sentence_end is None:
+                        break
+
+                    sentence = sentence_buffer[:sentence_end + 1].strip()
+                    sentence_buffer = sentence_buffer[sentence_end + 1:]
+                    sentence = self._normalize_text(sentence)
+                    if on_sentence and self._is_speech_worthy(sentence):
+                        on_sentence(sentence)
+
+        if final_result:
+            message_text = self._normalize_text(self._extract_message_text(final_result.get("output")))
+            if not full_text.strip() and message_text:
+                full_text = message_text
+                if on_sentence and self._is_speech_worthy(full_text):
+                    on_sentence(full_text)
+
+        remaining = self._normalize_text(sentence_buffer.strip())
+        if remaining and on_sentence and self._is_speech_worthy(remaining):
+            on_sentence(remaining)
+
+        input_tokens, output_tokens, reasoning_tokens, tokens_per_second, ttft, model_load_time = self._output_stats(final_result)
+        total_request_time = time.perf_counter() - request_start
+
+        return {
+            "text": self._normalize_text(full_text.strip()),
+            "result": final_result,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "reasoning_tokens": reasoning_tokens,
+            "tokens_per_second": tokens_per_second,
+            "ttft": ttft,
+            "model_load_time": model_load_time,
+            "request_time": total_request_time,
+            "response_open_time": (
+                response_open - request_start if response_open is not None else None
+            ),
+            "first_event_time": (
+                first_event_time - request_start if first_event_time is not None else None
+            ),
+            "chat_start_time": (
+                chat_start_time - request_start if chat_start_time is not None else None
+            ),
+            "model_load_event_time": (
+                model_load_end - model_load_start
+                if model_load_start is not None and model_load_end is not None
+                else None
+            ),
+            "prompt_processing_time": (
+                prompt_end - prompt_start
+                if prompt_start is not None and prompt_end is not None
+                else None
+            ),
+            "prompt_end_to_message_start": (
+                message_start - prompt_end
+                if prompt_end is not None and message_start is not None
+                else None
+            ),
+            "message_start_to_first_delta": (
+                first_delta_time - message_start
+                if first_delta_time is not None and message_start is not None
+                else None
+            ),
+            "request_to_first_delta": (
+                first_delta_time - request_start if first_delta_time is not None else None
+            ),
+            "exhausted_reasoning": (
+                not full_text.strip()
+                and output_tokens >= max_output_tokens
+                and reasoning_tokens >= max_output_tokens
+            ),
+        }
+
+    def generate_response(self, text, on_sentence=None):
+        if not text:
+            return ""
+
+        request_start = time.perf_counter()
+        try:
+            attempt = self._request(text, on_sentence, self.max_output_tokens)
+            if attempt["exhausted_reasoning"] and self.reasoning_retry_tokens > self.max_output_tokens:
+                print(
+                    f"[AI] Output budget exhausted; retrying with {self.reasoning_retry_tokens} output tokens.",
+                    flush=True,
+                )
+                attempt = self._request(text, on_sentence, self.reasoning_retry_tokens)
+        except requests.RequestException as exc:
+            print(
+                f"[AI] Connection error after {time.perf_counter() - request_start:.2f}s: {exc}",
+                flush=True,
+            )
+            return ""
+        except Exception as exc:
+            print(
+                f"[AI] Error after {time.perf_counter() - request_start:.2f}s: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            return ""
+
+        final_result = attempt["result"]
+        if final_result and final_result.get("response_id"):
+            self.previous_response_id = final_result["response_id"]
+            print("[AI] Conversation state updated.", flush=True)
+
+        print(f"[AI] Request: {attempt['request_time']:.2f}s", flush=True)
+        print(f"[AI] Input tokens: {attempt['input_tokens']}", flush=True)
+        print(f"[AI] Output tokens: {attempt['output_tokens']}", flush=True)
+        print(f"[AI] Reasoning tokens: {attempt['reasoning_tokens']}", flush=True)
+        print(f"[AI] LM Studio speed: {attempt['tokens_per_second']:.2f} tok/s", flush=True)
+        if attempt["ttft"] is not None:
+            print(f"[AI] LM Studio reported TTFT: {attempt['ttft']:.3f}s", flush=True)
+        if attempt["response_open_time"] is not None:
+            print(f"[AI] HTTP headers received: {attempt['response_open_time']:.3f}s", flush=True)
+        if attempt["first_event_time"] is not None and attempt["response_open_time"] is not None:
+            print(
+                f"[AI] Headers -> first SSE event: "
+                f"{attempt['first_event_time'] - attempt['response_open_time']:.3f}s",
+                flush=True,
+            )
+        if attempt["chat_start_time"] is not None and attempt["response_open_time"] is not None:
+            print(
+                f"[AI] Headers -> chat.start: "
+                f"{attempt['chat_start_time'] - attempt['response_open_time']:.3f}s",
+                flush=True,
+            )
+        if attempt["model_load_event_time"] is not None:
+            print(f"[AI] Model load event: {attempt['model_load_event_time']:.3f}s", flush=True)
+        if attempt["prompt_processing_time"] is not None:
+            print(f"[AI] Prompt processing: {attempt['prompt_processing_time']:.3f}s", flush=True)
+        if attempt["prompt_end_to_message_start"] is not None:
+            print(
+                f"[AI] prompt.end -> message.start: {attempt['prompt_end_to_message_start']:.3f}s",
+                flush=True,
+            )
+        if attempt["message_start_to_first_delta"] is not None:
+            print(
+                f"[AI] Message start -> first delta: {attempt['message_start_to_first_delta']:.3f}s",
+                flush=True,
+            )
+        if attempt["model_load_time"] is not None:
+            print(f"[AI] Model load: {attempt['model_load_time']:.3f}s", flush=True)
+        print(f"[AI] Response: {attempt['text']}", flush=True)
+        return attempt["text"]
