@@ -32,11 +32,17 @@ class AuthorizationResult:
 
 
 class AuthorityPolicy:
-    """Central policy engine for tool authorization."""
+    """Central policy engine for tool authorization.
+
+    By default, A.S.T.A. can perform low- and medium-risk everyday actions
+    without interrupting the user. High- and critical-risk actions require
+    explicit confirmation unless a caller supplies an elevated authority
+    policy intentionally.
+    """
 
     def __init__(
         self,
-        maximum_automatic_risk: RiskLevel = RiskLevel.LOW,
+        maximum_automatic_risk: RiskLevel = RiskLevel.MEDIUM,
     ):
         self.maximum_automatic_risk = maximum_automatic_risk
 
@@ -49,8 +55,9 @@ class AuthorityPolicy:
         risk = self._parse_risk(definition.risk_level)
 
         # Explicit confirmation is accepted only for a tool that was
-        # identified as requiring confirmation. Low-risk tools continue to
-        # follow the automatic policy and never need a confirmation path.
+        # identified as requiring confirmation. Low- and medium-risk tools
+        # continue to follow the automatic policy and do not need a
+        # confirmation path unless the policy says otherwise.
         if definition.requires_confirmation:
             if confirmed:
                 return AuthorizationResult(

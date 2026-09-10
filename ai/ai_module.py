@@ -7,6 +7,35 @@ from .openai_engine import AIEngine
 
 class AIModule(Module):
 
+    _APPROVAL_CONFIRMATIONS = {
+        "yes",
+        "yeah",
+        "yep",
+        "yup",
+        "sure",
+        "okay",
+        "ok",
+        "confirm",
+        "confirmed",
+        "i confirm",
+        "go ahead",
+        "do it",
+        "proceed",
+        "yes proceed",
+    }
+
+    _APPROVAL_REJECTIONS = {
+        "no",
+        "nope",
+        "nah",
+        "cancel",
+        "reject",
+        "decline",
+        "don't",
+        "do not",
+        "stop",
+    }
+
     def __init__(self, kernel):
         super().__init__(
             name="AIModule",
@@ -79,19 +108,18 @@ class AIModule(Module):
             return
         print(f"[AI] User: {text}", flush=True)
 
+        # Approval responses are stateful and must be resolved before normal
+        # intent routing. Otherwise phrases such as "I confirm" fall through
+        # to the conversational LLM path and the pending tool is never run.
+        if self._handle_approval_response(text):
+            return
+
         # Do not let the LLM fabricate personal information before memory
         # exists. This can be expanded when the real memory subsystem lands.
         if self._is_unknown_name_question(text):
             self._emit_assistant_text(
                 "I don't know your name yet. I don't have that information stored."
             )
-            return
-
-        # Capability questions are answered from the live registry instead of
-        # asking the LLM to guess what ASTA can or cannot do.
-        capability_response = self._capability_response(text)
-        if capability_response is not None:
-            self._emit_assistant_text(capability_response)
             return
 
         result: IntentResult = self.kernel.intent_router.analyze(text)
@@ -106,7 +134,48 @@ class AIModule(Module):
         if result.intent == IntentType.MEMORY:
             self.event_bus.emit("memory_request", intent=result)
             return
+
+        # Only answer a capability question from the registry after command
+        # routing has had a chance to recognize phrases such as "Can you open
+        # Chrome?" as executable commands.
+        capability_response = self._capability_response(text)
+        if capability_response is not None:
+            self._emit_assistant_text(capability_response)
+            return
+
         self._generate_response(text)
+
+    def _handle_approval_response(self, text):
+        """Resolve a voice/text confirmation against the pending request.
+
+        A.S.T.A. currently supports one active approval conversationally. When
+        exactly one request is pending, a recognized confirmation or rejection
+        is translated into the existing tool-runtime event contract.
+        """
+        pending = self.kernel.approval_manager.list_pending()
+        if len(pending) != 1:
+            return False
+
+        normalized = self._normalize_question(text)
+        compact = normalized.rstrip(" .!?;:")
+
+        approved = compact in self._APPROVAL_CONFIRMATIONS
+        rejected = compact in self._APPROVAL_REJECTIONS
+        if not (approved or rejected):
+            return False
+
+        request = pending[0].request
+        print(
+            f"[AI] Approval response: {'approved' if approved else 'rejected'} "
+            f"(request_id={request.request_id})",
+            flush=True,
+        )
+        self.event_bus.emit(
+            "tool_confirmation_response",
+            request_id=request.request_id,
+            approved=approved,
+        )
+        return True
 
     @staticmethod
     def _normalize_question(text):

@@ -84,6 +84,41 @@ def test_policy_allows_risk_at_or_below_limit():
     assert result.success is True
 
 
+def test_default_policy_allows_medium_risk_automatically():
+    policy = AuthorityPolicy()
+
+    definition = ToolDefinition(
+        name="medium_test",
+        description="Test medium-risk authorization.",
+        input_schema={"type": "object"},
+        risk_level="medium",
+        requires_confirmation=False,
+    )
+
+    authorization = policy.authorize(definition)
+
+    assert authorization.allowed is True
+    assert authorization.requires_confirmation is False
+
+
+def test_default_policy_requires_confirmation_for_high_risk():
+    policy = AuthorityPolicy()
+
+    definition = ToolDefinition(
+        name="high_test",
+        description="Test high-risk authorization.",
+        input_schema={"type": "object"},
+        risk_level="high",
+        requires_confirmation=False,
+    )
+
+    authorization = policy.authorize(definition)
+
+    assert authorization.allowed is False
+    assert authorization.requires_confirmation is True
+    assert "exceeds" in authorization.reason
+
+
 def test_policy_blocks_risk_above_limit():
     policy = AuthorityPolicy(
         maximum_automatic_risk=RiskLevel.LOW

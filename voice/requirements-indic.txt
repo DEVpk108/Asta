@@ -1,0 +1,6 @@
+# AI4Bharat IndicConformer-600M-Multi
+transformers
+torchaudio
+onnx
+onnxruntime
+onnxruntime-gpu

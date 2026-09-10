@@ -7,11 +7,29 @@ from .contracts.intent import (
 )
 
 
-# ============================================================
-# Intent Router
-# ============================================================
-
 class IntentRouter:
+
+    _COMMAND_PREFIXES = (
+        ("open ", "open"),
+        ("launch ", "launch"),
+        ("start ", "start"),
+        ("close ", "close"),
+        ("run ", "run"),
+        ("stop ", "stop"),
+    )
+
+    _COMMAND_LEADS = (
+        "please ",
+        "can you ",
+        "could you ",
+        "would you ",
+        "will you ",
+        "i want you to ",
+        "i need you to ",
+        "okay ",
+        "ok ",
+        "hey ",
+    )
 
     def route(self, text: str) -> IntentType:
         """Backward-compatible intent-only API."""
@@ -46,25 +64,13 @@ class IntentRouter:
                 classifier="rules",
             )
 
-        command_phrases = (
-            "open ",
-            "close ",
-            "launch ",
-            "start ",
-            "run ",
-            "stop ",
-            "mute",
-            "unmute",
-            "take a screenshot",
-            "screenshot",
-        )
-
-        if normalized.startswith(command_phrases):
+        command_entities = self._extract_command_entities(normalized)
+        if command_entities:
             return IntentResult(
                 intent=IntentType.COMMAND,
                 confidence=0.98,
                 normalized_text=normalized,
-                entities=self._extract_command_entities(normalized),
+                entities=command_entities,
                 requires_tools=True,
                 classifier="rules",
             )
@@ -101,30 +107,70 @@ class IntentRouter:
     @staticmethod
     def _normalize(text: str) -> str:
         # Speech-to-text commonly adds terminal punctuation. Keep the
-        # normalized form stable so "screenshot." maps exactly like
-        # "screenshot" while preserving useful characters inside commands.
+        # normalized form stable while allowing natural chatter around commands.
         text = text.strip().lower()
         text = re.sub(r"\s+", " ", text)
         text = re.sub(r"[.!?,;:]+$", "", text)
         return text.strip()
 
-    @staticmethod
-    def _extract_command_entities(text: str) -> dict[str, Any]:
-        for prefix, action in (
-            ("open ", "open"),
-            ("launch ", "launch"),
-            ("start ", "start"),
-            ("close ", "close"),
-            ("run ", "run"),
-            ("stop ", "stop"),
-        ):
-            if text.startswith(prefix):
+    @classmethod
+    def _extract_command_entities(cls, text: str) -> dict[str, Any]:
+        # Direct commands: "open chrome", "take a screenshot", etc.
+        direct = cls._extract_direct_command(text)
+        if direct:
+            return direct
+
+        # Natural wrappers: "please open chrome", "can you open chrome",
+        # "okay, open chrome", and similar voice-assistant phrasing.
+        stripped = text
+        changed = True
+        while changed:
+            changed = False
+            for lead in cls._COMMAND_LEADS:
+                if stripped.startswith(lead):
+                    stripped = stripped[len(lead):].lstrip(" ,")
+                    changed = True
+                    break
+
+        direct = cls._extract_direct_command(stripped)
+        if direct:
+            return direct
+
+        # Embedded command: "nothing else, open chrome" or
+        # "hey asta, please open chrome". Search for the command boundary,
+        # but only accept an explicit executable action phrase.
+        pattern = re.compile(
+            r"(?:^|[\s,;:])"
+            r"(?:(?:please|can you|could you|would you|will you|okay|ok|hey)\s+)?"
+            r"(?P<action>open|launch|start|close|run|stop)\s+"
+            r"(?P<target>.+?)\s*$"
+        )
+        match = pattern.search(text)
+        if match:
+            target = match.group("target").strip(" ,.!?;:")
+            if target:
                 return {
-                    "action": action,
-                    "target": text[len(prefix):].strip(),
+                    "action": match.group("action"),
+                    "target": target,
                 }
 
-        if text == "screenshot" or text.startswith("screenshot ") or text.startswith("take a screenshot"):
+        return {}
+
+    @classmethod
+    def _extract_direct_command(cls, text: str) -> dict[str, Any]:
+        for prefix, action in cls._COMMAND_PREFIXES:
+            if text.startswith(prefix):
+                target = text[len(prefix):].strip(" ,.!?;:")
+                if target:
+                    return {
+                        "action": action,
+                        "target": target,
+                    }
+
+        if text == "screenshot" or text.startswith("screenshot "):
+            return {"action": "screenshot"}
+
+        if text.startswith("take a screenshot"):
             return {"action": "screenshot"}
 
         if text == "mute":
