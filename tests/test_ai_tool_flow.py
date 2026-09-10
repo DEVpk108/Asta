@@ -1,5 +1,5 @@
 from core import Kernel
-from core.contracts import IntentType, ToolResult
+from core.contracts import ToolResult
 from core.tools import OpenApplicationTool, ToolRuntimeModule
 
 
@@ -8,7 +8,7 @@ class RecordingEngine:
         raise AssertionError("LLM should not be called for a command intent")
 
 
-def test_command_intent_emits_tool_request_and_reaches_runtime(monkeypatch):
+def test_command_intent_reaches_runtime_without_approval_for_everyday_open(monkeypatch):
     kernel = Kernel()
     kernel.register_tool(OpenApplicationTool())
     runtime = ToolRuntimeModule(kernel)
@@ -28,10 +28,9 @@ def test_command_intent_emits_tool_request_and_reaches_runtime(monkeypatch):
         lambda result: results.append(result),
     )
 
-    # Keep the real OS opener out of this integration test. The assertion is
-    # about the event/request/approval boundary, not platform GUI behavior.
     class FakeOpenTool(OpenApplicationTool):
-        def _open(self, target):
+        @staticmethod
+        def _open(target):
             return None
 
     kernel.tool_registry.unregister("system.open_application")
@@ -42,23 +41,14 @@ def test_command_intent_emits_tool_request_and_reaches_runtime(monkeypatch):
 
     ai.on_user_message("open calculator")
 
-    assert confirmations
-    request, _ = confirmations[0]
-    assert request.tool == "system.open_application"
-    assert request.arguments == {"target": "calculator"}
-
-    kernel.event_bus.emit(
-        "tool_confirmation_response",
-        request_id=request.request_id,
-        approved=True,
-    )
-
+    assert confirmations == []
     assert results
     result = results[-1]
     assert isinstance(result, ToolResult)
     assert result.success is True
     assert result.tool == "system.open_application"
     assert result.output["target"] == "calculator"
+    assert result.output["resolved_target"] == "calc.exe"
 
     ai.shutdown()
     runtime.shutdown()
