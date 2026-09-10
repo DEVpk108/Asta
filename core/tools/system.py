@@ -3,6 +3,7 @@ import platform
 import shutil
 import subprocess
 import time
+from pathlib import Path
 from urllib.parse import urlparse
 
 from core.contracts import ToolDefinition, ToolRequest, ToolResult
@@ -11,9 +12,9 @@ from core.tools.base import Tool
 
 
 # Friendly application names that cannot reliably be launched by passing the
-# spoken name directly to Windows. These are intentionally limited to known
-# non-destructive application launch targets; arbitrary URI schemes are still
-# accepted only when the user explicitly supplies one.
+# spoken name directly to Windows. These aliases resolve either to an explicit
+# URI handler or to an application executable discovered in common install
+# locations.
 WINDOWS_APPLICATION_ALIASES = {
     "calculator": "calc.exe",
     "calc": "calc.exe",
@@ -27,9 +28,9 @@ class OpenApplicationTool(Tool):
     """Open a local application, file, URL, or known friendly app alias.
 
     The tool intentionally avoids shell execution. On Windows it first tries
-    a known safe application alias, then an executable resolved from PATH,
-    then the native Windows opener for paths/URIs. On POSIX platforms it uses
-    the platform's native opener before falling back to PATH resolution.
+    a known URI/executable alias, then common installation locations and PATH,
+    then the native Windows opener for paths/URIs. POSIX platforms use their
+    native opener before falling back to PATH resolution.
     """
 
     @property
@@ -71,10 +72,16 @@ class OpenApplicationTool(Tool):
             )
 
         target = target.strip()
-        resolved_target = self.resolve_target(target)
-
         try:
+            resolved_target = self.resolve_target(target)
             self._open(resolved_target)
+        except FileNotFoundError:
+            return ToolResult(
+                success=False,
+                tool=self.definition.name,
+                error=f"Application '{target}' could not be found on this system.",
+                duration_seconds=time.perf_counter() - start,
+            )
         except Exception as exc:
             return ToolResult(
                 success=False,
@@ -105,14 +112,22 @@ class OpenApplicationTool(Tool):
         if os.name == "nt":
             alias = WINDOWS_APPLICATION_ALIASES.get(normalized)
             if alias:
-                return alias
+                if alias.endswith(":"):
+                    return alias
+                executable = cls._resolve_windows_executable(alias)
+                if executable:
+                    return executable
+                # Let Windows resolve executable names such as calc.exe via
+                # the native opener when the executable is not on PATH.
+                if shutil.which(alias):
+                    return alias
+                if normalized in {"calculator", "calc"}:
+                    return alias
 
-            executable = shutil.which(target)
+            executable = cls._resolve_windows_executable(target)
             if executable:
                 return executable
 
-            # Preserve Windows paths and explicitly supplied URIs for the
-            # native opener. Do not reinterpret arbitrary unknown names.
             if os.path.exists(target) or cls._looks_like_uri(target):
                 return target
 
@@ -128,6 +143,49 @@ class OpenApplicationTool(Tool):
             return target
 
         raise FileNotFoundError(f"Application or URI target not found: {target}")
+
+    @staticmethod
+    def _resolve_windows_executable(target: str) -> str | None:
+        """Resolve an executable from PATH or common Windows install paths."""
+        executable = shutil.which(target)
+        if executable:
+            return executable
+
+        candidate = Path(target)
+        if candidate.is_absolute() and candidate.is_file():
+            return str(candidate)
+
+        name = target.lower()
+        common_paths = []
+
+        if name in {"chrome", "chrome.exe"}:
+            common_paths.extend(
+                [
+                    Path(os.environ.get("PROGRAMFILES", ""))
+                    / "Google/Chrome/Application/chrome.exe",
+                    Path(os.environ.get("PROGRAMFILES(X86)", ""))
+                    / "Google/Chrome/Application/chrome.exe",
+                    Path(os.environ.get("LOCALAPPDATA", ""))
+                    / "Google/Chrome/Application/chrome.exe",
+                ]
+            )
+        elif name in {"msedge", "msedge.exe", "edge"}:
+            common_paths.extend(
+                [
+                    Path(os.environ.get("PROGRAMFILES", ""))
+                    / "Microsoft/Edge/Application/msedge.exe",
+                    Path(os.environ.get("PROGRAMFILES(X86)", ""))
+                    / "Microsoft/Edge/Application/msedge.exe",
+                    Path(os.environ.get("LOCALAPPDATA", ""))
+                    / "Microsoft/Edge/Application/msedge.exe",
+                ]
+            )
+
+        for path in common_paths:
+            if str(path) not in {".", ""} and path.is_file():
+                return str(path)
+
+        return None
 
     @staticmethod
     def _looks_like_uri(target: str) -> bool:
