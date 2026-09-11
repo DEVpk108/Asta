@@ -15,8 +15,6 @@ class SpeechModule(Module):
             kernel=kernel,
         )
 
-        # Local-first TTS backend. Synthesis and playback are separated so the
-        # next sentence can be prepared while the previous sentence is playing.
         self.engine = KokoroEngine()
 
         self._queue = queue.Queue()
@@ -129,6 +127,7 @@ class SpeechModule(Module):
                     self._audio_queue.task_done()
                     break
 
+                self.event_bus.emit("speech_started")
                 try:
                     self.engine.play(audio)
                 except Exception as exc:
@@ -137,6 +136,7 @@ class SpeechModule(Module):
                         flush=True,
                     )
                 finally:
+                    self.event_bus.emit("speech_finished")
                     self._audio_queue.task_done()
             except Exception as exc:
                 print(
