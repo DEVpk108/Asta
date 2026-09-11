@@ -27,7 +27,11 @@ class VoiceModule(Module):
 
         self._running = False
         self._thread = None
-        self.conversation_timeout = 8.0
+
+        # A wake-word activation starts a natural conversation session.
+        # Keep it alive long enough for normal back-and-forth interaction.
+        # Explicit manual conversation mode remains active until turned off.
+        self.conversation_timeout = 30.0
         self._conversation_active = False
         self._manual_conversation = False
         self._last_interaction = 0.0
@@ -122,6 +126,12 @@ class VoiceModule(Module):
         self._tts_active = False
         # Remove TTS echo/residual audio before wake-word detection resumes.
         self.microphone.clear_buffer()
+
+        # Assistant playback is part of the current interaction. Do not let
+        # the response's speaking time consume the conversation inactivity
+        # timeout and cut the user off immediately after a long reply.
+        if self._conversation_active and not self._manual_conversation:
+            self._last_interaction = time.monotonic()
 
     def _can_listen(self):
         return self._running and not self._tts_active
