@@ -33,10 +33,6 @@ class VoiceModule(Module):
         self._last_interaction = 0.0
         self._tts_active = False
 
-    # ---------------------------------------------------------
-    # Lifecycle
-    # ---------------------------------------------------------
-
     def initialize(self):
         print("[Voice] Initializing...", flush=True)
 
@@ -44,6 +40,7 @@ class VoiceModule(Module):
             "conversation_mode_set",
             self.on_conversation_mode_set,
         )
+        self.event_bus.subscribe("assistant_sentence", self._on_assistant_sentence)
         self.event_bus.subscribe("speech_started", self._on_speech_started)
         self.event_bus.subscribe("speech_finished", self._on_speech_finished)
 
@@ -66,6 +63,7 @@ class VoiceModule(Module):
             "conversation_mode_set",
             self.on_conversation_mode_set,
         )
+        self.event_bus.unsubscribe("assistant_sentence", self._on_assistant_sentence)
         self.event_bus.unsubscribe("speech_started", self._on_speech_started)
         self.event_bus.unsubscribe("speech_finished", self._on_speech_finished)
 
@@ -75,24 +73,15 @@ class VoiceModule(Module):
             self.microphone.stop()
         except Exception as exc:
             print(
-                f"[Voice] Microphone shutdown error: "
-                f"{type(exc).__name__}: {exc}",
+                f"[Voice] Microphone shutdown error: {type(exc).__name__}: {exc}",
                 flush=True,
             )
 
-        if (
-            self._thread is not None
-            and self._thread.is_alive()
-        ):
+        if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=2.0)
 
         self._thread = None
-
         print("[Voice] Stopped", flush=True)
-
-    # ---------------------------------------------------------
-    # Conversation mode controls
-    # ---------------------------------------------------------
 
     def on_conversation_mode_set(self, enabled):
         self._manual_conversation = bool(enabled)
@@ -109,26 +98,20 @@ class VoiceModule(Module):
     def _start_conversation(self):
         self._conversation_active = True
         self._last_interaction = time.monotonic()
-
-        print(
-            "[Voice] Conversation mode: ACTIVE",
-            flush=True,
-        )
+        print("[Voice] Conversation mode: ACTIVE", flush=True)
 
     def _conversation_expired(self):
         return (
             self._conversation_active
             and not self._manual_conversation
-            and (
-                time.monotonic()
-                - self._last_interaction
-                > self.conversation_timeout
-            )
+            and (time.monotonic() - self._last_interaction > self.conversation_timeout)
         )
 
-    # ---------------------------------------------------------
-    # TTS / microphone coordination
-    # ---------------------------------------------------------
+    def _on_assistant_sentence(self, *args, **kwargs):
+        # Suppress recognition as soon as ASTA queues speech. This closes the
+        # race where the voice loop has already entered wake-word detection
+        # before the audio playback worker emits speech_started.
+        self._tts_active = True
 
     def _on_speech_started(self, *args, **kwargs):
         self._tts_active = True
@@ -136,53 +119,41 @@ class VoiceModule(Module):
     def _on_speech_finished(self, *args, **kwargs):
         self._tts_active = False
 
-    # ---------------------------------------------------------
-    # Main voice loop
-    # ---------------------------------------------------------
+    def _can_listen(self):
+        return self._running and not self._tts_active
 
     def _listen_loop(self):
         while self._running:
             try:
-                # Never run wake-word or VAD recognition while ASTA is speaking.
-                if self._tts_active:
+                if not self._can_listen():
                     time.sleep(0.05)
                     continue
 
-                # -------------------------------------------------
-                # 1. Standby mode: wait for a wake word.
-                # -------------------------------------------------
                 if not self._conversation_active:
                     initial_audio = self.wakeword.wait_for_wakeword(
-                        self.microphone
+                        self.microphone,
+                        should_continue=self._can_listen,
                     )
 
                     if not self._running:
                         break
 
-                    if self._tts_active:
+                    if initial_audio is None or not self._can_listen():
                         continue
 
                     self._start_conversation()
                 else:
-                    # -------------------------------------------------
-                    # 2. Conversation mode: no wake word required.
-                    # -------------------------------------------------
                     initial_audio = None
 
                     if self._conversation_expired():
                         self._conversation_active = False
-
                         print(
                             "[Voice] Conversation mode: INACTIVE",
                             flush=True,
                         )
-
                         continue
 
-                # -------------------------------------------------
-                # 3. Capture the user's command.
-                # -------------------------------------------------
-                if self._tts_active:
+                if not self._can_listen():
                     continue
 
                 audio = self.vad.collect_utterance(
@@ -194,55 +165,35 @@ class VoiceModule(Module):
                 if not self._running:
                     break
 
-                if self._tts_active:
+                if not self._can_listen():
                     continue
 
                 if audio is None:
                     if self._conversation_expired():
                         self._conversation_active = False
-
                         print(
                             "[Voice] Conversation mode: INACTIVE",
                             flush=True,
                         )
-
                     continue
 
-                # -------------------------------------------------
-                # 4. Speech -> text.
-                # -------------------------------------------------
-                text = self.recognition.transcribe(audio)
+                if not self._can_listen():
+                    continue
 
+                text = self.recognition.transcribe(audio)
                 if not text:
                     continue
 
-                print(
-                    f"[Voice] User: {text}",
-                    flush=True,
-                )
-
-                # -------------------------------------------------
-                # 5. Refresh conversation timeout.
-                # -------------------------------------------------
+                print(f"[Voice] User: {text}", flush=True)
                 self._last_interaction = time.monotonic()
 
-                # -------------------------------------------------
-                # 6. Send recognized text into ASTA.
-                # -------------------------------------------------
-                self.event_bus.emit(
-                    "user_message",
-                    text=text,
-                )
+                self.event_bus.emit("user_message", text=text)
 
-                # -------------------------------------------------
-                # 7. Refresh timeout after processing.
-                # -------------------------------------------------
                 self._last_interaction = time.monotonic()
 
             except Exception as exc:
                 print(
-                    f"[Voice] Error: "
-                    f"{type(exc).__name__}: {exc}",
+                    f"[Voice] Error: {type(exc).__name__}: {exc}",
                     flush=True,
                 )
 
