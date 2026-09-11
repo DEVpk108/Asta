@@ -31,6 +31,7 @@ class VoiceModule(Module):
         self._conversation_active = False
         self._manual_conversation = False
         self._last_interaction = 0.0
+        self._tts_active = False
 
     # ---------------------------------------------------------
     # Lifecycle
@@ -43,6 +44,8 @@ class VoiceModule(Module):
             "conversation_mode_set",
             self.on_conversation_mode_set,
         )
+        self.event_bus.subscribe("speech_started", self._on_speech_started)
+        self.event_bus.subscribe("speech_finished", self._on_speech_finished)
 
         self._running = True
         self.microphone.start()
@@ -63,6 +66,8 @@ class VoiceModule(Module):
             "conversation_mode_set",
             self.on_conversation_mode_set,
         )
+        self.event_bus.unsubscribe("speech_started", self._on_speech_started)
+        self.event_bus.unsubscribe("speech_finished", self._on_speech_finished)
 
         self._running = False
 
@@ -122,12 +127,27 @@ class VoiceModule(Module):
         )
 
     # ---------------------------------------------------------
+    # TTS / microphone coordination
+    # ---------------------------------------------------------
+
+    def _on_speech_started(self, *args, **kwargs):
+        self._tts_active = True
+
+    def _on_speech_finished(self, *args, **kwargs):
+        self._tts_active = False
+
+    # ---------------------------------------------------------
     # Main voice loop
     # ---------------------------------------------------------
 
     def _listen_loop(self):
         while self._running:
             try:
+                # Never run wake-word or VAD recognition while ASTA is speaking.
+                if self._tts_active:
+                    time.sleep(0.05)
+                    continue
+
                 # -------------------------------------------------
                 # 1. Standby mode: wait for a wake word.
                 # -------------------------------------------------
@@ -138,6 +158,9 @@ class VoiceModule(Module):
 
                     if not self._running:
                         break
+
+                    if self._tts_active:
+                        continue
 
                     self._start_conversation()
                 else:
@@ -159,6 +182,9 @@ class VoiceModule(Module):
                 # -------------------------------------------------
                 # 3. Capture the user's command.
                 # -------------------------------------------------
+                if self._tts_active:
+                    continue
+
                 audio = self.vad.collect_utterance(
                     self.microphone,
                     initial_audio,
@@ -167,6 +193,9 @@ class VoiceModule(Module):
 
                 if not self._running:
                     break
+
+                if self._tts_active:
+                    continue
 
                 if audio is None:
                     if self._conversation_expired():
