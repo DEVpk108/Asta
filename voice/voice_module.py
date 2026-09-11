@@ -93,6 +93,8 @@ class VoiceModule(Module):
         else:
             self._conversation_active = False
             self._last_interaction = 0.0
+            # Discard anything captured while processing the OFF command.
+            self.microphone.clear_buffer()
             print("[Voice] Conversation mode: OFF", flush=True)
 
     def _start_conversation(self):
@@ -118,6 +120,8 @@ class VoiceModule(Module):
 
     def _on_speech_finished(self, *args, **kwargs):
         self._tts_active = False
+        # Remove TTS echo/residual audio before wake-word detection resumes.
+        self.microphone.clear_buffer()
 
     def _can_listen(self):
         return self._running and not self._tts_active
@@ -151,6 +155,7 @@ class VoiceModule(Module):
                             "[Voice] Conversation mode: INACTIVE",
                             flush=True,
                         )
+                        self.microphone.clear_buffer()
                         continue
 
                 if not self._can_listen():
@@ -175,6 +180,7 @@ class VoiceModule(Module):
                             "[Voice] Conversation mode: INACTIVE",
                             flush=True,
                         )
+                        self.microphone.clear_buffer()
                     continue
 
                 if not self._can_listen():
