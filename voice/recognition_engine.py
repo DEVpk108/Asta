@@ -6,7 +6,7 @@ import torch
 
 
 class RecognitionEngine:
-    """Pluggable local STT router with graceful optional-backend fallback."""
+    """Pluggable local STT router with Whisper as the current default."""
 
     SUPPORTED_BACKENDS = {"whisper", "indic", "hybrid"}
 
@@ -28,7 +28,7 @@ class RecognitionEngine:
         self.beam_size = beam_size
         self.language = language
         self.backend = (
-            (backend or os.getenv("ASTA_STT_BACKEND", "hybrid"))
+            (backend or os.getenv("ASTA_STT_BACKEND", "whisper"))
             .strip()
             .lower()
         )
@@ -50,9 +50,7 @@ class RecognitionEngine:
         self.last_language_probability = 0.0
 
         self.model = None
-        # Whisper is used by the whisper and hybrid paths. The explicit Indic
-        # path can use IndicConformer without loading Whisper.
-        if self.backend in {"whisper", "hybrid"}:
+        if self.backend in {"whisper", "hybrid", "indic"}:
             start = time.perf_counter()
             self.model = WhisperModel(
                 model_size_or_path=model_name,
@@ -108,9 +106,8 @@ class RecognitionEngine:
             log_prob_threshold=-1.0,
             no_speech_threshold=0.6,
             initial_prompt=(
-                "Conversation with ASTA. The speaker may use English, "
-                "Hindi, or natural Hinglish. Preserve the spoken meaning "
-                "and do not invent words."
+                "Conversation with ASTA. The speaker is using English. "
+                "Preserve the spoken meaning and do not invent words."
             ),
         )
 
@@ -160,32 +157,16 @@ class RecognitionEngine:
         if audio is None:
             return ""
 
-        # Instances created by older tests/integrations with __new__ may not
-        # have the newer backend fields yet. Treat those as Whisper instances.
         backend = getattr(self, "backend", "whisper")
-        indic_language = getattr(self, "indic_language", "hi")
         start = time.perf_counter()
 
         try:
             if backend == "indic":
-                # Keep the official "indic" mode useful without forcing a
-                # second model: Whisper provides a graceful fallback when the
-                # gated IndicConformer checkpoint isn't available.
                 whisper_text = self._transcribe_whisper(audio)
                 text = self._use_indic(audio, whisper_text)
             else:
-                whisper_text = self._transcribe_whisper(audio)
-                detected = (self.last_language or "").lower()
-
-                if (
-                    backend == "hybrid"
-                    and detected == indic_language
-                    and self.last_language_probability >= 0.30
-                ):
-                    text = self._use_indic(audio, whisper_text)
-                else:
-                    self.last_backend = "whisper"
-                    text = whisper_text
+                text = self._transcribe_whisper(audio)
+                self.last_backend = "whisper"
 
             elapsed = time.perf_counter() - start
             print(
