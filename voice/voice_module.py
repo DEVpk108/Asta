@@ -35,6 +35,7 @@ class VoiceModule(Module):
         self._last_interaction = 0.0
         self._tts_active = False
         self._tts_guard_until = 0.0
+        self._microphone_paused_for_tts = False
 
         # First wake-word activation gets a short introduction; subsequent
         # activations use a concise acknowledgement.
@@ -127,25 +128,45 @@ class VoiceModule(Module):
         )
 
     def _on_assistant_sentence(self, *args, **kwargs):
-        # Block VAD immediately when ASTA queues speech, before playback has
-        # actually started. This prevents the microphone from catching the
-        # first milliseconds of TTS output.
+        # Speech is queued asynchronously. Pause the microphone immediately
+        # so no TTS audio can enter the VAD/STT pipeline while playback starts.
         self._tts_active = True
-        self._tts_guard_until = time.monotonic() + 0.15
+        self._tts_guard_until = time.monotonic() + 0.20
         self.microphone.clear_buffer()
 
     def _on_speech_started(self, *args, **kwargs):
         self._tts_active = True
-        self._tts_guard_until = time.monotonic() + 0.05
+        self._tts_guard_until = time.monotonic() + 0.20
         self.microphone.clear_buffer()
+
+        if not self._microphone_paused_for_tts:
+            try:
+                self.microphone.stop()
+                self._microphone_paused_for_tts = True
+                print("[Voice] Microphone paused during TTS", flush=True)
+            except Exception as exc:
+                print(
+                    f"[Voice] Microphone pause error: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
 
     def _on_speech_finished(self, *args, **kwargs):
         # SpeechModule emits speech_finished only after the complete queued
-        # response has played. Keep a short settling window so speaker audio
-        # tails cannot be interpreted as a new user command.
+        # response has played. Restart capture only after playback is done.
         self._tts_active = False
-        self._tts_guard_until = time.monotonic() + 0.35
+        self._tts_guard_until = time.monotonic() + 0.45
         self.microphone.clear_buffer()
+
+        if self._microphone_paused_for_tts and self._running:
+            try:
+                self.microphone.start()
+                self._microphone_paused_for_tts = False
+                print("[Voice] Microphone resumed after TTS", flush=True)
+            except Exception as exc:
+                print(
+                    f"[Voice] Microphone resume error: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
 
         if self._conversation_active and not self._manual_conversation:
             self._last_interaction = time.monotonic()
@@ -154,6 +175,7 @@ class VoiceModule(Module):
         return (
             self._running
             and not self._tts_active
+            and not self._microphone_paused_for_tts
             and time.monotonic() >= self._tts_guard_until
         )
 
@@ -191,6 +213,11 @@ class VoiceModule(Module):
 
                 if not self._can_listen():
                     continue
+
+                # Always clear audio captured immediately before VAD starts.
+                # This prevents stale speaker audio from becoming the next
+                # utterance when the microphone has just resumed.
+                self.microphone.clear_buffer()
 
                 audio = self.vad.collect_utterance(
                     self.microphone,
