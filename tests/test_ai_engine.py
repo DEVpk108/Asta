@@ -239,3 +239,42 @@ def test_reasoning_exhaustion_retries_with_larger_budget(monkeypatch):
     assert calls[1][1]["json"]["max_output_tokens"] == 8
     assert calls[0][1]["json"]["reasoning"] == "on"
     assert engine.previous_response_id == "successful-response"
+
+
+def test_response_guard_stops_stream_after_three_sentences(monkeypatch):
+    events = [
+        {"type": "message.delta", "content": "First sentence. Second sentence. Third sentence. Fourth sentence."},
+        {
+            "type": "chat.end",
+            "result": {
+                "response_id": "guarded-response",
+                "output": [{
+                    "type": "message",
+                    "content": "First sentence. Second sentence. Third sentence. Fourth sentence.",
+                }],
+                "stats": {
+                    "input_tokens": 4,
+                    "total_output_tokens": 20,
+                    "reasoning_output_tokens": 0,
+                    "tokens_per_second": 60.0,
+                },
+            },
+        },
+    ]
+
+    monkeypatch.setattr(
+        "ai.openai_engine.requests.Session.post",
+        lambda _session, *args, **kwargs: FakeResponse(events),
+    )
+
+    engine = AIEngine()
+    spoken = []
+    result = engine.generate_response("hello", on_sentence=spoken.append)
+
+    assert spoken == [
+        "First sentence.",
+        "Second sentence.",
+        "Third sentence.",
+    ]
+    assert result == "First sentence. Second sentence. Third sentence. Fourth sentence."
+    assert engine.max_sentences == 3
