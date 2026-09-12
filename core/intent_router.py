@@ -53,6 +53,14 @@ class IntentRouter:
         "i need ",
     )
 
+    _COMPOUND_SEPARATORS = (
+        " and then ",
+        " then ",
+        " after that ",
+        " followed by ",
+        " and ",
+    )
+
     def route(self, text: str) -> IntentType:
         """Backward-compatible intent-only API."""
         return self.analyze(text).intent
@@ -87,6 +95,17 @@ class IntentRouter:
                     requires_memory=True,
                     classifier="rules",
                 )
+
+        compound_commands = self._extract_compound_commands(normalized)
+        if compound_commands:
+            return IntentResult(
+                intent=IntentType.COMMAND,
+                confidence=0.98,
+                normalized_text=normalized,
+                entities={"commands": compound_commands},
+                requires_tools=True,
+                classifier="rules",
+            )
 
         command_entities = self._extract_command_entities(normalized)
         if command_entities:
@@ -136,6 +155,27 @@ class IntentRouter:
         text = re.sub(r"\s+", " ", text)
         text = re.sub(r"[.!?,;:]+$", "", text)
         return text.strip()
+
+    @classmethod
+    def _extract_compound_commands(cls, text: str) -> list[dict[str, Any]]:
+        """Parse simple sequential commands joined by natural separators."""
+        parts = [text]
+        for separator in cls._COMPOUND_SEPARATORS:
+            if separator in text:
+                parts = [part.strip(" ,") for part in text.split(separator)]
+                break
+
+        if len(parts) < 2:
+            return []
+
+        commands = []
+        for part in parts:
+            command = cls._extract_command_entities(part)
+            if not command or "commands" in command:
+                return []
+            commands.append(command)
+
+        return commands if len(commands) >= 2 else []
 
     @classmethod
     def _extract_command_entities(cls, text: str) -> dict[str, Any]:
