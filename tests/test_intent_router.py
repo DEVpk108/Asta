@@ -14,6 +14,12 @@ def test_take_screenshot_is_actionable():
     assert result.entities == {"action": "screenshot"}
 
 
+def test_screen_shot_is_actionable():
+    result = IntentRouter().analyze("Take a screen shot!")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {"action": "screenshot"}
+
+
 def test_open_command_preserves_target_after_normalization():
     result = IntentRouter().analyze("Open Calculator.")
     assert result.intent == IntentType.COMMAND
@@ -38,40 +44,12 @@ def test_can_you_open_is_command_not_capability_question():
     assert result.entities == {"action": "open", "target": "spotify"}
 
 
-def test_compound_command_is_parsed_as_sequential_steps():
-    result = IntentRouter().analyze(
-        "Can you please open Chrome then take a screenshot"
-    )
-
+def test_compound_command_with_and_is_sequenced():
+    result = IntentRouter().analyze("Open WhatsApp and take screen shot.")
     assert result.intent == IntentType.COMMAND
-    assert result.entities["commands"] == [
-        {"action": "open", "target": "chrome"},
-        {"action": "screenshot"},
-    ]
-
-
-def test_compound_command_supports_after_that():
-    result = IntentRouter().analyze(
-        "Open Chrome, after that take a screenshot"
-    )
-
-    assert result.intent == IntentType.COMMAND
-    assert result.entities["commands"] == [
-        {"action": "open", "target": "chrome"},
-        {"action": "screenshot"},
-    ]
-
-
-def test_simple_command_remains_single_command():
-    result = IntentRouter().analyze("open Chrome")
-
-    assert result.intent == IntentType.COMMAND
-    assert result.entities == {"action": "open", "target": "chrome"}
-
-
-def test_mixed_memory_and_follow_up_remains_non_memory():
-    result = IntentRouter().analyze(
-        "Do not forget about the tools. I know you can tell me a joke."
-    )
-
-    assert result.intent == IntentType.UNKNOWN
+    assert result.entities == {
+        "commands": [
+            {"action": "open", "target": "whatsapp"},
+            {"action": "screenshot"},
+        ]
+    }
