@@ -126,13 +126,31 @@ class RecognitionEngine:
 
         return False
 
+    @staticmethod
+    def _segment_is_unreliable(segment):
+        """Reject segments that strongly look like silence/noise transcription."""
+        avg_logprob = float(getattr(segment, "avg_logprob", 0.0) or 0.0)
+        no_speech_prob = float(getattr(segment, "no_speech_prob", 0.0) or 0.0)
+        compression_ratio = float(
+            getattr(segment, "compression_ratio", 0.0) or 0.0
+        )
+
+        # Require multiple weak signals before dropping a segment. This avoids
+        # throwing away quiet but legitimate speech solely because confidence is
+        # imperfect.
+        if no_speech_prob >= 0.80 and avg_logprob <= -1.0:
+            return True
+        if compression_ratio >= 3.0 and avg_logprob <= -1.0:
+            return True
+        return False
+
     def _transcribe_whisper(self, audio):
         if self.model is None:
             raise RuntimeError("Whisper backend is not initialized.")
 
-        # A.S.T.A. already extracts speech with its streaming Silero VAD.
-        # Running another VAD pass here can clip/drop valid speech, so Whisper
-        # receives the already-segmented command directly.
+        # A.S.T.A. already extracts speech with streaming Silero VAD. Do not run
+        # a second VAD pass here, and do not bias transcription with a prompt that
+        # can leak literal prompt text into hallucinated transcripts.
         segments, info = self.model.transcribe(
             audio,
             language=getattr(self, "language", "en"),
@@ -147,17 +165,31 @@ class RecognitionEngine:
 
         parts = []
         segment_stats = []
+        rejected_segments = 0
         for segment in segments:
             if not segment.text or not segment.text.strip():
                 continue
-            parts.append(segment.text.strip())
-            segment_stats.append(
-                (
-                    float(getattr(segment, "avg_logprob", 0.0) or 0.0),
-                    float(getattr(segment, "no_speech_prob", 0.0) or 0.0),
-                    float(getattr(segment, "compression_ratio", 0.0) or 0.0),
-                )
+
+            avg_logprob = float(getattr(segment, "avg_logprob", 0.0) or 0.0)
+            no_speech_prob = float(getattr(segment, "no_speech_prob", 0.0) or 0.0)
+            compression_ratio = float(
+                getattr(segment, "compression_ratio", 0.0) or 0.0
             )
+            segment_stats.append((avg_logprob, no_speech_prob, compression_ratio))
+
+            if self._segment_is_unreliable(segment):
+                rejected_segments += 1
+                print(
+                    "[STT] Rejected low-confidence segment: "
+                    f"text={segment.text!r} "
+                    f"avg_logprob={avg_logprob:.2f} "
+                    f"no_speech={no_speech_prob:.2f} "
+                    f"compression={compression_ratio:.2f}",
+                    flush=True,
+                )
+                continue
+
+            parts.append(segment.text.strip())
 
         self.last_language = getattr(info, "language", None)
         self.last_language_probability = float(
@@ -170,6 +202,9 @@ class RecognitionEngine:
                 for avg, no_speech, compression in segment_stats
             )
             print(f"[STT] Segment confidence: {stats_text}", flush=True)
+
+        if rejected_segments and not parts:
+            print("[STT] All Whisper segments rejected as unreliable.", flush=True)
 
         return " ".join(parts).strip()
 
