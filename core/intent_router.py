@@ -53,13 +53,9 @@ class IntentRouter:
         "i need ",
     )
 
-    _COMPOUND_SEPARATORS = (
-        ", then ",
-        " and then ",
-        " then ",
-        " after that ",
-        " followed by ",
-        " and ",
+    _COMPOUND_SEPARATOR_PATTERN = re.compile(
+        r"\s*(?:,\s*)?(?:and then|then|after that|followed by|and)\s+",
+        re.IGNORECASE,
     )
 
     def route(self, text: str) -> IntentType:
@@ -150,8 +146,6 @@ class IntentRouter:
 
     @staticmethod
     def _normalize(text: str) -> str:
-        # Speech-to-text commonly adds terminal punctuation. Keep the
-        # normalized form stable while allowing natural chatter around commands.
         text = text.strip().lower()
         text = re.sub(r"\s+", " ", text)
         text = re.sub(r"[.!?,;:]+$", "", text)
@@ -160,11 +154,11 @@ class IntentRouter:
     @classmethod
     def _extract_compound_commands(cls, text: str) -> list[dict[str, Any]]:
         """Parse simple sequential commands joined by natural separators."""
-        parts = [text]
-        for separator in cls._COMPOUND_SEPARATORS:
-            if separator in text:
-                parts = [part.strip(" ,") for part in text.split(separator)]
-                break
+        parts = [
+            part.strip(" ,")
+            for part in cls._COMPOUND_SEPARATOR_PATTERN.split(text)
+            if part.strip(" ,")
+        ]
 
         if len(parts) < 2:
             return []
@@ -180,13 +174,10 @@ class IntentRouter:
 
     @classmethod
     def _extract_command_entities(cls, text: str) -> dict[str, Any]:
-        # Direct commands: "open chrome", "take a screenshot", etc.
         direct = cls._extract_direct_command(text)
         if direct:
             return direct
 
-        # Natural wrappers: "please open chrome", "can you open chrome",
-        # "okay, open chrome", and similar voice-assistant phrasing.
         stripped = text
         changed = True
         while changed:
@@ -201,9 +192,6 @@ class IntentRouter:
         if direct:
             return direct
 
-        # Embedded command: "nothing else, open chrome" or
-        # "hey asta, please open chrome". Search for the command boundary,
-        # but only accept an explicit executable action phrase.
         pattern = re.compile(
             r"(?:^|[\s,;:])"
             r"(?:(?:please|can you|could you|would you|will you|okay|ok|hey)\s+)?"
@@ -265,7 +253,6 @@ class IntentRouter:
 
     @classmethod
     def _contains_follow_up_request(cls, memory_text: str) -> bool:
-        """Avoid consuming a mixed utterance when it contains a later request."""
         normalized = cls._normalize(memory_text)
         if not normalized:
             return False
@@ -274,9 +261,6 @@ class IntentRouter:
             if prefix in normalized:
                 return True
 
-        # A second imperative sentence is commonly produced by speech
-        # recognition as a single utterance. Treat it as a conversational /
-        # unknown request so the LLM can interpret the full message.
         if re.search(
             r"\b(?:tell|give|show|make|explain|describe|ask|play|write|say)\s+me\b",
             normalized,
