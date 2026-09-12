@@ -1,4 +1,5 @@
 import os
+import re
 import time
 
 from faster_whisper import WhisperModel
@@ -10,11 +11,25 @@ class RecognitionEngine:
 
     SUPPORTED_BACKENDS = {"whisper", "indic", "hybrid"}
 
+    # Whisper can produce these phrases from silence/noise, especially when
+    # given a prompt that contains the same wording. Never pass them to the AI.
+    HALLUCINATION_PHRASES = {
+        "the speaker is using english",
+        "the speaker is speaking english",
+        "the speaker speaks english",
+        "thank you for watching",
+        "thanks for watching",
+        "subscribe",
+        "please subscribe",
+        "you",
+        "thank you",
+    }
+
     def __init__(
         self,
         model_name="medium",
         beam_size=5,
-        language=None,
+        language="en",
         backend=None,
         indic_model_id="ai4bharat/indic-conformer-600m-multilingual",
         indic_decoder="rnnt",
@@ -91,24 +106,44 @@ class RecognitionEngine:
             print("[STT] Falling back to Whisper.", flush=True)
             return None
 
+    @staticmethod
+    def _normalize(text):
+        return re.sub(r"\s+", " ", text.strip().lower())
+
+    def _is_hallucination(self, text):
+        normalized = self._normalize(text)
+        if not normalized:
+            return True
+
+        if normalized in self.HALLUCINATION_PHRASES:
+            return True
+
+        # Reject punctuation/noise-only output and extremely repetitive output.
+        alnum = re.sub(r"[^a-z0-9]+", "", normalized)
+        if not alnum:
+            return True
+
+        words = normalized.split()
+        if len(words) >= 8 and len(set(words)) <= 2:
+            return True
+
+        return False
+
     def _transcribe_whisper(self, audio):
         if self.model is None:
             raise RuntimeError("Whisper backend is not initialized.")
 
         segments, info = self.model.transcribe(
             audio,
-            language=getattr(self, "language", None),
+            language=getattr(self, "language", "en"),
             beam_size=getattr(self, "beam_size", 5),
-            vad_filter=False,
+            vad_filter=True,
             condition_on_previous_text=False,
             temperature=0.0,
             compression_ratio_threshold=2.4,
             log_prob_threshold=-1.0,
-            no_speech_threshold=0.6,
-            initial_prompt=(
-                "Conversation with ASTA. The speaker is using English. "
-                "Preserve the spoken meaning and do not invent words."
-            ),
+            no_speech_threshold=0.65,
+            initial_prompt="Conversation with ASTA. Preserve the spoken meaning.",
         )
 
         text = " ".join(
@@ -167,6 +202,10 @@ class RecognitionEngine:
             else:
                 text = self._transcribe_whisper(audio)
                 self.last_backend = "whisper"
+
+            if self._is_hallucination(text):
+                print(f"[STT] Rejected likely hallucination: {text!r}", flush=True)
+                return ""
 
             elapsed = time.perf_counter() - start
             print(
