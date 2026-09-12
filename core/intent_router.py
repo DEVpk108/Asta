@@ -31,6 +31,33 @@ class IntentRouter:
         "hey ",
     )
 
+    _NON_MEMORY_REQUEST_PREFIXES = (
+        "tell me ",
+        "give me ",
+        "make ",
+        "show me ",
+        "explain ",
+        "describe ",
+        "what ",
+        "who ",
+        "how ",
+        "why ",
+        "when ",
+        "where ",
+        "can you ",
+        "could you ",
+        "would you ",
+        "will you ",
+        "please ",
+        "i want ",
+        "i need ",
+    )
+
+    _COMPOUND_SEPARATOR_PATTERN = re.compile(
+        r"\s*(?:,\s*)?(?:and then|then|after that|followed by|and)\s+",
+        re.IGNORECASE,
+    )
+
     def route(self, text: str) -> IntentType:
         """Backward-compatible intent-only API."""
         return self.analyze(text).intent
@@ -55,12 +82,25 @@ class IntentRouter:
         )
 
         if normalized.startswith(memory_phrases):
+            memory_text = self._extract_memory_entities(normalized).get("memory", "")
+            if memory_text and not self._contains_follow_up_request(memory_text):
+                return IntentResult(
+                    intent=IntentType.MEMORY,
+                    confidence=0.98,
+                    normalized_text=normalized,
+                    entities={"memory": memory_text},
+                    requires_memory=True,
+                    classifier="rules",
+                )
+
+        compound_commands = self._extract_compound_commands(normalized)
+        if compound_commands:
             return IntentResult(
-                intent=IntentType.MEMORY,
+                intent=IntentType.COMMAND,
                 confidence=0.98,
                 normalized_text=normalized,
-                entities=self._extract_memory_entities(normalized),
-                requires_memory=True,
+                entities={"commands": compound_commands},
+                requires_tools=True,
                 classifier="rules",
             )
 
@@ -106,22 +146,38 @@ class IntentRouter:
 
     @staticmethod
     def _normalize(text: str) -> str:
-        # Speech-to-text commonly adds terminal punctuation. Keep the
-        # normalized form stable while allowing natural chatter around commands.
         text = text.strip().lower()
         text = re.sub(r"\s+", " ", text)
         text = re.sub(r"[.!?,;:]+$", "", text)
         return text.strip()
 
     @classmethod
+    def _extract_compound_commands(cls, text: str) -> list[dict[str, Any]]:
+        """Parse simple sequential commands joined by natural separators."""
+        parts = [
+            part.strip(" ,")
+            for part in cls._COMPOUND_SEPARATOR_PATTERN.split(text)
+            if part.strip(" ,")
+        ]
+
+        if len(parts) < 2:
+            return []
+
+        commands = []
+        for part in parts:
+            command = cls._extract_command_entities(part)
+            if not command or "commands" in command:
+                return []
+            commands.append(command)
+
+        return commands if len(commands) >= 2 else []
+
+    @classmethod
     def _extract_command_entities(cls, text: str) -> dict[str, Any]:
-        # Direct commands: "open chrome", "take a screenshot", etc.
         direct = cls._extract_direct_command(text)
         if direct:
             return direct
 
-        # Natural wrappers: "please open chrome", "can you open chrome",
-        # "okay, open chrome", and similar voice-assistant phrasing.
         stripped = text
         changed = True
         while changed:
@@ -136,9 +192,6 @@ class IntentRouter:
         if direct:
             return direct
 
-        # Embedded command: "nothing else, open chrome" or
-        # "hey asta, please open chrome". Search for the command boundary,
-        # but only accept an explicit executable action phrase.
         pattern = re.compile(
             r"(?:^|[\s,;:])"
             r"(?:(?:please|can you|could you|would you|will you|okay|ok|hey)\s+)?"
@@ -167,10 +220,10 @@ class IntentRouter:
                         "target": target,
                     }
 
-        if text == "screenshot" or text.startswith("screenshot "):
+        if text in {"screenshot", "screen shot"}:
             return {"action": "screenshot"}
 
-        if text.startswith("take a screenshot"):
+        if text.startswith("take a screenshot") or text.startswith("take a screen shot"):
             return {"action": "screenshot"}
 
         if text == "mute":
@@ -181,8 +234,8 @@ class IntentRouter:
 
         return {}
 
-    @staticmethod
-    def _extract_memory_entities(text: str) -> dict[str, Any]:
+    @classmethod
+    def _extract_memory_entities(cls, text: str) -> dict[str, Any]:
         prefixes = (
             "remember that",
             "remember this",
@@ -197,3 +250,21 @@ class IntentRouter:
                 return {"memory": text[len(prefix):].strip()}
 
         return {}
+
+    @classmethod
+    def _contains_follow_up_request(cls, memory_text: str) -> bool:
+        normalized = cls._normalize(memory_text)
+        if not normalized:
+            return False
+
+        for prefix in cls._NON_MEMORY_REQUEST_PREFIXES:
+            if prefix in normalized:
+                return True
+
+        if re.search(
+            r"\b(?:tell|give|show|make|explain|describe|ask|play|write|say)\s+me\b",
+            normalized,
+        ):
+            return True
+
+        return False

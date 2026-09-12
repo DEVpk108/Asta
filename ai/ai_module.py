@@ -8,32 +8,33 @@ from .openai_engine import AIEngine
 class AIModule(Module):
 
     _APPROVAL_CONFIRMATIONS = {
-        "yes",
-        "yeah",
-        "yep",
-        "yup",
-        "sure",
-        "okay",
-        "ok",
-        "confirm",
-        "confirmed",
-        "i confirm",
-        "go ahead",
-        "do it",
-        "proceed",
-        "yes proceed",
+        "yes", "yeah", "yep", "yup", "sure", "okay", "ok",
+        "confirm", "confirmed", "i confirm", "go ahead", "do it",
+        "proceed", "yes proceed",
     }
 
     _APPROVAL_REJECTIONS = {
-        "no",
-        "nope",
-        "nah",
-        "cancel",
-        "reject",
-        "decline",
-        "don't",
-        "do not",
-        "stop",
+        "no", "nope", "nah", "cancel", "reject", "decline",
+        "don't", "do not", "stop",
+    }
+
+    _CONVERSATION_MODE_ON = {
+        "conversation mode on",
+        "turn conversation mode on",
+        "turn on conversation mode",
+        "enable conversation mode",
+        "start conversation mode",
+        "stay in conversation mode",
+        "keep conversation mode on",
+    }
+
+    _CONVERSATION_MODE_OFF = {
+        "conversation mode off",
+        "turn conversation mode off",
+        "turn off conversation mode",
+        "disable conversation mode",
+        "stop conversation mode",
+        "exit conversation mode",
     }
 
     def __init__(self, kernel):
@@ -55,22 +56,22 @@ class AIModule(Module):
             warmup()
         self.event_bus.subscribe("user_message", self.on_user_message)
         self.event_bus.subscribe("tool_result", self.on_tool_result)
-        self.event_bus.subscribe("tool_confirmation_required", self.on_tool_confirmation_required)
+        self.event_bus.subscribe(
+            "tool_confirmation_required",
+            self.on_tool_confirmation_required,
+        )
         print("[AI] Ready", flush=True)
 
     def shutdown(self):
         self.event_bus.unsubscribe("user_message", self.on_user_message)
         self.event_bus.unsubscribe("tool_result", self.on_tool_result)
-        self.event_bus.unsubscribe("tool_confirmation_required", self.on_tool_confirmation_required)
+        self.event_bus.unsubscribe(
+            "tool_confirmation_required",
+            self.on_tool_confirmation_required,
+        )
         print("[AI] Stopped", flush=True)
 
     def _ground_engine_in_capabilities(self):
-        """Give the language model an authoritative snapshot of real tools.
-
-        The tool registry is the source of truth for executable capabilities.
-        The model is explicitly forbidden from treating natural-language claims
-        as proof that an action exists or succeeded.
-        """
         definitions = self.kernel.tool_registry.definitions()
         if definitions:
             capabilities = "\n".join(
@@ -108,14 +109,12 @@ class AIModule(Module):
             return
         print(f"[AI] User: {text}", flush=True)
 
-        # Approval responses are stateful and must be resolved before normal
-        # intent routing. Otherwise phrases such as "I confirm" fall through
-        # to the conversational LLM path and the pending tool is never run.
         if self._handle_approval_response(text):
             return
 
-        # Do not let the LLM fabricate personal information before memory
-        # exists. This can be expanded when the real memory subsystem lands.
+        if self._handle_conversation_mode_command(text):
+            return
+
         if self._is_unknown_name_question(text):
             self._emit_assistant_text(
                 "I don't know your name yet. I don't have that information stored."
@@ -135,9 +134,6 @@ class AIModule(Module):
             self.event_bus.emit("memory_request", intent=result)
             return
 
-        # Only answer a capability question from the registry after command
-        # routing has had a chance to recognize phrases such as "Can you open
-        # Chrome?" as executable commands.
         capability_response = self._capability_response(text)
         if capability_response is not None:
             self._emit_assistant_text(capability_response)
@@ -145,13 +141,26 @@ class AIModule(Module):
 
         self._generate_response(text)
 
-    def _handle_approval_response(self, text):
-        """Resolve a voice/text confirmation against the pending request.
+    def _handle_conversation_mode_command(self, text):
+        normalized = self._normalize_question(text)
 
-        A.S.T.A. currently supports one active approval conversationally. When
-        exactly one request is pending, a recognized confirmation or rejection
-        is translated into the existing tool-runtime event contract.
-        """
+        if normalized in self._CONVERSATION_MODE_ON:
+            self.event_bus.emit("conversation_mode_set", enabled=True)
+            self._emit_assistant_text(
+                "Conversation mode is on. You can talk to me without the wake word."
+            )
+            return True
+
+        if normalized in self._CONVERSATION_MODE_OFF:
+            self.event_bus.emit("conversation_mode_set", enabled=False)
+            self._emit_assistant_text(
+                "Conversation mode is off. Say the wake word when you need me."
+            )
+            return True
+
+        return False
+
+    def _handle_approval_response(self, text):
         pending = self.kernel.approval_manager.list_pending()
         if len(pending) != 1:
             return False
@@ -218,6 +227,11 @@ class AIModule(Module):
         )
 
     def _handle_command_intent(self, intent: IntentResult):
+        commands = intent.entities.get("commands")
+        if isinstance(commands, list) and len(commands) >= 2:
+            self._handle_command_sequence(intent, commands)
+            return
+
         try:
             request = self.tool_request_builder.build(intent)
         except ValueError as exc:
@@ -226,7 +240,46 @@ class AIModule(Module):
                 f"I couldn't map that command to an available tool: {exc}"
             )
             return
-        print(f"[AI] Selected tool: {request.tool} (request_id={request.request_id})", flush=True)
+        print(
+            f"[AI] Selected tool: {request.tool} "
+            f"(request_id={request.request_id})",
+            flush=True,
+        )
+        self.event_bus.emit("tool_request", request=request)
+
+    def _handle_command_sequence(self, intent: IntentResult, commands):
+        """Build the first request and carry the remaining sequence in metadata."""
+        first = commands[0]
+        first_intent = IntentResult(
+            intent=IntentType.COMMAND,
+            confidence=intent.confidence,
+            normalized_text=intent.normalized_text,
+            entities=dict(first),
+            requires_tools=True,
+            classifier=intent.classifier,
+        )
+
+        try:
+            request = self.tool_request_builder.build(first_intent)
+        except ValueError as exc:
+            print(f"[AI] Unable to build compound command: {exc}", flush=True)
+            self._emit_assistant_text(
+                f"I couldn't map that command to an available tool: {exc}"
+            )
+            return
+
+        request.metadata["sequence"] = [dict(command) for command in commands]
+        request.metadata["sequence_index"] = 0
+
+        print(
+            f"[AI] Compound command: {len(commands)} step(s)",
+            flush=True,
+        )
+        print(
+            f"[AI] Selected tool: {request.tool} "
+            f"(request_id={request.request_id}, step=1/{len(commands)})",
+            flush=True,
+        )
         self.event_bus.emit("tool_request", request=request)
 
     def on_tool_confirmation_required(self, request, reason):
@@ -244,7 +297,11 @@ class AIModule(Module):
     def on_tool_result(self, result):
         if not isinstance(result, ToolResult):
             return
-        text = self._format_tool_success(result) if result.success else self._format_tool_failure(result)
+        text = (
+            self._format_tool_success(result)
+            if result.success
+            else self._format_tool_failure(result)
+        )
         self._emit_assistant_text(text)
 
     def _emit_assistant_text(self, text):
