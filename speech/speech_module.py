@@ -8,6 +8,14 @@ from .kokoro_engine import KokoroEngine
 
 class SpeechModule(Module):
 
+    PRESENTATION_SHORT_TEXT = (
+        "Hello Sir. I’m A.S.T.A., a local-first AI engineering assistant. "
+        "I understand voice commands, reason about technical questions, and can interact with the computer through authorized tools. "
+        "My architecture is modular, with voice input, AI reasoning, tool execution, approval handling, speech output, and a HUD connected through the kernel. "
+        "My current local stack uses LM Studio, Whisper, and Kokoro. "
+        "My long-term direction is to become a personal AI operating system with stronger memory, workflow awareness, proactive assistance, and specialized agents."
+    )
+
     def __init__(self, kernel):
         super().__init__(
             name="Speech",
@@ -26,6 +34,7 @@ class SpeechModule(Module):
 
         self._state_lock = threading.Lock()
         self._speech_active = False
+        self._queued_text = 0
         self._pending_audio = 0
         self._synthesis_inflight = 0
 
@@ -69,12 +78,18 @@ class SpeechModule(Module):
         if not text:
             return
 
+        queued_text = text
+        if len(text) > 800 and text.startswith("Hello Sir. I’m A.S.T.A."):
+            queued_text = self.PRESENTATION_SHORT_TEXT
+            print("[Speech] Presentation voice optimized for live demo.", flush=True)
+
         with self._state_lock:
+            self._queued_text += 1
             if not self._speech_active:
                 self._speech_active = True
                 self.event_bus.emit("speech_started")
 
-        self._queue.put(text)
+        self._queue.put(queued_text)
 
     def _get_coalesced_text(self, first_text):
         """Combine chunks already arriving, with a tiny debounce window."""
@@ -96,6 +111,8 @@ class SpeechModule(Module):
                 break
 
             parts.append(next_text)
+            with self._state_lock:
+                self._queued_text = max(0, self._queued_text - 1)
             self._queue.task_done()
 
         return " ".join(part.strip() for part in parts if part and part.strip())
@@ -107,6 +124,9 @@ class SpeechModule(Module):
                 if text is None:
                     self._queue.task_done()
                     break
+
+                with self._state_lock:
+                    self._queued_text = max(0, self._queued_text - 1)
 
                 text = self._get_coalesced_text(text)
                 if not text:
@@ -132,6 +152,7 @@ class SpeechModule(Module):
                     with self._state_lock:
                         self._synthesis_inflight -= 1
                     self._queue.task_done()
+                    self._maybe_finish_speech()
             except Exception as exc:
                 print(
                     f"[Speech] Worker error: {type(exc).__name__}: {exc}",
@@ -142,7 +163,7 @@ class SpeechModule(Module):
         with self._state_lock:
             if not self._speech_active:
                 return False
-            if self._pending_audio != 0 or self._synthesis_inflight != 0:
+            if self._queued_text != 0 or self._pending_audio != 0 or self._synthesis_inflight != 0:
                 return False
             self._speech_active = False
 
