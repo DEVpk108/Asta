@@ -37,6 +37,10 @@ class VoiceModule(Module):
         self._last_interaction = 0.0
         self._tts_active = False
 
+        # A short acknowledgement makes wake-word activation visible and
+        # natural during demos without changing manual conversation mode.
+        self.wakeword_greeting = "Yes?"
+
     def initialize(self):
         print("[Voice] Initializing...", flush=True)
 
@@ -105,6 +109,12 @@ class VoiceModule(Module):
         self._conversation_active = True
         self._last_interaction = time.monotonic()
         print("[Voice] Conversation mode: ACTIVE", flush=True)
+
+        # A short wake-word acknowledgement gives immediate feedback that
+        # ASTA heard the user. It is only emitted for wake-word activation;
+        # explicit manual conversation mode remains silent on entry.
+        if self.wakeword_greeting:
+            self.event_bus.emit("assistant_sentence", text=self.wakeword_greeting)
 
     def _conversation_expired(self):
         return (
