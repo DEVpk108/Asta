@@ -81,6 +81,7 @@ class VoiceModule(Module):
 
         try:
             self.microphone.stop()
+            self.microphone.close()
         except Exception as exc:
             print(
                 f"[Voice] Microphone shutdown error: {type(exc).__name__}: {exc}",
@@ -260,6 +261,4 @@ class VoiceModule(Module):
                     f"[Voice] Error: {type(exc).__name__}: {exc}",
                     flush=True,
                 )
-
-                if self._running:
-                    threading.Event().wait(0.1)
+                time.sleep(0.1)
