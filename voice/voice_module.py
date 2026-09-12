@@ -214,8 +214,6 @@ class VoiceModule(Module):
 
                     self._start_conversation()
                 else:
-                    initial_audio = None
-
                     if self._conversation_expired():
                         self._conversation_active = False
                         print("[Voice] Conversation mode: INACTIVE", flush=True)
@@ -225,11 +223,12 @@ class VoiceModule(Module):
                 if not self._can_listen():
                     continue
 
+                # Wake-word detection only activates the conversation. Command
+                # recognition starts from fresh microphone audio after this point.
                 self.microphone.clear_buffer()
 
                 audio = self.vad.collect_utterance(
                     self.microphone,
-                    initial_audio,
                     speech_timeout=3,
                 )
 
