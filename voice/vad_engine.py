@@ -1,11 +1,12 @@
+import queue
+import time
+from collections import deque
+
 import numpy as np
 import torch
-import time
-
-import queue
 from silero_vad import (
-    load_silero_vad,
     VADIterator,
+    load_silero_vad,
 )
 
 
@@ -21,6 +22,7 @@ class VADEngine:
         min_rms=0.025,
         min_peak=0.08,
         start_chunk_rms=0.008,
+        pre_roll_ms=200,
     ):
 
         self.sample_rate = sample_rate
@@ -28,6 +30,7 @@ class VADEngine:
         self.min_rms = min_rms
         self.min_peak = min_peak
         self.start_chunk_rms = start_chunk_rms
+        self.pre_roll_samples = max(1, int(sample_rate * pre_roll_ms / 1000))
 
         self.model = load_silero_vad()
         self.debug = False
@@ -56,12 +59,11 @@ class VADEngine:
 
         start_wait = time.monotonic()
         audio_buffer = []
+        pre_roll = deque(maxlen=self.pre_roll_samples)
         recording = False
 
-        # Do not feed the wake-word tail into Whisper. The wake-word detector's
-        # ring buffer is useful for its own detection, but its final samples
-        # can contain the wake phrase rather than the user's command.
-        # Command audio starts fresh after the wake-word confirmation.
+        # The wake-word detector's ring buffer is intentionally not reused for
+        # command recognition. The command gets a fresh, live pre-roll instead.
         _ = initial_audio
 
         try:
@@ -76,10 +78,14 @@ class VADEngine:
                     return None
 
                 chunk = np.asarray(chunk, dtype=np.float32)
-                chunk_rms = float(np.sqrt(np.mean(np.square(chunk)))) if chunk.size else 0.0
+                chunk_rms = (
+                    float(np.sqrt(np.mean(np.square(chunk))))
+                    if chunk.size
+                    else 0.0
+                )
 
-                # Prevent very-low-level room/device noise from triggering the
-                # speech state. Once speech has started, keep the real audio.
+                # Only feed meaningful energy to the VAD decision. Preserve the
+                # original chunk for recording once speech has actually started.
                 vad_chunk = (
                     chunk
                     if chunk_rms >= self.start_chunk_rms
@@ -96,8 +102,16 @@ class VADEngine:
                     print("[VAD] Command started.")
                     recording = True
 
+                    # Include only fresh audio from immediately before VAD start.
+                    # This catches the first phoneme without reintroducing the
+                    # wake word or stale microphone-buffer content.
+                    if pre_roll:
+                        audio_buffer.append(np.asarray(pre_roll, dtype=np.float32))
+
                 if recording:
                     audio_buffer.append(chunk)
+                else:
+                    pre_roll.extend(chunk)
 
                 if recording and self.is_speech_ended(event):
                     print("[VAD] Command finished.")
