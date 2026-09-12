@@ -34,6 +34,10 @@ class VoiceModule(Module):
         self._tts_guard_until = 0.0
         self._microphone_paused_for_tts = False
 
+        # A pending high-risk tool approval needs a more sensitive listener
+        # because responses like "yes" and "no" are intentionally very short.
+        self._awaiting_confirmation = False
+
         # Ignore an identical transcript captured again immediately after a
         # command. This protects against residual audio / VAD edge cases while
         # preserving legitimate repeated commands after a short pause.
@@ -52,6 +56,14 @@ class VoiceModule(Module):
         self.event_bus.subscribe("assistant_sentence", self._on_assistant_sentence)
         self.event_bus.subscribe("speech_started", self._on_speech_started)
         self.event_bus.subscribe("speech_finished", self._on_speech_finished)
+        self.event_bus.subscribe(
+            "tool_confirmation_required",
+            self._on_tool_confirmation_required,
+        )
+        self.event_bus.subscribe(
+            "tool_confirmation_response",
+            self._on_tool_confirmation_response,
+        )
 
         self._running = True
         self.microphone.start()
@@ -72,6 +84,14 @@ class VoiceModule(Module):
         self.event_bus.unsubscribe("assistant_sentence", self._on_assistant_sentence)
         self.event_bus.unsubscribe("speech_started", self._on_speech_started)
         self.event_bus.unsubscribe("speech_finished", self._on_speech_finished)
+        self.event_bus.unsubscribe(
+            "tool_confirmation_required",
+            self._on_tool_confirmation_required,
+        )
+        self.event_bus.unsubscribe(
+            "tool_confirmation_response",
+            self._on_tool_confirmation_response,
+        )
 
         self._running = False
 
@@ -104,6 +124,7 @@ class VoiceModule(Module):
             self._last_interaction = 0.0
             self._last_transcript = ""
             self._last_transcript_at = 0.0
+            self._awaiting_confirmation = False
             self.microphone.clear_buffer()
             print("[Voice] Conversation mode: OFF", flush=True)
 
@@ -170,6 +191,16 @@ class VoiceModule(Module):
         if self._conversation_active and not self._manual_conversation:
             self._last_interaction = time.monotonic()
 
+    def _on_tool_confirmation_required(self, *args, **kwargs):
+        self._awaiting_confirmation = True
+        self._last_transcript = ""
+        self._last_transcript_at = 0.0
+        print("[Voice] Confirmation listening: ENABLED", flush=True)
+
+    def _on_tool_confirmation_response(self, *args, **kwargs):
+        self._awaiting_confirmation = False
+        print("[Voice] Confirmation listening: DISABLED", flush=True)
+
     def _can_listen(self):
         return (
             self._running
@@ -192,6 +223,39 @@ class VoiceModule(Module):
         self._last_transcript = normalized
         self._last_transcript_at = now
         return False
+
+    def _collect_command_audio(self):
+        if not self._awaiting_confirmation:
+            return self.vad.collect_utterance(
+                self.microphone,
+                speech_timeout=3,
+            )
+
+        # Confirmation replies are deliberately short and quieter than normal
+        # commands. Temporarily relax only the VAD acceptance thresholds while
+        # an approval decision is pending, then restore the normal profile.
+        original = {
+            "min_rms": self.vad.min_rms,
+            "min_peak": self.vad.min_peak,
+            "start_chunk_rms": self.vad.start_chunk_rms,
+            "min_speech_duration": self.vad.min_speech_duration,
+        }
+        self.vad.min_rms = 0.010
+        self.vad.min_peak = 0.035
+        self.vad.start_chunk_rms = 0.003
+        self.vad.min_speech_duration = 0.20
+
+        try:
+            print("[VAD] Listening for short confirmation...", flush=True)
+            return self.vad.collect_utterance(
+                self.microphone,
+                speech_timeout=2.0,
+            )
+        finally:
+            self.vad.min_rms = original["min_rms"]
+            self.vad.min_peak = original["min_peak"]
+            self.vad.start_chunk_rms = original["start_chunk_rms"]
+            self.vad.min_speech_duration = original["min_speech_duration"]
 
     def _listen_loop(self):
         while self._running:
@@ -227,10 +291,7 @@ class VoiceModule(Module):
                 # recognition starts from fresh microphone audio after this point.
                 self.microphone.clear_buffer()
 
-                audio = self.vad.collect_utterance(
-                    self.microphone,
-                    speech_timeout=3,
-                )
+                audio = self._collect_command_audio()
 
                 if not self._running:
                     break
