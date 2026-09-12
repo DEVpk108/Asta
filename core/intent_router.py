@@ -58,6 +58,21 @@ class IntentRouter:
         re.IGNORECASE,
     )
 
+    _COMMA_COMMAND_PATTERN = re.compile(
+        r",\s*(?=(?:please\s+|can you\s+|could you\s+|would you\s+|will you\s+)?"
+        r"(?:open|launch|start|close|run|stop|take|capture|screenshot|mute|unmute)\b)",
+        re.IGNORECASE,
+    )
+
+    _IMPLICIT_SCREENSHOT_SUFFIX_PATTERN = re.compile(
+        r"^(?P<command>.+?)\s+(?P<screenshot>"
+        r"(?:take screenshot|take a screenshot|take screen shot|take a screen shot|"
+        r"take the screenshot|take the screen shot|capture screenshot|capture a screenshot|"
+        r"capture screen shot|capture a screen shot|capture the screenshot|"
+        r"capture the screen shot|screenshot|screen shot))$",
+        re.IGNORECASE,
+    )
+
     def route(self, text: str) -> IntentType:
         """Backward-compatible intent-only API."""
         return self.analyze(text).intent
@@ -153,24 +168,42 @@ class IntentRouter:
 
     @classmethod
     def _extract_compound_commands(cls, text: str) -> list[dict[str, Any]]:
-        """Parse sequential commands joined by natural-language separators."""
-        parts = [
+        """Parse sequential commands joined by explicit or natural separators."""
+        first_parts = [
             part.strip(" ,")
             for part in cls._COMPOUND_SEPARATOR_PATTERN.split(text)
             if part.strip(" ,")
         ]
 
-        if len(parts) < 2:
-            return []
+        parts: list[str] = []
+        for part in first_parts:
+            comma_parts = [
+                sub.strip(" ,")
+                for sub in cls._COMMA_COMMAND_PATTERN.split(part)
+                if sub.strip(" ,")
+            ]
+            parts.extend(comma_parts)
 
         commands: list[dict[str, Any]] = []
         for part in parts:
-            command = cls._extract_command_entities(part)
-            if not command or "commands" in command:
-                return []
-            commands.append(command)
+            direct = cls._extract_command_entities(part)
+            if direct and "commands" not in direct:
+                commands.append(direct)
+                continue
 
-        return commands
+            # Spoken commands sometimes omit "and" before a screenshot phrase,
+            # e.g. "open camera take screenshot". Split that suffix explicitly.
+            implicit = cls._IMPLICIT_SCREENSHOT_SUFFIX_PATTERN.match(part)
+            if implicit:
+                first = cls._extract_command_entities(implicit.group("command").strip())
+                second = cls._extract_direct_command(implicit.group("screenshot").strip())
+                if first and second:
+                    commands.extend((first, second))
+                    continue
+
+            return []
+
+        return commands if len(commands) >= 2 else []
 
     @classmethod
     def _extract_command_entities(cls, text: str) -> dict[str, Any]:

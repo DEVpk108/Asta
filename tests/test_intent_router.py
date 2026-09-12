@@ -103,3 +103,39 @@ def test_compound_command_with_comma_after_first_action():
             {"action": "screenshot"},
         ]
     }
+
+
+def test_compound_command_with_comma_before_close():
+    result = IntentRouter().analyze("Close camera, close Chrome.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "commands": [
+            {"action": "close", "target": "camera"},
+            {"action": "close", "target": "chrome"},
+        ]
+    }
+
+
+def test_compound_command_with_implicit_screenshot_suffix():
+    result = IntentRouter().analyze("Open camera take screenshot.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "commands": [
+            {"action": "open", "target": "camera"},
+            {"action": "screenshot"},
+        ]
+    }
+
+
+def test_compound_command_with_multiple_natural_steps():
+    result = IntentRouter().analyze(
+        "Open Chrome then open camera take screen shot"
+    )
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "commands": [
+            {"action": "open", "target": "chrome"},
+            {"action": "open", "target": "camera"},
+            {"action": "screenshot"},
+        ]
+    }
