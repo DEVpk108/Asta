@@ -10,10 +10,10 @@ class SpeechModule(Module):
 
     PRESENTATION_SHORT_TEXT = (
         "Hello Sir. I’m A.S.T.A., a local-first AI engineering assistant. "
-        "I understand voice commands, reason about technical questions, and interact with the computer through authorized tools. "
-        "My architecture is modular, connecting voice input, AI reasoning, tool execution, approval handling, speech output, and the HUD through the kernel. "
-        "My local stack uses LM Studio, Whisper, and Kokoro. "
-        "My long-term goal is to become a personal AI operating system with stronger memory, workflow awareness, proactive assistance, and specialized agents."
+        "I understand voice commands, reason about technical questions, and use authorized tools to interact with the computer. "
+        "My architecture connects voice, AI reasoning, tool execution, approvals, speech, and the HUD through the kernel. "
+        "My local AI stack uses LM Studio, Whisper, and Kokoro. "
+        "My goal is to grow into a personal AI operating system with stronger memory, workflow awareness, proactive assistance, and specialized agents."
     )
 
     def __init__(self, kernel):
