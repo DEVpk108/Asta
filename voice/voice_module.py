@@ -29,17 +29,17 @@ class VoiceModule(Module):
         self._thread = None
 
         # A wake-word activation starts a natural conversation session.
-        # Keep it alive long enough for normal back-and-forth interaction.
-        # Explicit manual conversation mode remains active until turned off.
         self.conversation_timeout = 30.0
         self._conversation_active = False
         self._manual_conversation = False
         self._last_interaction = 0.0
         self._tts_active = False
 
-        # A short acknowledgement makes wake-word activation visible and
-        # natural during demos without changing manual conversation mode.
-        self.wakeword_greeting = "Yes?"
+        # First wake-word activation gets a warmer introduction; subsequent
+        # activations use a short acknowledgement.
+        self._wakeword_greeting_used = False
+        self.wakeword_first_greeting = "Hello! It’s great to hear from you. How can I help?"
+        self.wakeword_return_greeting = "Yes?"
 
     def initialize(self):
         print("[Voice] Initializing...", flush=True)
@@ -101,7 +101,6 @@ class VoiceModule(Module):
         else:
             self._conversation_active = False
             self._last_interaction = 0.0
-            # Discard anything captured while processing the OFF command.
             self.microphone.clear_buffer()
             print("[Voice] Conversation mode: OFF", flush=True)
 
@@ -110,11 +109,14 @@ class VoiceModule(Module):
         self._last_interaction = time.monotonic()
         print("[Voice] Conversation mode: ACTIVE", flush=True)
 
-        # A short wake-word acknowledgement gives immediate feedback that
-        # ASTA heard the user. It is only emitted for wake-word activation;
-        # explicit manual conversation mode remains silent on entry.
-        if self.wakeword_greeting:
-            self.event_bus.emit("assistant_sentence", text=self.wakeword_greeting)
+        if self._wakeword_greeting_used:
+            greeting = self.wakeword_return_greeting
+        else:
+            greeting = self.wakeword_first_greeting
+            self._wakeword_greeting_used = True
+
+        if greeting:
+            self.event_bus.emit("assistant_sentence", text=greeting)
 
     def _conversation_expired(self):
         return (
@@ -124,9 +126,6 @@ class VoiceModule(Module):
         )
 
     def _on_assistant_sentence(self, *args, **kwargs):
-        # Suppress recognition as soon as ASTA queues speech. This closes the
-        # race where the voice loop has already entered wake-word detection
-        # before the audio playback worker emits speech_started.
         self._tts_active = True
 
     def _on_speech_started(self, *args, **kwargs):
@@ -134,12 +133,8 @@ class VoiceModule(Module):
 
     def _on_speech_finished(self, *args, **kwargs):
         self._tts_active = False
-        # Remove TTS echo/residual audio before wake-word detection resumes.
         self.microphone.clear_buffer()
 
-        # Assistant playback is part of the current interaction. Do not let
-        # the response's speaking time consume the conversation inactivity
-        # timeout and cut the user off immediately after a long reply.
         if self._conversation_active and not self._manual_conversation:
             self._last_interaction = time.monotonic()
 
