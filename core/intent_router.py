@@ -224,11 +224,15 @@ class IntentRouter:
             return {"action": "screenshot"}
 
         screenshot_prefixes = (
+            "take screenshot",
             "take a screenshot",
+            "take screen shot",
             "take a screen shot",
             "take the screenshot",
             "take the screen shot",
+            "capture screenshot",
             "capture a screenshot",
+            "capture screen shot",
             "capture a screen shot",
             "capture the screenshot",
             "capture the screen shot",
