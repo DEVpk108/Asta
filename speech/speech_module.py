@@ -8,6 +8,14 @@ from .kokoro_engine import KokoroEngine
 
 class SpeechModule(Module):
 
+    PRESENTATION_SHORT_TEXT = (
+        "Hello Sir. I’m A.S.T.A., a local-first AI engineering assistant. "
+        "I understand voice commands, reason about technical questions, and use authorized tools to interact with the computer. "
+        "My architecture connects voice, AI reasoning, tool execution, approvals, speech, and the HUD through the kernel. "
+        "My local AI stack uses LM Studio, Whisper, and Kokoro. "
+        "My goal is to grow into a personal AI operating system with stronger memory, workflow awareness, proactive assistance, and specialized agents."
+    )
+
     def __init__(self, kernel):
         super().__init__(
             name="Speech",
@@ -23,6 +31,13 @@ class SpeechModule(Module):
         self._synth_thread = None
         self._play_thread = None
         self.coalesce_window = 0.08
+
+        self._state_lock = threading.Lock()
+        self._speech_active = False
+        self._queued_text = 0
+        self._pending_audio = 0
+        self._synthesis_inflight = 0
+        self._presentation_mode_active = False
 
     def initialize(self):
         print("[Speech] Initializing...", flush=True)
@@ -61,11 +76,29 @@ class SpeechModule(Module):
         print("[Speech] Stopped", flush=True)
 
     def on_assistant_sentence(self, text):
-        if text:
-            self._queue.put(text)
+        if not text:
+            return
+
+        is_presentation = text.startswith("Hello Sir. I’m A.S.T.A.,")
+        if is_presentation:
+            with self._state_lock:
+                self._presentation_mode_active = True
+            queued_text = self.PRESENTATION_SHORT_TEXT
+            print("[Speech] Presentation voice optimized for live demo.", flush=True)
+        elif self._presentation_mode_active:
+            return
+        else:
+            queued_text = text
+
+        with self._state_lock:
+            self._queued_text += 1
+            if not self._speech_active:
+                self._speech_active = True
+                self.event_bus.emit("speech_started")
+
+        self._queue.put(queued_text)
 
     def _get_coalesced_text(self, first_text):
-        """Combine chunks already arriving, with a tiny debounce window."""
         parts = [first_text]
         deadline = time.monotonic() + self.coalesce_window
 
@@ -84,6 +117,8 @@ class SpeechModule(Module):
                 break
 
             parts.append(next_text)
+            with self._state_lock:
+                self._queued_text = max(0, self._queued_text - 1)
             self._queue.task_done()
 
         return " ".join(part.strip() for part in parts if part and part.strip())
@@ -96,15 +131,23 @@ class SpeechModule(Module):
                     self._queue.task_done()
                     break
 
+                with self._state_lock:
+                    self._queued_text = max(0, self._queued_text - 1)
+
                 text = self._get_coalesced_text(text)
                 if not text:
                     self._queue.task_done()
                     continue
 
+                with self._state_lock:
+                    self._synthesis_inflight += 1
+
                 print(f"[Speech] Synthesizing: {text}", flush=True)
                 try:
                     audio = self.engine.synthesize(text)
                     if audio is not None:
+                        with self._state_lock:
+                            self._pending_audio += 1
                         self._audio_queue.put(audio)
                 except Exception as exc:
                     print(
@@ -112,12 +155,27 @@ class SpeechModule(Module):
                         flush=True,
                     )
                 finally:
+                    with self._state_lock:
+                        self._synthesis_inflight -= 1
                     self._queue.task_done()
+                    self._maybe_finish_speech()
             except Exception as exc:
                 print(
                     f"[Speech] Worker error: {type(exc).__name__}: {exc}",
                     flush=True,
                 )
+
+    def _maybe_finish_speech(self):
+        with self._state_lock:
+            if not self._speech_active:
+                return False
+            if self._queued_text != 0 or self._pending_audio != 0 or self._synthesis_inflight != 0:
+                return False
+            self._speech_active = False
+            self._presentation_mode_active = False
+
+        self.event_bus.emit("speech_finished")
+        return True
 
     def _playback_loop(self):
         while self._running:
@@ -127,7 +185,6 @@ class SpeechModule(Module):
                     self._audio_queue.task_done()
                     break
 
-                self.event_bus.emit("speech_started")
                 try:
                     self.engine.play(audio)
                 except Exception as exc:
@@ -136,8 +193,10 @@ class SpeechModule(Module):
                         flush=True,
                     )
                 finally:
-                    self.event_bus.emit("speech_finished")
+                    with self._state_lock:
+                        self._pending_audio = max(0, self._pending_audio - 1)
                     self._audio_queue.task_done()
+                    self._maybe_finish_speech()
             except Exception as exc:
                 print(
                     f"[Speech] Playback loop error: {type(exc).__name__}: {exc}",

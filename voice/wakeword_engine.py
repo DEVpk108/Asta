@@ -24,7 +24,7 @@ class WakeWordEngine:
         threshold=0.3,
         debug=True,
         confirmation_frames=2,
-        strong_threshold=0.65,
+        strong_threshold=0.50,
     ):
         self.model_paths = [str(path) for path in (model_paths or DEFAULT_MODELS)]
         self.threshold = threshold

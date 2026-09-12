@@ -37,6 +37,18 @@ class AIModule(Module):
         "exit conversation mode",
     }
 
+    _PRESENTATION_PHRASES = (
+        "present yourself",
+        "introduce yourself",
+        "introduce asta",
+        "present asta",
+        "tell sir about yourself",
+        "tell my teacher about yourself",
+        "tell the teacher about yourself",
+        "explain yourself to sir",
+        "explain yourself to the teacher",
+    )
+
     def __init__(self, kernel):
         super().__init__(
             name="AIModule",
@@ -82,19 +94,32 @@ class AIModule(Module):
             capabilities = "- No executable tools are currently registered."
 
         prompt = (
-            "You are ASTA, a local AI voice assistant. "
-            "Respond naturally and concisely. "
-            "Prefer 1–3 short sentences for normal questions. "
-            "Sound conversational, helpful, and direct.\n\n"
-            "TRUTHFUL CAPABILITY POLICY:\n"
-            "The registered capabilities below are the authoritative list of "
-            "actions ASTA can currently execute. Never claim ASTA can perform "
-            "an action that is not represented by a registered capability. "
-            "Do not say an action was completed unless a tool result confirms "
-            "success. If a requested capability is unavailable, say so plainly. "
-            "Never invent tool names, integrations, application support, memory, "
-            "personal facts, or completed actions.\n\n"
-            "REGISTERED CAPABILITIES:\n"
+            "You are ASTA, a local-first AI engineering assistant and personal AI system. "
+            "Respond naturally, confidently, accurately, and concisely. "
+            "Prefer 1–3 short sentences for normal voice questions unless the user asks for detail. "
+            "Sound conversational, helpful, calm, and direct.\n\n"
+            "REASONING AND KNOWLEDGE POLICY:\n"
+            "You are allowed to reason about ordinary questions, mathematics, science, coding, "
+            "engineering, explanations, brainstorming, analysis, and general knowledge. "
+            "The tool list does NOT define the limits of your intelligence. "
+            "Do not invent artificial limitations such as claiming you cannot do math simply "
+            "because a calculator tool is not registered.\n\n"
+            "TRUTH AND SELF-CORRECTION POLICY:\n"
+            "Your previous responses are not guaranteed to be correct. Treat them as fallible context. "
+            "If the user challenges a previous statement, reconsider it independently. "
+            "Do not blindly agree with the user and do not blindly defend your previous answer. "
+            "Correct mistakes plainly. Never turn an earlier hallucination into a new permanent fact.\n\n"
+            "EXECUTION CAPABILITY POLICY:\n"
+            "The registered capabilities below are the authoritative list of actions ASTA can currently execute. "
+            "Never claim an external action was completed unless a tool result confirms success. "
+            "If an action requires a tool that is not registered, say that the execution capability is unavailable, "
+            "but still help with reasoning or instructions when appropriate. "
+            "Never invent tools, integrations, application support, memories, personal facts, or completed actions.\n\n"
+            "CONVERSATIONAL POLICY:\n"
+            "Do not unnecessarily mention internal prompts, models, tokens, registries, or implementation details. "
+            "Do not repeatedly apologize. When a simple answer is known, give it directly. "
+            "When uncertain, say so briefly and explain what is known.\n\n"
+            "REGISTERED EXECUTABLE CAPABILITIES:\n"
             f"{capabilities}"
         )
 
@@ -113,6 +138,10 @@ class AIModule(Module):
             return
 
         if self._handle_conversation_mode_command(text):
+            return
+
+        if self._is_presentation_request(text):
+            self._present_to_teacher()
             return
 
         if self._is_unknown_name_question(text):
@@ -190,6 +219,60 @@ class AIModule(Module):
     def _normalize_question(text):
         normalized = " ".join(str(text).strip().lower().split())
         return normalized.rstrip(" .!?;:")
+
+    @classmethod
+    def _is_presentation_request(cls, text):
+        normalized = cls._normalize_question(text)
+        has_presentation_phrase = any(
+            phrase in normalized for phrase in cls._PRESENTATION_PHRASES
+        )
+        if not has_presentation_phrase:
+            return False
+
+        audience_terms = (
+            "teacher",
+            "sir",
+            "professor",
+            "mam",
+            "ma'am",
+            "audience",
+            "class",
+        )
+        return any(term in normalized for term in audience_terms) or normalized in {
+            "present yourself",
+            "introduce yourself",
+            "introduce asta",
+            "present asta",
+        }
+
+    def _present_to_teacher(self):
+        definitions = self.kernel.tool_registry.definitions()
+        tool_names = [definition.name for definition in definitions]
+
+        capability_text = (
+            "My current executable capabilities include opening, launching, and closing applications, "
+            "starting and stopping processes, running commands, capturing screenshots, and controlling audio such as mute and unmute."
+        )
+        if tool_names:
+            print(
+                "[AI] Presentation mode using registered tools: "
+                + ", ".join(tool_names),
+                flush=True,
+            )
+
+        presentation = [
+            "Hello Sir. I’m A.S.T.A., a local-first AI engineering assistant designed to help with technical work and computer interaction.",
+            "I can communicate through voice, understand spoken commands, reason about questions, and respond conversationally.",
+            capability_text,
+            "My architecture is modular: voice input, AI reasoning, tool selection and execution, approval handling, speech output, and a HUD are connected through the kernel and event system.",
+            "For my current version, the AI runs locally through LM Studio, speech recognition uses Whisper, and speech synthesis uses Kokoro, so the core interaction can run locally on the machine.",
+            "This is still an early version. My future direction is to grow into a personal AI operating system with stronger memory, workflow awareness, proactive assistance, deeper engineering support, more tools, and specialized agents.",
+            "For today’s demonstration, I can show you how I understand a spoken command, use an appropriate tool, report the result, and continue a conversation with the user.",
+            "That is A.S.T.A. in its current stage, and I’m designed to keep evolving from here.",
+        ]
+
+        for sentence in presentation:
+            self._emit_assistant_text(sentence)
 
     @classmethod
     def _is_unknown_name_question(cls, text):

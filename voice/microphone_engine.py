@@ -47,7 +47,11 @@ class MicrophoneEngine:
         print("[Mic] Ready")
 
     def stop(self):
+        """Temporarily stop capture without closing the reusable stream."""
         self.stream.stop()
+
+    def close(self):
+        """Permanently close the input stream during application shutdown."""
         self.stream.close()
 
     def get_chunk(self):
