@@ -231,10 +231,10 @@ class IntentRouter:
                         "target": target,
                     }
 
-        if text == "screenshot" or text.startswith("screenshot "):
+        if text in {"screenshot", "screen shot"}:
             return {"action": "screenshot"}
 
-        if text.startswith("take a screenshot"):
+        if text.startswith("take a screenshot") or text.startswith("take a screen shot"):
             return {"action": "screenshot"}
 
         if text == "mute":
