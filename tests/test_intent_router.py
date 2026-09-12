@@ -36,3 +36,42 @@ def test_can_you_open_is_command_not_capability_question():
     result = IntentRouter().analyze("Can you open Spotify?")
     assert result.intent == IntentType.COMMAND
     assert result.entities == {"action": "open", "target": "spotify"}
+
+
+def test_compound_command_is_parsed_as_sequential_steps():
+    result = IntentRouter().analyze(
+        "Can you please open Chrome then take a screenshot"
+    )
+
+    assert result.intent == IntentType.COMMAND
+    assert result.entities["commands"] == [
+        {"action": "open", "target": "chrome"},
+        {"action": "screenshot"},
+    ]
+
+
+def test_compound_command_supports_after_that():
+    result = IntentRouter().analyze(
+        "Open Chrome, after that take a screenshot"
+    )
+
+    assert result.intent == IntentType.COMMAND
+    assert result.entities["commands"] == [
+        {"action": "open", "target": "chrome"},
+        {"action": "screenshot"},
+    ]
+
+
+def test_simple_command_remains_single_command():
+    result = IntentRouter().analyze("open Chrome")
+
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {"action": "open", "target": "chrome"}
+
+
+def test_mixed_memory_and_follow_up_remains_non_memory():
+    result = IntentRouter().analyze(
+        "Do not forget about the tools. I know you can tell me a joke."
+    )
+
+    assert result.intent == IntentType.UNKNOWN
