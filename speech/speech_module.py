@@ -37,6 +37,7 @@ class SpeechModule(Module):
         self._queued_text = 0
         self._pending_audio = 0
         self._synthesis_inflight = 0
+        self._presentation_mode_active = False
 
     def initialize(self):
         print("[Speech] Initializing...", flush=True)
@@ -78,10 +79,18 @@ class SpeechModule(Module):
         if not text:
             return
 
-        queued_text = text
-        if len(text) > 800 and text.startswith("Hello Sir. I’m A.S.T.A."):
+        # Presentation mode is emitted by AIModule as several HUD sentences.
+        # Speak one compact version instead of narrating the entire script.
+        is_presentation = text.startswith("Hello Sir. I’m A.S.T.A.,")
+        if is_presentation:
+            with self._state_lock:
+                self._presentation_mode_active = True
             queued_text = self.PRESENTATION_SHORT_TEXT
             print("[Speech] Presentation voice optimized for live demo.", flush=True)
+        elif self._presentation_mode_active:
+            return
+        else:
+            queued_text = text
 
         with self._state_lock:
             self._queued_text += 1
@@ -166,6 +175,7 @@ class SpeechModule(Module):
             if self._queued_text != 0 or self._pending_audio != 0 or self._synthesis_inflight != 0:
                 return False
             self._speech_active = False
+            self._presentation_mode_active = False
 
         self.event_bus.emit("speech_finished")
         return True
