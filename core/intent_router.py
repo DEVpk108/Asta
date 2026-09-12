@@ -176,7 +176,7 @@ class IntentRouter:
             chunk = text[start:end].strip(" ,")
             if index + 1 < len(matches):
                 separator_match = re.search(
-                    r"(?:,?\s+)(?:and then|then|after that|followed by|and)\s+$",
+                    r"(?:,?\s+)(?:and then|then|after that|followed by|and)\s*$",
                     chunk,
                     re.IGNORECASE,
                 )
