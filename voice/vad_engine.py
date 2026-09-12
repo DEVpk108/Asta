@@ -15,17 +15,19 @@ class VADEngine:
         self,
         sample_rate=16000,
         min_speech_duration=0.45,
-        threshold=0.80,
-        silence_ms=700,
-        speech_pad_ms=250,
+        threshold=0.65,
+        silence_ms=800,
+        speech_pad_ms=300,
         min_rms=0.025,
         min_peak=0.08,
+        start_chunk_rms=0.008,
     ):
 
         self.sample_rate = sample_rate
         self.min_speech_duration = min_speech_duration
         self.min_rms = min_rms
         self.min_peak = min_peak
+        self.start_chunk_rms = start_chunk_rms
 
         self.model = load_silero_vad()
         self.debug = False
@@ -56,7 +58,12 @@ class VADEngine:
         audio_buffer = []
         recording = False
 
-        # Wakeword already happened. Do not include it in Whisper input.
+        # Do not feed the wake-word tail into Whisper. The wake-word detector's
+        # ring buffer is useful for its own detection, but its final samples
+        # can contain the wake phrase rather than the user's command.
+        # Command audio starts fresh after the wake-word confirmation.
+        _ = initial_audio
+
         try:
             while True:
                 try:
@@ -68,7 +75,18 @@ class VADEngine:
                     print("[VAD] No command after wakeword.")
                     return None
 
-                tensor = torch.from_numpy(chunk).float()
+                chunk = np.asarray(chunk, dtype=np.float32)
+                chunk_rms = float(np.sqrt(np.mean(np.square(chunk)))) if chunk.size else 0.0
+
+                # Prevent very-low-level room/device noise from triggering the
+                # speech state. Once speech has started, keep the real audio.
+                vad_chunk = (
+                    chunk
+                    if chunk_rms >= self.start_chunk_rms
+                    else np.zeros_like(chunk)
+                )
+
+                tensor = torch.from_numpy(vad_chunk).float()
                 event = self.vad(tensor)
 
                 if self.debug:
@@ -77,11 +95,6 @@ class VADEngine:
                 if not recording and self.is_speech_started(event):
                     print("[VAD] Command started.")
                     recording = True
-
-                    if initial_audio is not None:
-                        preroll = initial_audio[-4000:]
-                        if len(preroll):
-                            audio_buffer.append(preroll)
 
                 if recording:
                     audio_buffer.append(chunk)
@@ -107,7 +120,6 @@ class VADEngine:
                 f"duration={duration:.3f}s"
             )
 
-        # Do not send transient/noise captures to Whisper.
         if rms < self.min_rms or peak < self.min_peak:
             print(
                 f"[VAD] Low-energy command "
