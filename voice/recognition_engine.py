@@ -11,8 +11,7 @@ class RecognitionEngine:
 
     SUPPORTED_BACKENDS = {"whisper", "indic", "hybrid"}
 
-    # Whisper can produce these phrases from silence/noise, especially when
-    # given a prompt that contains the same wording. Never pass them to the AI.
+    # Phrases Whisper may invent from silence/noise. Never pass them to the AI.
     HALLUCINATION_PHRASES = {
         "the speaker is using english",
         "the speaker is speaking english",
@@ -114,11 +113,9 @@ class RecognitionEngine:
         normalized = self._normalize(text)
         if not normalized:
             return True
-
         if normalized in self.HALLUCINATION_PHRASES:
             return True
 
-        # Reject punctuation/noise-only output and extremely repetitive output.
         alnum = re.sub(r"[^a-z0-9]+", "", normalized)
         if not alnum:
             return True
@@ -133,30 +130,48 @@ class RecognitionEngine:
         if self.model is None:
             raise RuntimeError("Whisper backend is not initialized.")
 
+        # A.S.T.A. already extracts speech with its streaming Silero VAD.
+        # Running another VAD pass here can clip/drop valid speech, so Whisper
+        # receives the already-segmented command directly.
         segments, info = self.model.transcribe(
             audio,
             language=getattr(self, "language", "en"),
             beam_size=getattr(self, "beam_size", 5),
-            vad_filter=True,
+            vad_filter=False,
             condition_on_previous_text=False,
             temperature=0.0,
             compression_ratio_threshold=2.4,
             log_prob_threshold=-1.0,
-            no_speech_threshold=0.65,
-            initial_prompt="Conversation with ASTA. Preserve the spoken meaning.",
+            no_speech_threshold=0.80,
         )
 
-        text = " ".join(
-            segment.text.strip()
-            for segment in segments
-            if segment.text and segment.text.strip()
-        ).strip()
+        parts = []
+        segment_stats = []
+        for segment in segments:
+            if not segment.text or not segment.text.strip():
+                continue
+            parts.append(segment.text.strip())
+            segment_stats.append(
+                (
+                    float(getattr(segment, "avg_logprob", 0.0) or 0.0),
+                    float(getattr(segment, "no_speech_prob", 0.0) or 0.0),
+                    float(getattr(segment, "compression_ratio", 0.0) or 0.0),
+                )
+            )
 
         self.last_language = getattr(info, "language", None)
         self.last_language_probability = float(
             getattr(info, "language_probability", 0.0) or 0.0
         )
-        return text
+
+        if self.debug and segment_stats:
+            stats_text = ", ".join(
+                f"avg_logprob={avg:.2f} no_speech={no_speech:.2f} compression={compression:.2f}"
+                for avg, no_speech, compression in segment_stats
+            )
+            print(f"[STT] Segment confidence: {stats_text}", flush=True)
+
+        return " ".join(parts).strip()
 
     def _use_indic(self, audio, whisper_text):
         indic = self._load_indic()
