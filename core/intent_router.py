@@ -31,6 +31,28 @@ class IntentRouter:
         "hey ",
     )
 
+    _NON_MEMORY_REQUEST_PREFIXES = (
+        "tell me ",
+        "give me ",
+        "make ",
+        "show me ",
+        "explain ",
+        "describe ",
+        "what ",
+        "who ",
+        "how ",
+        "why ",
+        "when ",
+        "where ",
+        "can you ",
+        "could you ",
+        "would you ",
+        "will you ",
+        "please ",
+        "i want ",
+        "i need ",
+    )
+
     def route(self, text: str) -> IntentType:
         """Backward-compatible intent-only API."""
         return self.analyze(text).intent
@@ -55,14 +77,16 @@ class IntentRouter:
         )
 
         if normalized.startswith(memory_phrases):
-            return IntentResult(
-                intent=IntentType.MEMORY,
-                confidence=0.98,
-                normalized_text=normalized,
-                entities=self._extract_memory_entities(normalized),
-                requires_memory=True,
-                classifier="rules",
-            )
+            memory_text = self._extract_memory_entities(normalized).get("memory", "")
+            if memory_text and not self._contains_follow_up_request(memory_text):
+                return IntentResult(
+                    intent=IntentType.MEMORY,
+                    confidence=0.98,
+                    normalized_text=normalized,
+                    entities={"memory": memory_text},
+                    requires_memory=True,
+                    classifier="rules",
+                )
 
         command_entities = self._extract_command_entities(normalized)
         if command_entities:
@@ -181,8 +205,8 @@ class IntentRouter:
 
         return {}
 
-    @staticmethod
-    def _extract_memory_entities(text: str) -> dict[str, Any]:
+    @classmethod
+    def _extract_memory_entities(cls, text: str) -> dict[str, Any]:
         prefixes = (
             "remember that",
             "remember this",
@@ -197,3 +221,25 @@ class IntentRouter:
                 return {"memory": text[len(prefix):].strip()}
 
         return {}
+
+    @classmethod
+    def _contains_follow_up_request(cls, memory_text: str) -> bool:
+        """Avoid consuming a mixed utterance when it contains a later request."""
+        normalized = cls._normalize(memory_text)
+        if not normalized:
+            return False
+
+        for prefix in cls._NON_MEMORY_REQUEST_PREFIXES:
+            if prefix in normalized:
+                return True
+
+        # A second imperative sentence is commonly produced by speech
+        # recognition as a single utterance. Treat it as a conversational /
+        # unknown request so the LLM can interpret the full message.
+        if re.search(
+            r"\b(?:tell|give|show|make|explain|describe|ask|play|write|say)\s+me\b",
+            normalized,
+        ):
+            return True
+
+        return False
