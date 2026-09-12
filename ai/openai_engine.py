@@ -12,9 +12,10 @@ class AIEngine:
         base_url="http://127.0.0.1:1234",
         model="nvidia/nemotron-3-nano-4b",
         timeout=120,
-        max_output_tokens=256,
-        reasoning_retry_tokens=512,
+        max_output_tokens=192,
+        reasoning_retry_tokens=256,
         reasoning="off",
+        max_sentences=3,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -22,6 +23,7 @@ class AIEngine:
         self.max_output_tokens = max_output_tokens
         self.reasoning_retry_tokens = reasoning_retry_tokens
         self.reasoning = reasoning
+        self.max_sentences = max(1, int(max_sentences))
         self.session = requests.Session()
 
         # A.S.T.A. talks to LM Studio locally. Bypass environment proxies for
@@ -219,6 +221,8 @@ class AIEngine:
         first_delta_time = None
         full_text = ""
         sentence_buffer = ""
+        sentence_count = 0
+        response_stopped = False
         final_result = None
 
         with self.session.post(
@@ -275,7 +279,7 @@ class AIEngine:
                 if event_name == "chat.end":
                     final_result = data.get("result", {})
                     continue
-                if event_name != "message.delta":
+                if event_name != "message.delta" or response_stopped:
                     continue
 
                 delta = self._normalize_text(data.get("content", ""))
@@ -306,8 +310,18 @@ class AIEngine:
                     sentence = self._normalize_text(sentence)
                     if on_sentence and self._is_speech_worthy(sentence):
                         on_sentence(sentence)
+                    sentence_count += 1
 
-        if final_result:
+                    if sentence_count >= self.max_sentences:
+                        response_stopped = True
+                        sentence_buffer = ""
+                        print(
+                            f"[AI] Response guard stopped output after {self.max_sentences} sentences.",
+                            flush=True,
+                        )
+                        break
+
+        if final_result and not response_stopped:
             message_text = self._normalize_text(self._extract_message_text(final_result.get("output")))
             if not full_text.strip() and message_text:
                 full_text = message_text
@@ -315,7 +329,7 @@ class AIEngine:
                     on_sentence(full_text)
 
         remaining = self._normalize_text(sentence_buffer.strip())
-        if remaining and on_sentence and self._is_speech_worthy(remaining):
+        if remaining and not response_stopped and on_sentence and self._is_speech_worthy(remaining):
             on_sentence(remaining)
 
         input_tokens, output_tokens, reasoning_tokens, tokens_per_second, ttft, model_load_time = self._output_stats(final_result)
