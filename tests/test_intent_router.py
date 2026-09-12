@@ -20,6 +20,12 @@ def test_screen_shot_is_actionable():
     assert result.entities == {"action": "screenshot"}
 
 
+def test_take_the_screen_shot_is_actionable():
+    result = IntentRouter().analyze("Take the screen shot!")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {"action": "screenshot"}
+
+
 def test_open_command_preserves_target_after_normalization():
     result = IntentRouter().analyze("Open Calculator.")
     assert result.intent == IntentType.COMMAND
@@ -79,6 +85,17 @@ def test_compound_command_with_comma_then_is_sequenced():
 
 def test_compound_command_with_and_then_is_sequenced():
     result = IntentRouter().analyze("Open Chrome and then take screenshot.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "commands": [
+            {"action": "open", "target": "chrome"},
+            {"action": "screenshot"},
+        ]
+    }
+
+
+def test_compound_command_with_comma_after_first_action():
+    result = IntentRouter().analyze("Open Chrome, and then take screenshot.")
     assert result.intent == IntentType.COMMAND
     assert result.entities == {
         "commands": [
