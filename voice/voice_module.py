@@ -34,11 +34,12 @@ class VoiceModule(Module):
         self._manual_conversation = False
         self._last_interaction = 0.0
         self._tts_active = False
+        self._tts_guard_until = 0.0
 
-        # First wake-word activation gets a warmer introduction; subsequent
-        # activations use a short acknowledgement.
+        # First wake-word activation gets a short introduction; subsequent
+        # activations use a concise acknowledgement.
         self._wakeword_greeting_used = False
-        self.wakeword_first_greeting = "Hello! It’s great to hear from you. How can I help?"
+        self.wakeword_first_greeting = "Hello! How can I help?"
         self.wakeword_return_greeting = "Yes?"
 
     def initialize(self):
@@ -126,20 +127,35 @@ class VoiceModule(Module):
         )
 
     def _on_assistant_sentence(self, *args, **kwargs):
+        # Block VAD immediately when ASTA queues speech, before playback has
+        # actually started. This prevents the microphone from catching the
+        # first milliseconds of TTS output.
         self._tts_active = True
+        self._tts_guard_until = time.monotonic() + 0.15
+        self.microphone.clear_buffer()
 
     def _on_speech_started(self, *args, **kwargs):
         self._tts_active = True
+        self._tts_guard_until = time.monotonic() + 0.05
+        self.microphone.clear_buffer()
 
     def _on_speech_finished(self, *args, **kwargs):
+        # SpeechModule emits speech_finished only after the complete queued
+        # response has played. Keep a short settling window so speaker audio
+        # tails cannot be interpreted as a new user command.
         self._tts_active = False
+        self._tts_guard_until = time.monotonic() + 0.35
         self.microphone.clear_buffer()
 
         if self._conversation_active and not self._manual_conversation:
             self._last_interaction = time.monotonic()
 
     def _can_listen(self):
-        return self._running and not self._tts_active
+        return (
+            self._running
+            and not self._tts_active
+            and time.monotonic() >= self._tts_guard_until
+        )
 
     def _listen_loop(self):
         while self._running:
