@@ -53,13 +53,6 @@ class IntentRouter:
         "i need ",
     )
 
-    _COMPOUND_ACTION_PATTERN = re.compile(
-        r"\b(?:open|launch|start|close|run|stop)\b|"
-        r"\b(?:take(?:\s+the)?|capture)\s+(?:a\s+)?(?:screen\s*shot|screenshot)\b|"
-        r"\b(?:mute|unmute)\b",
-        re.IGNORECASE,
-    )
-
     _COMPOUND_SEPARATOR_PATTERN = re.compile(
         r"\s*(?:,\s*)?(?:and then|then|after that|followed by|and)\s+",
         re.IGNORECASE,
@@ -160,37 +153,22 @@ class IntentRouter:
 
     @classmethod
     def _extract_compound_commands(cls, text: str) -> list[dict[str, Any]]:
-        """Parse sequential executable actions joined by natural language."""
-        matches = list(cls._COMPOUND_ACTION_PATTERN.finditer(text))
-        if len(matches) < 2:
+        """Parse sequential commands joined by natural-language separators."""
+        parts = [
+            part.strip(" ,")
+            for part in cls._COMPOUND_SEPARATOR_PATTERN.split(text)
+            if part.strip(" ,")
+        ]
+
+        if len(parts) < 2:
             return []
 
         commands: list[dict[str, Any]] = []
-
-        # Build action-sized chunks. A separator must occur between two
-        # executable action boundaries; this prevents a whole compound utterance
-        # from being swallowed as the target of the first "open" command.
-        for index, match in enumerate(matches):
-            start = match.start()
-            end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-            chunk = text[start:end].strip(" ,")
-            if index + 1 < len(matches):
-                separator_match = re.search(
-                    r"(?:,?\s+)(?:and then|then|after that|followed by|and)\s+$",
-                    chunk,
-                    re.IGNORECASE,
-                )
-                if not separator_match:
-                    continue
-                chunk = chunk[:separator_match.start()].strip(" ,")
-
-            command = cls._extract_command_entities(chunk)
+        for part in parts:
+            command = cls._extract_command_entities(part)
             if not command or "commands" in command:
-                continue
+                return []
             commands.append(command)
-
-        if len(commands) < 2:
-            return []
 
         return commands
 
@@ -246,11 +224,15 @@ class IntentRouter:
             return {"action": "screenshot"}
 
         screenshot_prefixes = (
+            "take screenshot",
             "take a screenshot",
+            "take screen shot",
             "take a screen shot",
             "take the screenshot",
             "take the screen shot",
+            "capture screenshot",
             "capture a screenshot",
+            "capture screen shot",
             "capture a screen shot",
             "capture the screenshot",
             "capture the screen shot",
