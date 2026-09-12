@@ -227,6 +227,11 @@ class AIModule(Module):
         )
 
     def _handle_command_intent(self, intent: IntentResult):
+        commands = intent.entities.get("commands")
+        if isinstance(commands, list) and len(commands) >= 2:
+            self._handle_command_sequence(intent, commands)
+            return
+
         try:
             request = self.tool_request_builder.build(intent)
         except ValueError as exc:
@@ -238,6 +243,41 @@ class AIModule(Module):
         print(
             f"[AI] Selected tool: {request.tool} "
             f"(request_id={request.request_id})",
+            flush=True,
+        )
+        self.event_bus.emit("tool_request", request=request)
+
+    def _handle_command_sequence(self, intent: IntentResult, commands):
+        """Build the first request and carry the remaining sequence in metadata."""
+        first = commands[0]
+        first_intent = IntentResult(
+            intent=IntentType.COMMAND,
+            confidence=intent.confidence,
+            normalized_text=intent.normalized_text,
+            entities=dict(first),
+            requires_tools=True,
+            classifier=intent.classifier,
+        )
+
+        try:
+            request = self.tool_request_builder.build(first_intent)
+        except ValueError as exc:
+            print(f"[AI] Unable to build compound command: {exc}", flush=True)
+            self._emit_assistant_text(
+                f"I couldn't map that command to an available tool: {exc}"
+            )
+            return
+
+        request.metadata["sequence"] = [dict(command) for command in commands]
+        request.metadata["sequence_index"] = 0
+
+        print(
+            f"[AI] Compound command: {len(commands)} step(s)",
+            flush=True,
+        )
+        print(
+            f"[AI] Selected tool: {request.tool} "
+            f"(request_id={request.request_id}, step=1/{len(commands)})",
             flush=True,
         )
         self.event_bus.emit("tool_request", request=request)
