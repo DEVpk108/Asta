@@ -10,10 +10,10 @@ class SpeechModule(Module):
 
     PRESENTATION_SHORT_TEXT = (
         "Hello Sir. I’m A.S.T.A., a local-first AI engineering assistant. "
-        "I understand voice commands, reason about technical questions, and can interact with the computer through authorized tools. "
-        "My architecture is modular, with voice input, AI reasoning, tool execution, approval handling, speech output, and a HUD connected through the kernel. "
-        "My current local stack uses LM Studio, Whisper, and Kokoro. "
-        "My long-term direction is to become a personal AI operating system with stronger memory, workflow awareness, proactive assistance, and specialized agents."
+        "I understand voice commands, reason about technical questions, and interact with the computer through authorized tools. "
+        "My architecture is modular, connecting voice input, AI reasoning, tool execution, approval handling, speech output, and the HUD through the kernel. "
+        "My local stack uses LM Studio, Whisper, and Kokoro. "
+        "My long-term goal is to become a personal AI operating system with stronger memory, workflow awareness, proactive assistance, and specialized agents."
     )
 
     def __init__(self, kernel):
@@ -79,8 +79,6 @@ class SpeechModule(Module):
         if not text:
             return
 
-        # Presentation mode is emitted by AIModule as several HUD sentences.
-        # Speak one compact version instead of narrating the entire script.
         is_presentation = text.startswith("Hello Sir. I’m A.S.T.A.,")
         if is_presentation:
             with self._state_lock:
@@ -101,7 +99,6 @@ class SpeechModule(Module):
         self._queue.put(queued_text)
 
     def _get_coalesced_text(self, first_text):
-        """Combine chunks already arriving, with a tiny debounce window."""
         parts = [first_text]
         deadline = time.monotonic() + self.coalesce_window
 
