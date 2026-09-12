@@ -53,12 +53,9 @@ class IntentRouter:
         "i need ",
     )
 
-    _COMPOUND_SEPARATORS = (
-        " and then ",
-        " then ",
-        " after that ",
-        " followed by ",
-        " and ",
+    _COMPOUND_SEPARATOR_PATTERN = re.compile(
+        r"\s*(?:,\s*)?(?:and then|then|after that|followed by|and)\s+",
+        re.IGNORECASE,
     )
 
     def route(self, text: str) -> IntentType:
@@ -159,11 +156,11 @@ class IntentRouter:
     @classmethod
     def _extract_compound_commands(cls, text: str) -> list[dict[str, Any]]:
         """Parse simple sequential commands joined by natural separators."""
-        parts = [text]
-        for separator in cls._COMPOUND_SEPARATORS:
-            if separator in text:
-                parts = [part.strip(" ,") for part in text.split(separator)]
-                break
+        parts = [
+            part.strip(" ,")
+            for part in cls._COMPOUND_SEPARATOR_PATTERN.split(text)
+            if part.strip(" ,")
+        ]
 
         if len(parts) < 2:
             return []
