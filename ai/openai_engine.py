@@ -179,7 +179,7 @@ class AIEngine:
 
     @staticmethod
     def _normalize_text(text):
-        if not isinstance(text, str) or ("Ã" not in text and "â" not in text):
+        if not isinstance(text, str) or ("\u00c3" not in text and "\u00e2" not in text):
             return text
         try:
             repaired = text.encode("latin-1").decode("utf-8")
