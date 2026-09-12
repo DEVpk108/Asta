@@ -75,3 +75,14 @@ def test_compound_command_with_comma_then_is_sequenced():
             {"action": "screenshot"},
         ]
     }
+
+
+def test_compound_command_with_and_then_is_sequenced():
+    result = IntentRouter().analyze("Open Chrome and then take screenshot.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "commands": [
+            {"action": "open", "target": "chrome"},
+            {"action": "screenshot"},
+        ]
+    }
