@@ -139,11 +139,17 @@ class StopProcessTool(Tool):
         return _result(request, True, output={"pid": pid, "stopped": True}, start=start)
 
 
+WINDOWS_PROCESS_ALIASES = {
+    "camera": ("WindowsCamera.exe", "WindowsCameraApp.exe"),
+    "windows camera": ("WindowsCamera.exe", "WindowsCameraApp.exe"),
+}
+
+
 class CloseApplicationTool(Tool):
     @property
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
-            name="system.close_application", description="Close a local application by process name.",
+            name="system.close_application", description="Close a local application by process name or friendly application name.",
             input_schema={"type": "object", "properties": {"target": {"type": "string", "minLength": 1}}, "required": ["target"]},
             risk_level="high", metadata={"actions": ["close"], "category": "system"},
         )
@@ -153,11 +159,48 @@ class CloseApplicationTool(Tool):
         target = _validated_target(request)
         if target is None:
             return _result(request, False, error="Argument 'target' must be a non-empty string.", start=start)
+
         try:
             system = platform.system()
             if system == "Windows":
-                completed = subprocess.run(["taskkill", "/IM", target, "/T", "/F"], capture_output=True, text=True, timeout=request.timeout_seconds, check=False)
-            elif system in {"Linux", "Darwin"}:
+                candidates = []
+                normalized = target.lower()
+                candidates.extend(WINDOWS_PROCESS_ALIASES.get(normalized, ()))
+                candidates.append(target)
+                if not target.lower().endswith(".exe"):
+                    candidates.append(f"{target}.exe")
+
+                seen = set()
+                attempts = []
+                for image_name in candidates:
+                    if image_name.lower() in seen:
+                        continue
+                    seen.add(image_name.lower())
+                    completed = subprocess.run(
+                        ["taskkill", "/IM", image_name, "/T", "/F"],
+                        capture_output=True,
+                        text=True,
+                        timeout=request.timeout_seconds,
+                        check=False,
+                    )
+                    attempts.append(completed)
+                    if completed.returncode == 0:
+                        return _result(
+                            request,
+                            True,
+                            output={"target": target, "process": image_name, "closed": True},
+                            start=start,
+                        )
+
+                stderr = next((item.stderr.strip() for item in reversed(attempts) if item.stderr.strip()), "")
+                stdout = next((item.stdout.strip() for item in reversed(attempts) if item.stdout.strip()), "")
+                detail = stderr or stdout
+                error = f"Application '{target}' was not closed."
+                if detail:
+                    error += f" {detail}"
+                return _result(request, False, output={"target": target, "closed": False}, error=error, start=start)
+
+            if system in {"Linux", "Darwin"}:
                 completed = subprocess.run(["pkill", "-TERM", "-x", target], capture_output=True, text=True, timeout=request.timeout_seconds, check=False)
             else:
                 return _result(request, False, error=f"Unsupported platform: {system}", start=start)
