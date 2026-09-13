@@ -1,4 +1,5 @@
 import re
+import threading
 
 from core.contracts import IntentResult, IntentType
 
@@ -12,8 +13,11 @@ _MIXED_SCREENSHOT_PATTERN = re.compile(
 )
 
 
+_MIXED_SCREENSHOT_RENDER_DELAY = 0.20
+
+
 def apply_final_runtime_patch():
-    """Ensure conversational text is handled before the broad screenshot matcher."""
+    """Ensure mixed conversational requests capture the fully rendered HUD."""
     from ai.ai_module import AIModule
 
     if getattr(AIModule, "_asta_final_runtime_patch_applied", False):
@@ -39,25 +43,55 @@ def apply_final_runtime_patch():
                             "[AI] Final mixed-request fix: conversational response + screenshot.",
                             flush=True,
                         )
+
+                        screenshot_intent = IntentResult(
+                            intent=IntentType.COMMAND,
+                            confidence=1.0,
+                            normalized_text="take a screenshot",
+                            entities={"action": "screenshot"},
+                            requires_tools=True,
+                            classifier="final_runtime_patch",
+                        )
+
+                        request = self.tool_request_builder.build(screenshot_intent)
+                        request.metadata["post_response_action"] = True
+
+                        def dispatch_screenshot_after_hud():
+                            # The HUD event is emitted after its terminal print and
+                            # flush. A small render-settling delay gives Windows'
+                            # terminal surface time to update before the screenshot.
+                            print(
+                                "[AI] HUD rendered; waiting briefly before screenshot.",
+                                flush=True,
+                            )
+
+                            def emit_request():
+                                print(
+                                    f"[AI] Selected post-response tool: {request.tool} "
+                                    f"(request_id={request.request_id})",
+                                    flush=True,
+                                )
+                                self.event_bus.emit("tool_request", request=request)
+
+                            timer = threading.Timer(
+                                _MIXED_SCREENSHOT_RENDER_DELAY,
+                                emit_request,
+                            )
+                            timer.daemon = True
+                            timer.start()
+
+                        self.event_bus.subscribe(
+                            "hud_rendered",
+                            dispatch_screenshot_after_hud,
+                        )
+
                         self._generate_response(prompt)
 
-                        request = self.tool_request_builder.build(
-                            IntentResult(
-                                intent=IntentType.COMMAND,
-                                confidence=1.0,
-                                normalized_text="take a screenshot",
-                                entities={"action": "screenshot"},
-                                requires_tools=True,
-                                classifier="final_runtime_patch",
-                            )
-                        )
-                        request.metadata["post_response_action"] = True
-                        print(
-                            f"[AI] Selected post-response tool: {request.tool} "
-                            f"(request_id={request.request_id})",
-                            flush=True,
-                        )
-                        self.event_bus.emit("tool_request", request=request)
+                        # In the current synchronous EventBus the HUD normally emits
+                        # hud_rendered during _generate_response. Keep a safety
+                        # fallback for environments where no HUD subscriber exists.
+                        if not self.event_bus.has_subscribers("hud_rendered"):
+                            dispatch_screenshot_after_hud()
                         return
 
         return original(self, text)
