@@ -160,6 +160,16 @@ def apply_ai_runtime_patch():
                 self.event_bus.emit("tool_request", request=request)
                 return
 
+            # Let the canonical intent router claim compound commands first.
+            # This prevents a final screenshot action from stealing a sequence
+            # such as "open Chrome, then open camera, then take a screenshot".
+            routed = self.kernel.intent_router.analyze(text)
+            if routed.intent == IntentType.COMMAND:
+                commands = routed.entities.get("commands")
+                if isinstance(commands, list) and len(commands) >= 2:
+                    original_on_user_message(self, text)
+                    return
+
             if _is_screenshot_capture_request(text):
                 screenshot_intent = IntentResult(
                     intent=IntentType.COMMAND,
@@ -190,7 +200,6 @@ def apply_ai_runtime_patch():
                 self.event_bus.emit("tool_request", request=request)
                 return
 
-            routed = self.kernel.intent_router.analyze(text)
             if routed.intent != IntentType.COMMAND:
                 prompt = _extract_post_response_screenshot(text)
                 if prompt:
