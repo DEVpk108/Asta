@@ -111,12 +111,11 @@ def apply_ai_runtime_patch():
 
         original_on_user_message(self, text)
 
-    @classmethod
     def patched_creator_handler(cls, text):
         if original_creator_handler(text):
             return True
         return _is_creator_identity_question(text)
 
     AIModule.on_user_message = patched_on_user_message
-    AIModule._is_creator_identity_question = classmethod(AIModule.patched_creator_handler)
+    AIModule._is_creator_identity_question = classmethod(patched_creator_handler)
     AIModule._asta_runtime_patch_applied = True
