@@ -53,7 +53,7 @@ def test_open_screenshot_tool_reports_missing_screenshot(tmp_path):
 
 
 def test_open_screenshot_request_dispatches_real_tool(tmp_path):
-    latest = tmp_path / "asta_latest.png"
+    latest = tmp_path / "asta_20260913_172000_000000001.png"
     latest.write_bytes(b"png")
     opened = []
 
