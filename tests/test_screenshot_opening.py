@@ -1,6 +1,8 @@
+from core import Kernel
 from core.contracts import ToolRequest
-from core.tools import OpenScreenshotTool
-from ai.runtime_patch import _is_screenshot_open_request
+from core.tools import OpenScreenshotTool, ToolRuntimeModule
+from ai.ai_module import AIModule
+from ai.runtime_patch import _is_screenshot_open_request, apply_ai_runtime_patch
 
 
 def test_open_screenshot_phrases_are_deterministic():
@@ -48,3 +50,34 @@ def test_open_screenshot_tool_reports_missing_screenshot(tmp_path):
 
     assert result.success is False
     assert result.error == "No captured screenshots were found."
+
+
+def test_open_screenshot_request_dispatches_real_tool(tmp_path):
+    latest = tmp_path / "asta_latest.png"
+    latest.write_bytes(b"png")
+    opened = []
+
+    kernel = Kernel()
+    kernel.register_tool(
+        OpenScreenshotTool(
+            screenshot_dir=tmp_path,
+            opener=lambda path: opened.append(path),
+        )
+    )
+
+    tool_runtime = ToolRuntimeModule(kernel)
+    tool_runtime.initialize()
+    apply_ai_runtime_patch()
+    ai = AIModule(kernel)
+    results = []
+    kernel.event_bus.subscribe("tool_result", results.append)
+
+    try:
+        ai.on_user_message("Open the screenshot")
+    finally:
+        tool_runtime.shutdown()
+
+    assert opened == [latest]
+    assert results
+    assert results[-1].success is True
+    assert results[-1].tool == "vision.open_screenshot"
