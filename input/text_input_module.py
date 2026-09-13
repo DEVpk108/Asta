@@ -18,16 +18,22 @@ class TextInputModule(Module):
 
     def initialize(self):
         print("[Text] Initializing...")
-
         self._running = True
+        print("[Text] Ready", flush=True)
+
+    def start_input(self):
+        """Start the interactive prompt after all kernel modules are ready."""
+        if not self._running:
+            return
+        if self._thread is not None and self._thread.is_alive():
+            return
+
         self._thread = threading.Thread(
             target=self._input_loop,
             name="TextInputLoop",
             daemon=True,
         )
         self._thread.start()
-
-        print("[Text] Ready")
         print("[Text] Type a message and press Enter.", flush=True)
 
     def shutdown(self):
