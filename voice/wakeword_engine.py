@@ -25,14 +25,12 @@ class WakeWordEngine:
         debug=True,
         confirmation_frames=2,
         strong_threshold=0.85,
-        silence_rms=0.001,
     ):
         self.model_paths = [str(path) for path in (model_paths or DEFAULT_MODELS)]
         self.threshold = float(threshold)
         self.debug = debug
         self.confirmation_frames = max(1, int(confirmation_frames))
         self.strong_threshold = max(self.threshold, float(strong_threshold))
-        self.silence_rms = float(silence_rms)
 
         self.model = Model(
             wakeword_models=self.model_paths,
@@ -59,7 +57,7 @@ class WakeWordEngine:
             f"frame(s); strong score >= {self.strong_threshold:.2f} still "
             "requires confirmation"
         )
-        print(f"[WakeWord] Silence gate: rms < {self.silence_rms:.4f}")
+        print("[WakeWord] Acoustic gate: disabled; using model scores + confirmation")
 
     def wait_for_wakeword(self, microphone, should_continue=None):
         """Wait for a confirmed wake word until the caller asks the listener to pause."""
@@ -72,6 +70,7 @@ class WakeWordEngine:
 
         candidate_word = None
         candidate_hits = 0
+        diagnostic_windows = 0
 
         while True:
             if not should_continue():
@@ -89,16 +88,17 @@ class WakeWordEngine:
             )
 
             rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+            peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+            diagnostic_windows += 1
 
-            # Only use this gate to reject true silence. Do not gate normal
-            # microphone speech on RMS/peak values; the previous acoustic gate
-            # was strong enough to prevent legitimate wake words from reaching
-            # the openWakeWord model on this microphone.
-            if rms < self.silence_rms:
-                candidate_word = None
-                candidate_hits = 0
-                score_history.clear()
-                continue
+            # Keep a low-rate microphone diagnostic so we can distinguish
+            # "model is not detecting the wake word" from "audio is not reaching
+            # the detector at all" without flooding the terminal.
+            if self.debug and diagnostic_windows % 20 == 0:
+                print(
+                    f"\n[WakeWord] Audio RMS={rms:.5f}, peak={peak:.5f}",
+                    flush=True,
+                )
 
             audio_int16 = np.clip(audio * 32767, -32768, 32767).astype(np.int16)
             prediction = self.model.predict(audio_int16)
@@ -138,12 +138,12 @@ class WakeWordEngine:
             if candidate_hits < self.confirmation_frames:
                 continue
 
-            # Require the confirmation frames to be consistently above a
-            # stronger average threshold. This blocks isolated false spikes
-            # while keeping the detector sensitive enough for normal speech.
+            # Keep the original wakeword threshold as the acceptance floor.
+            # Confirmation across consecutive frames is the primary protection
+            # against isolated false spikes; do not add a second arbitrary score
+            # threshold that can suppress valid speech.
             mean_score = float(np.mean(score_history)) if score_history else 0.0
-            required_mean = max(self.threshold, 0.45)
-            if mean_score < required_mean:
+            if mean_score < self.threshold:
                 candidate_word = None
                 candidate_hits = 0
                 score_history.clear()
