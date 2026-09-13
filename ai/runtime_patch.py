@@ -1,4 +1,5 @@
 import re
+import time
 
 from core.contracts import IntentResult, IntentType, ToolResult
 
@@ -24,6 +25,11 @@ _SCREENSHOT_OPEN_PHRASES = {
     "show latest screenshot",
     "show the latest screenshot",
 }
+
+_CONVERSATION_LEAD_PATTERN = re.compile(
+    r"^(?:okay|ok|please)\s*[,;:.!?-]*\s+",
+    re.IGNORECASE,
+)
 
 
 def _extract_post_response_screenshot(text):
@@ -73,8 +79,9 @@ def _is_creator_identity_question(text):
 
 
 def apply_ai_runtime_patch():
-    """Add deterministic mixed-response and screenshot-opening behavior."""
+    """Add deterministic mixed-request, voice-control, and screenshot behavior."""
     from ai.ai_module import AIModule
+    from voice.voice_module import VoiceModule
 
     if getattr(AIModule, "_asta_runtime_patch_applied", False):
         return
@@ -82,9 +89,24 @@ def apply_ai_runtime_patch():
     original_on_user_message = AIModule.on_user_message
     original_creator_handler = AIModule._is_creator_identity_question
     original_format_tool_success = AIModule._format_tool_success
+    original_voice_on_conversation_mode_set = VoiceModule.on_conversation_mode_set
+    original_voice_can_listen = VoiceModule._can_listen
 
     def patched_on_user_message(self, text):
         if isinstance(text, str) and text.strip():
+            # Whisper often inserts punctuation after conversational fillers,
+            # e.g. "Okay, turn off conversation mode.". Canonicalize only for
+            # deterministic conversation-mode handling and leave normal text alone.
+            normalized_text = " ".join(text.strip().split())
+            conversation_text = _CONVERSATION_LEAD_PATTERN.sub(
+                "",
+                normalized_text,
+                count=1,
+            )
+            if conversation_text != normalized_text:
+                if self._handle_conversation_mode_command(conversation_text):
+                    return
+
             if _is_screenshot_open_request(text):
                 screenshot_intent = IntentResult(
                     intent=IntentType.COMMAND,
@@ -176,7 +198,26 @@ def apply_ai_runtime_patch():
             return "Opened the latest screenshot."
         return original_format_tool_success(result)
 
+    def patched_voice_on_conversation_mode_set(self, enabled):
+        original_voice_on_conversation_mode_set(self, enabled)
+        if not enabled:
+            # Give the wakeword detector a short settling period after ASTA
+            # finishes speaking the "conversation mode is off" response.
+            self._asta_wakeword_cooldown_until = time.monotonic() + 2.0
+
+    def patched_voice_can_listen(self):
+        if not original_voice_can_listen(self):
+            return False
+
+        cooldown_until = getattr(self, "_asta_wakeword_cooldown_until", 0.0)
+        if not self._conversation_active and time.monotonic() < cooldown_until:
+            return False
+
+        return True
+
     AIModule.on_user_message = patched_on_user_message
     AIModule._is_creator_identity_question = classmethod(patched_creator_handler)
     AIModule._format_tool_success = staticmethod(patched_format_tool_success)
+    VoiceModule.on_conversation_mode_set = patched_voice_on_conversation_mode_set
+    VoiceModule._can_listen = patched_voice_can_listen
     AIModule._asta_runtime_patch_applied = True
