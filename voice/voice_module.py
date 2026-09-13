@@ -224,6 +224,51 @@ class VoiceModule(Module):
         self._last_transcript_at = now
         return False
 
+    @staticmethod
+    def _normalize_confirmation_transcript(text):
+        """Canonicalize common short approval/rejection phrases.
+
+        Whisper may hear a natural reply such as "okay so", "yeah go ahead",
+        or "no thanks" when the user is answering a yes/no approval prompt.
+        During confirmation mode only, reduce these short replies to the
+        decision word so the deterministic approval handler can act on them.
+        """
+        normalized = " ".join(str(text).strip().lower().split())
+        normalized = normalized.rstrip(" .!?;:,")
+
+        aliases = {
+            "yes": ("yes", "yeah", "yep", "yup", "sure", "okay", "ok"),
+            "no": ("no", "nope", "nah"),
+            "cancel": ("cancel",),
+            "confirm": ("confirm", "confirmed"),
+        }
+
+        tokens = normalized.split()
+        if not tokens:
+            return text
+
+        first = tokens[0]
+        for canonical, variants in aliases.items():
+            if first in variants and len(tokens) <= 4:
+                print(
+                    f"[STT] Confirmation normalization: {text!r} -> {canonical!r}",
+                    flush=True,
+                )
+                return canonical
+
+        phrase_aliases = {
+            "go ahead": "go ahead",
+            "do it": "do it",
+            "proceed": "proceed",
+            "i confirm": "i confirm",
+            "yes proceed": "yes proceed",
+            "do not": "do not",
+        }
+        if normalized in phrase_aliases:
+            return phrase_aliases[normalized]
+
+        return text
+
     def _collect_command_audio(self):
         if not self._awaiting_confirmation:
             return self.vad.collect_utterance(
@@ -312,6 +357,9 @@ class VoiceModule(Module):
                 text = self.recognition.transcribe(audio)
                 if not text:
                     continue
+
+                if self._awaiting_confirmation:
+                    text = self._normalize_confirmation_transcript(text)
 
                 if self._is_duplicate_transcript(text):
                     continue
