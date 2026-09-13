@@ -20,10 +20,14 @@ _SCREENSHOT_OPEN_PHRASES = {
     "open the screenshot",
     "open latest screenshot",
     "open the latest screenshot",
+    "open screen shot",
+    "open the screen shot",
     "show screenshot",
     "show the screenshot",
     "show latest screenshot",
     "show the latest screenshot",
+    "show screen shot",
+    "show the screen shot",
 }
 
 _SCREENSHOT_CAPTURE_PATTERN = re.compile(
