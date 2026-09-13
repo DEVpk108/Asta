@@ -21,16 +21,20 @@ class WakeWordEngine:
     def __init__(
         self,
         model_paths=None,
-        threshold=0.35,
+        threshold=0.45,
         debug=True,
-        confirmation_frames=2,
+        confirmation_frames=3,
         strong_threshold=0.85,
+        min_rms=0.006,
+        min_peak=0.020,
     ):
         self.model_paths = [str(path) for path in (model_paths or DEFAULT_MODELS)]
         self.threshold = float(threshold)
         self.debug = debug
         self.confirmation_frames = max(1, int(confirmation_frames))
         self.strong_threshold = max(self.threshold, float(strong_threshold))
+        self.min_rms = float(min_rms)
+        self.min_peak = float(min_peak)
 
         self.model = Model(
             wakeword_models=self.model_paths,
@@ -57,12 +61,17 @@ class WakeWordEngine:
             f"frame(s); strong score >= {self.strong_threshold:.2f} still "
             "requires confirmation"
         )
+        print(
+            f"[WakeWord] Acoustic gate: rms >= {self.min_rms:.3f}, "
+            f"peak >= {self.min_peak:.3f}"
+        )
 
     def wait_for_wakeword(self, microphone, should_continue=None):
         """Wait for a confirmed wake word until the caller asks the listener to pause."""
         print("[WakeWord] Listening for: " + ", ".join(self.wakewords))
 
         buffer = deque()
+        score_history = deque(maxlen=self.confirmation_frames)
         if should_continue is None:
             should_continue = lambda: True
 
@@ -84,6 +93,18 @@ class WakeWordEngine:
                 dtype=np.float32,
             )
 
+            rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+            peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+
+            # Do not let silence / low-level background noise contribute to
+            # wakeword confirmation. The wakeword itself is speech, so a small
+            # acoustic-energy gate is a useful second signal alongside the model.
+            if rms < self.min_rms or peak < self.min_peak:
+                candidate_word = None
+                candidate_hits = 0
+                score_history.clear()
+                continue
+
             audio_int16 = np.clip(audio * 32767, -32768, 32767).astype(np.int16)
             prediction = self.model.predict(audio_int16)
 
@@ -104,13 +125,10 @@ class WakeWordEngine:
             detected_word = max(scores, key=scores.get)
             detected_score = scores[detected_word]
 
-            # A single high score is not enough. The previous tuning was too
-            # strict and stopped legitimate wake-word detections entirely.
-            # Keep the threshold moderate, but still require two consecutive
-            # above-threshold frames so one noisy spike cannot wake A.S.T.A.
             if detected_score < self.threshold:
                 candidate_word = None
                 candidate_hits = 0
+                score_history.clear()
                 continue
 
             if detected_word == candidate_word:
@@ -118,8 +136,18 @@ class WakeWordEngine:
             else:
                 candidate_word = detected_word
                 candidate_hits = 1
+                score_history.clear()
+
+            score_history.append(detected_score)
 
             if candidate_hits < self.confirmation_frames:
+                continue
+
+            mean_score = float(np.mean(score_history)) if score_history else 0.0
+            if mean_score < self.threshold:
+                candidate_word = None
+                candidate_hits = 0
+                score_history.clear()
                 continue
 
             if not should_continue():
@@ -128,7 +156,8 @@ class WakeWordEngine:
             self.last_detected_word = detected_word
             print(
                 f"\n[WakeWord] {detected_word} detected "
-                f"(score={detected_score:.3f}, confirmed_frames={candidate_hits})"
+                f"(score={detected_score:.3f}, mean={mean_score:.3f}, "
+                f"confirmed_frames={candidate_hits})"
             )
 
             return microphone.get_buffer()
