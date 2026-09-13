@@ -6,11 +6,13 @@ from collections import Counter
 from faster_whisper import WhisperModel
 import torch
 
+from .stt_language_router import STTLanguageRouter
+
 
 class RecognitionEngine:
     """Pluggable local STT router with Whisper as the current default."""
 
-    SUPPORTED_BACKENDS = {"whisper", "indic", "hybrid"}
+    SUPPORTED_BACKENDS = {"whisper", "indic", "hybrid", "multilingual"}
 
     # Phrases Whisper may invent from silence/noise. Never pass them to the AI.
     HALLUCINATION_PHRASES = {
@@ -34,6 +36,7 @@ class RecognitionEngine:
         indic_model_id="ai4bharat/indic-conformer-600m-multilingual",
         indic_decoder="rnnt",
         indic_language="hi",
+        language_detection_threshold=0.70,
     ):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         compute_type = "float16" if device == "cuda" else "int8"
@@ -56,6 +59,8 @@ class RecognitionEngine:
         self.indic_model_id = indic_model_id
         self.indic_decoder = indic_decoder
         self.indic_language = indic_language
+        self.language_detection_threshold = float(language_detection_threshold)
+        self.language_router = STTLanguageRouter()
         self._indic = None
         self._indic_unavailable = False
         self._indic_error = None
@@ -65,7 +70,7 @@ class RecognitionEngine:
         self.last_language_probability = 0.0
 
         self.model = None
-        if self.backend in {"whisper", "hybrid", "indic"}:
+        if self.backend in {"whisper", "hybrid", "indic", "multilingual"}:
             start = time.perf_counter()
             self.model = WhisperModel(
                 model_size_or_path=model_name,
@@ -117,8 +122,9 @@ class RecognitionEngine:
         if normalized in self.HALLUCINATION_PHRASES:
             return True
 
-        alnum = re.sub(r"[^a-z0-9]+", "", normalized)
-        if not alnum:
+        # Keep this Unicode-aware so Devanagari and other Indic scripts are not
+        # incorrectly rejected as "empty" because they are not ASCII letters.
+        if not any(char.isalnum() for char in normalized):
             return True
 
         words = normalized.split()
@@ -136,25 +142,23 @@ class RecognitionEngine:
             getattr(segment, "compression_ratio", 0.0) or 0.0
         )
 
-        # Require multiple weak signals before dropping a segment. This avoids
-        # throwing away quiet but legitimate speech solely because confidence is
-        # imperfect.
         if no_speech_prob >= 0.80 and avg_logprob <= -1.0:
             return True
         if compression_ratio >= 3.0 and avg_logprob <= -1.0:
             return True
         return False
 
-    def _transcribe_whisper(self, audio):
+    def _transcribe_whisper(self, audio, language=None):
         if self.model is None:
             raise RuntimeError("Whisper backend is not initialized.")
 
         # A.S.T.A. already extracts speech with streaming Silero VAD. Do not run
         # a second VAD pass here, and do not bias transcription with a prompt that
         # can leak literal prompt text into hallucinated transcripts.
+        target_language = self.language if language is None else language
         segments, info = self.model.transcribe(
             audio,
-            language=getattr(self, "language", "en"),
+            language=target_language,
             beam_size=getattr(self, "beam_size", 5),
             vad_filter=False,
             condition_on_previous_text=False,
@@ -219,16 +223,17 @@ class RecognitionEngine:
 
         return " ".join(parts).strip()
 
-    def _use_indic(self, audio, whisper_text):
+    def _use_indic(self, audio, whisper_text, language=None):
         indic = self._load_indic()
         if indic is None:
             self.last_backend = "whisper-fallback"
             return whisper_text
 
+        target_language = language or self.indic_language
         try:
             indic_text = indic.transcribe(
                 audio,
-                language=self.indic_language,
+                language=target_language,
             )
         except Exception as exc:
             self._indic_unavailable = True
@@ -242,12 +247,47 @@ class RecognitionEngine:
             print("[STT] Falling back to Whisper.", flush=True)
             return whisper_text
 
-        if indic_text:
+        if indic_text and not self._is_hallucination(indic_text):
             self.last_backend = "indic-conformer"
             return indic_text
 
         self.last_backend = "whisper-fallback"
         return whisper_text
+
+    def _transcribe_multilingual(self, audio):
+        # Whisper performs automatic language detection when language=None.
+        # We use that detection only to choose a specialist; Whisper remains the
+        # authoritative fallback when the detection is uncertain or a specialist
+        # is unavailable.
+        whisper_text = self._transcribe_whisper(audio, language=None)
+        detected_language = (self.last_language or "").lower()
+        language_probability = float(
+            getattr(self, "last_language_probability", 0.0) or 0.0
+        )
+
+        if language_probability < getattr(
+            self, "language_detection_threshold", 0.70
+        ):
+            self.last_backend = "whisper"
+            return whisper_text
+
+        preferred_backend = self.language_router.preferred_backend(
+            detected_language
+        )
+        if preferred_backend != "indic":
+            self.last_backend = "whisper"
+            return whisper_text
+
+        print(
+            f"[STT] Detected Indic language={detected_language} "
+            f"prob={language_probability:.2f}; trying IndicConformer.",
+            flush=True,
+        )
+        return self._use_indic(
+            audio,
+            whisper_text,
+            language=detected_language,
+        )
 
     def transcribe(self, audio):
         if audio is None:
@@ -260,6 +300,8 @@ class RecognitionEngine:
             if backend == "indic":
                 whisper_text = self._transcribe_whisper(audio)
                 text = self._use_indic(audio, whisper_text)
+            elif backend == "multilingual":
+                text = self._transcribe_multilingual(audio)
             else:
                 text = self._transcribe_whisper(audio)
                 self.last_backend = "whisper"
