@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from core.contracts import ToolRequest
 from core.tools import OpenScreenshotTool
 from ai.runtime_patch import _is_screenshot_open_request
