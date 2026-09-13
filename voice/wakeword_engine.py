@@ -26,6 +26,7 @@ class WakeWordEngine:
         confirmation_frames=2,
         strong_threshold=0.85,
         silence_rms=0.0003,
+        vad_threshold=0.35,
     ):
         self.model_paths = [str(path) for path in (model_paths or DEFAULT_MODELS)]
         self.threshold = float(threshold)
@@ -33,11 +34,14 @@ class WakeWordEngine:
         self.confirmation_frames = max(1, int(confirmation_frames))
         self.strong_threshold = max(self.threshold, float(strong_threshold))
         self.silence_rms = float(silence_rms)
+        self.vad_threshold = float(vad_threshold)
 
         self.model = Model(
             wakeword_models=self.model_paths,
             inference_framework="onnx",
-            vad_threshold=0,
+            # openWakeWord supports Silero VAD gating to suppress wakeword-like
+            # false positives originating from non-speech/background noise.
+            vad_threshold=self.vad_threshold,
         )
 
         self.wakewords = ["hello_asta", "hey_asta", "wake_up_asta"]
@@ -60,6 +64,12 @@ class WakeWordEngine:
             "requires confirmation"
         )
         print(f"[WakeWord] Silence gate: rms < {self.silence_rms:.4f}")
+        print(f"[WakeWord] VAD gate: >= {self.vad_threshold:.2f}")
+
+    def _reset_model(self):
+        reset = getattr(self.model, "reset", None)
+        if callable(reset):
+            reset()
 
     def wait_for_wakeword(self, microphone, should_continue=None):
         """Wait for a confirmed wake word until the caller asks the listener to pause."""
@@ -164,4 +174,7 @@ class WakeWordEngine:
                 f"confirmed_frames={candidate_hits})"
             )
 
+            # Clear openWakeWord's internal sliding window after an activation
+            # so residual audio cannot immediately retrigger the same model.
+            self._reset_model()
             return microphone.get_buffer()
