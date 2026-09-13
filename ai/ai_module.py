@@ -37,6 +37,12 @@ class AIModule(Module):
         "exit conversation mode",
     }
 
+    _CONVERSATION_MODE_LEADS = (
+        "okay ",
+        "ok ",
+        "please ",
+    )
+
     _PRESENTATION_PHRASES = (
         "present yourself",
         "introduce yourself",
@@ -187,6 +193,18 @@ class AIModule(Module):
 
     def _handle_conversation_mode_command(self, text):
         normalized = self._normalize_question(text)
+
+        # Spoken control commands often arrive with conversational fillers
+        # such as "okay", "ok", or "please". Strip those only here so that
+        # normal conversational text keeps its original semantics.
+        changed = True
+        while changed:
+            changed = False
+            for lead in self._CONVERSATION_MODE_LEADS:
+                if normalized.startswith(lead):
+                    normalized = normalized[len(lead):].strip()
+                    changed = True
+                    break
 
         if normalized in self._CONVERSATION_MODE_ON:
             self.event_bus.emit("conversation_mode_set", enabled=True)
