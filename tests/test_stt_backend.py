@@ -2,7 +2,12 @@ from voice.recognition_engine import RecognitionEngine
 
 
 def test_supported_stt_backends():
-    assert RecognitionEngine.SUPPORTED_BACKENDS == {"whisper", "indic", "hybrid"}
+    assert RecognitionEngine.SUPPORTED_BACKENDS == {
+        "whisper",
+        "indic",
+        "hybrid",
+        "multilingual",
+    }
 
 
 def test_invalid_stt_backend_is_rejected():
