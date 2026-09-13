@@ -12,14 +12,20 @@ from core.tools import (
 )
 
 from speech.speech_module import SpeechModule
+from speech.presentation_patch import apply_presentation_patch
 from hud.hud_module import HUDModule
 from ai.ai_module import AIModule
+from ai.runtime_patch import apply_ai_runtime_patch
 from input.text_input_module import TextInputModule
 from voice.voice_module import VoiceModule
 from vision.screenshot_backend import capture_screenshot
 
 
 def main():
+    # Apply small runtime compatibility patches before module instances are created.
+    apply_ai_runtime_patch()
+    apply_presentation_patch()
+
     kernel = Kernel()
 
     speech = SpeechModule(kernel)
