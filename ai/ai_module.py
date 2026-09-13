@@ -95,9 +95,18 @@ class AIModule(Module):
 
         prompt = (
             "You are ASTA, a local-first AI engineering assistant and personal AI system. "
+            "You were created by Mr. PRASANT KUMAR. "
+            "When asked who created, made, built, or developed you or A.S.T.A., answer directly: "
+            "I was created by Mr. PRASANT KUMAR. "
+            "Do not attribute A.S.T.A.'s creation to the model provider, hardware vendor, or any other company. "
             "Respond naturally, confidently, accurately, and concisely. "
             "Prefer 1–3 short sentences for normal voice questions unless the user asks for detail. "
             "Sound conversational, helpful, calm, and direct.\n\n"
+            "PRESENTATION MODE:\n"
+            "If the user says any form of 'present yourself', 'introduce yourself', "
+            "'introduce A.S.T.A.', or asks you to present yourself to a teacher, professor, sir, mam, class, "
+            "or audience, give the dedicated A.S.T.A. presentation rather than a generic self-introduction. "
+            "The application also handles these presentation triggers deterministically before this model is called.\n\n"
             "REASONING AND KNOWLEDGE POLICY:\n"
             "You are allowed to reason about ordinary questions, mathematics, science, coding, "
             "engineering, explanations, brainstorming, analysis, and general knowledge. "
@@ -141,7 +150,13 @@ class AIModule(Module):
             return
 
         if self._is_presentation_request(text):
+            print("[AI] Presentation mode", flush=True)
             self._present_to_teacher()
+            return
+
+        if self._is_creator_identity_question(text):
+            print("[AI] Creator identity response", flush=True)
+            self._emit_assistant_text("I was created by Mr. PRASANT KUMAR.")
             return
 
         if self._is_unknown_name_question(text):
@@ -199,6 +214,10 @@ class AIModule(Module):
 
         approved = compact in self._APPROVAL_CONFIRMATIONS
         rejected = compact in self._APPROVAL_REJECTIONS
+        if compact in {"yeah go ahead", "sure go ahead", "okay go ahead", "okay do it"}:
+            approved = True
+        if compact in {"no thanks", "cancel it", "don't do it", "do not do it"}:
+            rejected = True
         if not (approved or rejected):
             return False
 
@@ -223,27 +242,26 @@ class AIModule(Module):
     @classmethod
     def _is_presentation_request(cls, text):
         normalized = cls._normalize_question(text)
-        has_presentation_phrase = any(
-            phrase in normalized for phrase in cls._PRESENTATION_PHRASES
-        )
-        if not has_presentation_phrase:
-            return False
+        if any(phrase in normalized for phrase in cls._PRESENTATION_PHRASES):
+            return True
+        return False
 
-        audience_terms = (
-            "teacher",
-            "sir",
-            "professor",
-            "mam",
-            "ma'am",
-            "audience",
-            "class",
-        )
-        return any(term in normalized for term in audience_terms) or normalized in {
-            "present yourself",
-            "introduce yourself",
-            "introduce asta",
-            "present asta",
+    @classmethod
+    def _is_creator_identity_question(cls, text):
+        normalized = cls._normalize_question(text)
+        variants = {
+            "who created you",
+            "who made you",
+            "who built you",
+            "who developed you",
+            "who created asta",
+            "who made asta",
+            "who built asta",
+            "who developed asta",
+            "who is your creator",
+            "who is asta's creator",
         }
+        return normalized in variants
 
     def _present_to_teacher(self):
         definitions = self.kernel.tool_registry.definitions()
@@ -261,10 +279,10 @@ class AIModule(Module):
             )
 
         presentation = [
-            "Hello Sir. I’m A.S.T.A., a local-first AI engineering assistant designed to help with technical work and computer interaction.",
+            "Hello Sir. I’m A.S.T.A., a local-first AI engineering assistant created by Mr. PRASANT KUMAR.",
             "I can communicate through voice, understand spoken commands, reason about questions, and respond conversationally.",
             capability_text,
-            "My architecture is modular: voice input, AI reasoning, tool selection and execution, approval handling, speech output, and a HUD are connected through the kernel and event system.",
+            "My architecture is modular: voice input, AI reasoning, tool selection and execution, approval handling, speech output, and the HUD are connected through the kernel and event system.",
             "For my current version, the AI runs locally through LM Studio, speech recognition uses Whisper, and speech synthesis uses Kokoro, so the core interaction can run locally on the machine.",
             "This is still an early version. My future direction is to grow into a personal AI operating system with stronger memory, workflow awareness, proactive assistance, deeper engineering support, more tools, and specialized agents.",
             "For today’s demonstration, I can show you how I understand a spoken command, use an appropriate tool, report the result, and continue a conversation with the user.",
