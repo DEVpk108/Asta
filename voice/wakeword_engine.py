@@ -21,10 +21,10 @@ class WakeWordEngine:
     def __init__(
         self,
         model_paths=None,
-        threshold=0.50,
+        threshold=0.35,
         debug=True,
-        confirmation_frames=3,
-        strong_threshold=0.90,
+        confirmation_frames=2,
+        strong_threshold=0.85,
     ):
         self.model_paths = [str(path) for path in (model_paths or DEFAULT_MODELS)]
         self.threshold = float(threshold)
@@ -53,9 +53,9 @@ class WakeWordEngine:
         print("[WakeWord] Loaded: " + ", ".join(self.wakewords))
         print(f"[WakeWord] Threshold: {self.threshold:.2f}")
         print(
-            f"[WakeWord] Confirmation: {self.confirmation_frames} "
-            f"consecutive frame(s); strong score >= {self.strong_threshold:.2f} "
-            "still requires confirmation"
+            f"[WakeWord] Confirmation: {self.confirmation_frames} consecutive "
+            f"frame(s); strong score >= {self.strong_threshold:.2f} still "
+            "requires confirmation"
         )
 
     def wait_for_wakeword(self, microphone, should_continue=None):
@@ -104,9 +104,10 @@ class WakeWordEngine:
             detected_word = max(scores, key=scores.get)
             detected_score = scores[detected_word]
 
-            # A single high score is not enough. The recent run showed false
-            # wakeups at 0.60-0.97 without the user speaking. Require the same
-            # wake word to remain above threshold across consecutive frames.
+            # A single high score is not enough. The previous tuning was too
+            # strict and stopped legitimate wake-word detections entirely.
+            # Keep the threshold moderate, but still require two consecutive
+            # above-threshold frames so one noisy spike cannot wake A.S.T.A.
             if detected_score < self.threshold:
                 candidate_word = None
                 candidate_hits = 0
