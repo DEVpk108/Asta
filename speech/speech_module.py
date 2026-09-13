@@ -25,54 +25,47 @@ class SpeechModule(Module):
 
         self.engine = KokoroEngine()
 
+        # One worker owns synthesis + playback. This prevents later sentences
+        # from being synthesized/played over the previous sentence.
         self._queue = queue.Queue()
-        self._audio_queue = queue.Queue()
         self._running = False
-        self._synth_thread = None
-        self._play_thread = None
+        self._speech_thread = None
         self.coalesce_window = 0.08
 
         self._state_lock = threading.Lock()
         self._speech_active = False
         self._queued_text = 0
-        self._pending_audio = 0
         self._synthesis_inflight = 0
         self._presentation_mode_active = False
+        self._interrupt_event = threading.Event()
 
     def initialize(self):
         print("[Speech] Initializing...", flush=True)
         self._running = True
         self.event_bus.subscribe("assistant_sentence", self.on_assistant_sentence)
+        self.event_bus.subscribe("speech_interrupt", self.on_speech_interrupt)
 
-        self._synth_thread = threading.Thread(
-            target=self._synthesis_loop,
-            name="SpeechSynthWorker",
+        self._speech_thread = threading.Thread(
+            target=self._speech_loop,
+            name="SpeechWorker",
             daemon=True,
         )
-        self._play_thread = threading.Thread(
-            target=self._playback_loop,
-            name="SpeechPlaybackWorker",
-            daemon=True,
-        )
-        self._synth_thread.start()
-        self._play_thread.start()
+        self._speech_thread.start()
         print("[Speech] Ready", flush=True)
 
     def shutdown(self):
         print("[Speech] Shutting down...", flush=True)
         self._running = False
+        self._interrupt_event.set()
         self.event_bus.unsubscribe("assistant_sentence", self.on_assistant_sentence)
+        self.event_bus.unsubscribe("speech_interrupt", self.on_speech_interrupt)
 
         self._queue.put(None)
-        self._audio_queue.put(None)
 
-        if self._synth_thread is not None and self._synth_thread.is_alive():
-            self._synth_thread.join(timeout=2.0)
-        if self._play_thread is not None and self._play_thread.is_alive():
-            self._play_thread.join(timeout=2.0)
+        if self._speech_thread is not None and self._speech_thread.is_alive():
+            self._speech_thread.join(timeout=2.0)
 
-        self._synth_thread = None
-        self._play_thread = None
+        self._speech_thread = None
         print("[Speech] Stopped", flush=True)
 
     def on_assistant_sentence(self, text):
@@ -92,11 +85,42 @@ class SpeechModule(Module):
 
         with self._state_lock:
             self._queued_text += 1
-            if not self._speech_active:
-                self._speech_active = True
-                self.event_bus.emit("speech_started")
+            was_inactive = not self._speech_active
+            self._speech_active = True
+
+        if was_inactive:
+            # A new response is allowed to speak after a previous interrupt.
+            self._interrupt_event.clear()
+            self.event_bus.emit("speech_started")
 
         self._queue.put(queued_text)
+
+    def on_speech_interrupt(self, *args, **kwargs):
+        """Cancel current speech and discard anything queued behind it."""
+        print("[Speech] Interrupt requested.", flush=True)
+        self._interrupt_event.set()
+
+        drained = 0
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                break
+
+            self._queue.task_done()
+            if item is not None:
+                drained += 1
+
+        with self._state_lock:
+            self._queued_text = 0
+            was_active = self._speech_active
+            self._speech_active = False
+            self._presentation_mode_active = False
+
+        if drained:
+            print(f"[Speech] Discarded {drained} queued speech item(s).", flush=True)
+        if was_active:
+            self.event_bus.emit("speech_finished")
 
     def _get_coalesced_text(self, first_text):
         parts = [first_text]
@@ -106,6 +130,7 @@ class SpeechModule(Module):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
+
             try:
                 next_text = self._queue.get(timeout=remaining)
             except queue.Empty:
@@ -123,7 +148,7 @@ class SpeechModule(Module):
 
         return " ".join(part.strip() for part in parts if part and part.strip())
 
-    def _synthesis_loop(self):
+    def _speech_loop(self):
         while self._running:
             try:
                 text = self._queue.get()
@@ -134,9 +159,15 @@ class SpeechModule(Module):
                 with self._state_lock:
                     self._queued_text = max(0, self._queued_text - 1)
 
+                # If a new response arrived after an interrupt, this is the
+                # first accepted item and the new response should speak normally.
+                if self._interrupt_event.is_set():
+                    self._interrupt_event.clear()
+
                 text = self._get_coalesced_text(text)
                 if not text:
                     self._queue.task_done()
+                    self._maybe_finish_speech()
                     continue
 
                 with self._state_lock:
@@ -145,13 +176,23 @@ class SpeechModule(Module):
                 print(f"[Speech] Synthesizing: {text}", flush=True)
                 try:
                     audio = self.engine.synthesize(text)
-                    if audio is not None:
-                        with self._state_lock:
-                            self._pending_audio += 1
-                        self._audio_queue.put(audio)
+                    if (
+                        audio is not None
+                        and self._running
+                        and not self._interrupt_event.is_set()
+                    ):
+                        completed = self.engine.play(
+                            audio,
+                            should_continue=lambda: (
+                                self._running
+                                and not self._interrupt_event.is_set()
+                            ),
+                        )
+                        if not completed:
+                            print("[Speech] Playback interrupted.", flush=True)
                 except Exception as exc:
                     print(
-                        f"[Speech] Synthesis worker error: {type(exc).__name__}: {exc}",
+                        f"[Speech] Speech worker error: {type(exc).__name__}: {exc}",
                         flush=True,
                     )
                 finally:
@@ -169,36 +210,10 @@ class SpeechModule(Module):
         with self._state_lock:
             if not self._speech_active:
                 return False
-            if self._queued_text != 0 or self._pending_audio != 0 or self._synthesis_inflight != 0:
+            if self._queued_text != 0 or self._synthesis_inflight != 0:
                 return False
             self._speech_active = False
             self._presentation_mode_active = False
 
         self.event_bus.emit("speech_finished")
         return True
-
-    def _playback_loop(self):
-        while self._running:
-            try:
-                audio = self._audio_queue.get()
-                if audio is None:
-                    self._audio_queue.task_done()
-                    break
-
-                try:
-                    self.engine.play(audio)
-                except Exception as exc:
-                    print(
-                        f"[Speech] Playback worker error: {type(exc).__name__}: {exc}",
-                        flush=True,
-                    )
-                finally:
-                    with self._state_lock:
-                        self._pending_audio = max(0, self._pending_audio - 1)
-                    self._audio_queue.task_done()
-                    self._maybe_finish_speech()
-            except Exception as exc:
-                print(
-                    f"[Speech] Playback loop error: {type(exc).__name__}: {exc}",
-                    flush=True,
-                )
