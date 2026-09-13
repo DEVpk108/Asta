@@ -7,7 +7,7 @@ from kokoro import KPipeline
 
 
 class KokoroEngine:
-    """Local Kokoro TTS backend with GPU-first synthesis and decoupled playback."""
+    """Local Kokoro TTS backend with GPU-first synthesis and interruptible playback."""
 
     SAMPLE_RATE = 24000
 
@@ -53,7 +53,7 @@ class KokoroEngine:
         )
 
     def synthesize(self, text):
-        """Generate sentence audio without blocking the playback device."""
+        """Generate full audio without blocking the playback device."""
         if not text:
             return None
 
@@ -108,23 +108,30 @@ class KokoroEngine:
         )
         return audio
 
-    def play(self, audio):
-        """Play already-generated audio and keep playback separate from synthesis."""
+    def play(self, audio, should_continue=None):
+        """Play audio in short chunks so callers can interrupt speech quickly."""
         if audio is None:
-            return
+            return True
 
         start = time.perf_counter()
         try:
             audio = np.asarray(audio, dtype=np.float32).reshape(-1)
             if audio.size == 0:
-                return
+                return True
+
+            chunk_samples = max(1, int(self.SAMPLE_RATE * 0.02))  # ~20 ms
 
             with sd.OutputStream(
                 samplerate=self.SAMPLE_RATE,
                 channels=1,
                 dtype="float32",
             ) as stream:
-                stream.write(audio)
+                for start_idx in range(0, audio.size, chunk_samples):
+                    if should_continue is not None and not should_continue():
+                        print("[Speech] Kokoro playback interrupted.", flush=True)
+                        return False
+                    end_idx = min(start_idx + chunk_samples, audio.size)
+                    stream.write(audio[start_idx:end_idx])
 
             duration = audio.size / self.SAMPLE_RATE
             print(
@@ -132,11 +139,13 @@ class KokoroEngine:
                 f"audio={duration:.2f}s",
                 flush=True,
             )
+            return True
         except Exception as exc:
             print(
                 f"[Speech] Kokoro playback error: {type(exc).__name__}: {exc}",
                 flush=True,
             )
+            return False
 
     def speak(self, text):
         """Compatibility helper for callers that still want synthesize-then-play."""
