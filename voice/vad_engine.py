@@ -21,8 +21,8 @@ class VADEngine:
         speech_pad_ms=300,
         min_rms=0.018,
         min_peak=0.06,
-        start_chunk_rms=0.008,
-        pre_roll_ms=200,
+        start_chunk_rms=0.005,
+        pre_roll_ms=450,
     ):
 
         self.sample_rate = sample_rate
@@ -84,8 +84,9 @@ class VADEngine:
                     else 0.0
                 )
 
-                # Only feed meaningful energy to the VAD decision. Preserve the
-                # original chunk for recording once speech has actually started.
+                # Lower the VAD input gate slightly so soft first words such as
+                # "turn" are detected earlier, while the post-capture RMS/peak
+                # checks below still reject genuinely low-energy audio.
                 vad_chunk = (
                     chunk
                     if chunk_rms >= self.start_chunk_rms
@@ -102,9 +103,9 @@ class VADEngine:
                     print("[VAD] Command started.")
                     recording = True
 
-                    # Include only fresh audio from immediately before VAD start.
-                    # This catches the first phoneme without reintroducing the
-                    # wake word or stale microphone-buffer content.
+                    # Keep a larger amount of fresh live audio before VAD start.
+                    # This reduces first-word truncation without reusing the
+                    # wake-word detector's stale ring buffer.
                     if pre_roll:
                         audio_buffer.append(np.asarray(pre_roll, dtype=np.float32))
 
