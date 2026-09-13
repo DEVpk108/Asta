@@ -6,6 +6,7 @@ from core.tools import (
     ToolDispatcher,
     ToolRegistry,
 )
+from core.tools.builtin import CloseApplicationTool
 
 
 def make_dispatcher(maximum_automatic_risk=RiskLevel.LOW):
@@ -137,6 +138,16 @@ def test_policy_blocks_risk_above_limit():
     assert authorization.allowed is False
     assert authorization.requires_confirmation is True
     assert "exceeds" in authorization.reason
+
+
+def test_close_application_is_low_risk_and_automatic():
+    definition = CloseApplicationTool().definition
+    policy = AuthorityPolicy()
+
+    assert definition.risk_level == "low"
+    authorization = policy.authorize(definition)
+    assert authorization.allowed is True
+    assert authorization.requires_confirmation is False
 
 
 def test_registry_rejects_duplicate_tool_names():
