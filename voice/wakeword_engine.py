@@ -21,13 +21,13 @@ class WakeWordEngine:
     def __init__(
         self,
         model_paths=None,
-        threshold=0.3,
+        threshold=0.50,
         debug=True,
-        confirmation_frames=2,
-        strong_threshold=0.50,
+        confirmation_frames=3,
+        strong_threshold=0.90,
     ):
         self.model_paths = [str(path) for path in (model_paths or DEFAULT_MODELS)]
-        self.threshold = threshold
+        self.threshold = float(threshold)
         self.debug = debug
         self.confirmation_frames = max(1, int(confirmation_frames))
         self.strong_threshold = max(self.threshold, float(strong_threshold))
@@ -38,7 +38,6 @@ class WakeWordEngine:
             vad_threshold=0,
         )
 
-        self.prediction_history = deque(maxlen=5)
         self.wakewords = ["hello_asta", "hey_asta", "wake_up_asta"]
         self.last_detected_word = None
 
@@ -52,10 +51,11 @@ class WakeWordEngine:
             )
 
         print("[WakeWord] Loaded: " + ", ".join(self.wakewords))
-        print(f"[WakeWord] Threshold: {self.threshold}")
+        print(f"[WakeWord] Threshold: {self.threshold:.2f}")
         print(
-            f"[WakeWord] Confirmation: {self.confirmation_frames} frame(s) "
-            f"or score >= {self.strong_threshold:.2f}"
+            f"[WakeWord] Confirmation: {self.confirmation_frames} "
+            f"consecutive frame(s); strong score >= {self.strong_threshold:.2f} "
+            "still requires confirmation"
         )
 
     def wait_for_wakeword(self, microphone, should_continue=None):
@@ -104,22 +104,21 @@ class WakeWordEngine:
             detected_word = max(scores, key=scores.get)
             detected_score = scores[detected_word]
 
+            # A single high score is not enough. The recent run showed false
+            # wakeups at 0.60-0.97 without the user speaking. Require the same
+            # wake word to remain above threshold across consecutive frames.
             if detected_score < self.threshold:
                 candidate_word = None
                 candidate_hits = 0
                 continue
 
-            if detected_score >= self.strong_threshold:
-                confirmed = True
-            elif detected_word == candidate_word:
+            if detected_word == candidate_word:
                 candidate_hits += 1
-                confirmed = candidate_hits >= self.confirmation_frames
             else:
                 candidate_word = detected_word
                 candidate_hits = 1
-                confirmed = self.confirmation_frames <= 1
 
-            if not confirmed:
+            if candidate_hits < self.confirmation_frames:
                 continue
 
             if not should_continue():
@@ -128,7 +127,7 @@ class WakeWordEngine:
             self.last_detected_word = detected_word
             print(
                 f"\n[WakeWord] {detected_word} detected "
-                f"(score={detected_score:.3f})"
+                f"(score={detected_score:.3f}, confirmed_frames={candidate_hits})"
             )
 
             return microphone.get_buffer()
