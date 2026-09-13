@@ -151,7 +151,7 @@ class CloseApplicationTool(Tool):
         return ToolDefinition(
             name="system.close_application", description="Close a local application by process name or friendly application name.",
             input_schema={"type": "object", "properties": {"target": {"type": "string", "minLength": 1}}, "required": ["target"]},
-            risk_level="high", metadata={"actions": ["close"], "category": "system"},
+            risk_level="low", metadata={"actions": ["close"], "category": "system"},
         )
 
     def execute(self, request: ToolRequest) -> ToolResult:

@@ -47,6 +47,25 @@ def test_conversation_mode_off_emits_disable_event():
     )
 
 
+def test_conversation_mode_commands_accept_polite_voice_prefixes():
+    for text, enabled in (
+        ("Okay, turn off conversation mode.", False),
+        ("Okay turn off conversation mode.", False),
+        ("Please turn on conversation mode.", True),
+        ("Ok, conversation mode on.", True),
+    ):
+        ai = object.__new__(AIModule)
+        ai.event_bus = DummyEventBus()
+
+        handled = ai._handle_conversation_mode_command(text)
+
+        assert handled is True
+        assert ai.event_bus.events[0] == (
+            "conversation_mode_set",
+            {"enabled": enabled},
+        )
+
+
 def test_voice_manual_mode_does_not_expire():
     voice = object.__new__(VoiceModule)
     voice._conversation_active = False

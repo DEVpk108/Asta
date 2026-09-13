@@ -21,6 +21,9 @@ class HUDModule(Module):
             f"[HUD] {text}",
             flush=True,
         )
+        # Let runtime patches and tools wait until the HUD has handed the
+        # completed response to the terminal before taking a desktop screenshot.
+        self.event_bus.emit("hud_rendered", text=text)
 
     def shutdown(self):
         self.event_bus.unsubscribe(
