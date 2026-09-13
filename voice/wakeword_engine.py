@@ -26,7 +26,7 @@ class WakeWordEngine:
         confirmation_frames=2,
         strong_threshold=0.85,
         silence_rms=0.0003,
-        vad_threshold=0.35,
+        confirmation_mean=0.70,
     ):
         self.model_paths = [str(path) for path in (model_paths or DEFAULT_MODELS)]
         self.threshold = float(threshold)
@@ -34,14 +34,16 @@ class WakeWordEngine:
         self.confirmation_frames = max(1, int(confirmation_frames))
         self.strong_threshold = max(self.threshold, float(strong_threshold))
         self.silence_rms = float(silence_rms)
-        self.vad_threshold = float(vad_threshold)
+        self.confirmation_mean = max(self.threshold, float(confirmation_mean))
 
         self.model = Model(
             wakeword_models=self.model_paths,
             inference_framework="onnx",
-            # openWakeWord supports Silero VAD gating to suppress wakeword-like
-            # false positives originating from non-speech/background noise.
-            vad_threshold=self.vad_threshold,
+            # Keep openWakeWord's internal VAD gate disabled here. On this
+            # microphone it suppressed legitimate wakeword speech entirely.
+            # False activations are handled by the acoustic silence gate,
+            # consecutive-frame confirmation, score averaging, and model reset.
+            vad_threshold=0,
         )
 
         self.wakewords = ["hello_asta", "hey_asta", "wake_up_asta"]
@@ -64,7 +66,7 @@ class WakeWordEngine:
             "requires confirmation"
         )
         print(f"[WakeWord] Silence gate: rms < {self.silence_rms:.4f}")
-        print(f"[WakeWord] VAD gate: >= {self.vad_threshold:.2f}")
+        print(f"[WakeWord] Confirmation mean: >= {self.confirmation_mean:.2f}")
 
     def _reset_model(self):
         reset = getattr(self.model, "reset", None)
@@ -109,10 +111,6 @@ class WakeWordEngine:
                     flush=True,
                 )
 
-            # Reject only the very-low-energy background/silence region. The
-            # measured false activation was around RMS=0.00018, while a real
-            # wakeword window measured around RMS=0.00088, so 0.00030 is a
-            # conservative separation without recreating the old over-gate.
             if rms < self.silence_rms:
                 candidate_word = None
                 candidate_hits = 0
@@ -158,7 +156,7 @@ class WakeWordEngine:
                 continue
 
             mean_score = float(np.mean(score_history)) if score_history else 0.0
-            if mean_score < self.threshold:
+            if mean_score < self.confirmation_mean:
                 candidate_word = None
                 candidate_hits = 0
                 score_history.clear()
@@ -174,7 +172,5 @@ class WakeWordEngine:
                 f"confirmed_frames={candidate_hits})"
             )
 
-            # Clear openWakeWord's internal sliding window after an activation
-            # so residual audio cannot immediately retrigger the same model.
             self._reset_model()
             return microphone.get_buffer()
