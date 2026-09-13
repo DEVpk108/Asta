@@ -1,4 +1,8 @@
-from ai.runtime_patch import _extract_post_response_screenshot, _is_screenshot_capture_request
+from ai.runtime_patch import (
+    _extract_post_response_screenshot,
+    _is_screenshot_capture_request,
+    _is_screenshot_open_request,
+)
 
 
 def test_natural_screenshot_commands_are_detected():
@@ -11,6 +15,13 @@ def test_natural_screenshot_commands_are_detected():
 def test_negative_screenshot_command_is_not_executed():
     assert _is_screenshot_capture_request("don't take a screenshot") is False
     assert _is_screenshot_capture_request("do not capture a screenshot") is False
+
+
+def test_open_screenshot_variants_are_detected():
+    assert _is_screenshot_open_request("open screenshot") is True
+    assert _is_screenshot_open_request("open screen shot") is True
+    assert _is_screenshot_open_request("open the screen shot.") is True
+    assert _is_screenshot_open_request("show screen shot") is True
 
 
 def test_mixed_request_still_extracts_conversational_prefix():
