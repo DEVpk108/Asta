@@ -1,6 +1,6 @@
 import re
 
-from core.contracts import IntentResult, IntentType
+from core.contracts import IntentResult, IntentType, ToolResult
 
 
 _POST_RESPONSE_SCREENSHOT_PATTERN = re.compile(
@@ -13,6 +13,17 @@ _POST_RESPONSE_SCREENSHOT_PATTERN = re.compile(
     r")$",
     re.IGNORECASE,
 )
+
+_SCREENSHOT_OPEN_PHRASES = {
+    "open screenshot",
+    "open the screenshot",
+    "open latest screenshot",
+    "open the latest screenshot",
+    "show screenshot",
+    "show the screenshot",
+    "show latest screenshot",
+    "show the latest screenshot",
+}
 
 
 def _extract_post_response_screenshot(text):
@@ -28,6 +39,11 @@ def _extract_post_response_screenshot(text):
     if not prompt:
         return None
     return prompt
+
+
+def _is_screenshot_open_request(text):
+    normalized = " ".join(str(text).strip().lower().split()).rstrip(" .!?;:")
+    return normalized in _SCREENSHOT_OPEN_PHRASES
 
 
 def _is_creator_identity_question(text):
@@ -57,7 +73,7 @@ def _is_creator_identity_question(text):
 
 
 def apply_ai_runtime_patch():
-    """Add deterministic mixed-response tool execution and stronger creator matching."""
+    """Add deterministic mixed-response and screenshot-opening behavior."""
     from ai.ai_module import AIModule
 
     if getattr(AIModule, "_asta_runtime_patch_applied", False):
@@ -65,9 +81,40 @@ def apply_ai_runtime_patch():
 
     original_on_user_message = AIModule.on_user_message
     original_creator_handler = AIModule._is_creator_identity_question
+    original_format_tool_success = AIModule._format_tool_success
 
     def patched_on_user_message(self, text):
         if isinstance(text, str) and text.strip():
+            if _is_screenshot_open_request(text):
+                screenshot_intent = IntentResult(
+                    intent=IntentType.COMMAND,
+                    confidence=1.0,
+                    normalized_text="open latest screenshot",
+                    entities={"action": "open_screenshot"},
+                    requires_tools=True,
+                    classifier="runtime_patch",
+                )
+                try:
+                    request = self.tool_request_builder.build(screenshot_intent)
+                except ValueError as exc:
+                    print(
+                        f"[AI] Unable to build screenshot-open request: {exc}",
+                        flush=True,
+                    )
+                    self._emit_assistant_text(
+                        f"I couldn't open the screenshot: {exc}"
+                    )
+                    return
+
+                request.metadata["screenshot_open_request"] = True
+                print(
+                    f"[AI] Selected screenshot-open tool: {request.tool} "
+                    f"(request_id={request.request_id})",
+                    flush=True,
+                )
+                self.event_bus.emit("tool_request", request=request)
+                return
+
             routed = self.kernel.intent_router.analyze(text)
             if routed.intent != IntentType.COMMAND:
                 prompt = _extract_post_response_screenshot(text)
@@ -111,11 +158,25 @@ def apply_ai_runtime_patch():
 
         original_on_user_message(self, text)
 
+    @classmethod
     def patched_creator_handler(cls, text):
         if original_creator_handler(text):
             return True
         return _is_creator_identity_question(text)
 
+    @staticmethod
+    def patched_format_tool_success(result: ToolResult):
+        if result.tool == "vision.open_screenshot" and result.success:
+            output = result.output
+            if isinstance(output, dict) and output.get("path"):
+                print(
+                    f"[AI] Screenshot opened: {output['path']}",
+                    flush=True,
+                )
+            return "Opened the latest screenshot."
+        return original_format_tool_success(result)
+
     AIModule.on_user_message = patched_on_user_message
     AIModule._is_creator_identity_question = classmethod(patched_creator_handler)
+    AIModule._format_tool_success = staticmethod(patched_format_tool_success)
     AIModule._asta_runtime_patch_applied = True
