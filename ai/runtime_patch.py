@@ -26,6 +26,11 @@ _SCREENSHOT_OPEN_PHRASES = {
     "show the latest screenshot",
 }
 
+_SCREENSHOT_CAPTURE_PATTERN = re.compile(
+    r"\b(?:take|capture|grab|snap|make)\b.*\b(?:screenshot|screen\s*shot|screen\s*capture)\b",
+    re.IGNORECASE,
+)
+
 _CONVERSATION_LEAD_PATTERN = re.compile(
     r"^(?:okay|ok|please)\s*[,;:.!?-]*\s+",
     re.IGNORECASE,
@@ -50,6 +55,19 @@ def _extract_post_response_screenshot(text):
 def _is_screenshot_open_request(text):
     normalized = " ".join(str(text).strip().lower().split()).rstrip(" .!?;:")
     return normalized in _SCREENSHOT_OPEN_PHRASES
+
+
+def _is_screenshot_capture_request(text):
+    """Recognize natural spoken screenshot requests before generic command routing."""
+    normalized = " ".join(str(text).strip().lower().split()).rstrip(" .!?;:")
+    if not normalized:
+        return False
+
+    # Do not turn negative requests such as "don't take a screenshot" into actions.
+    if re.search(r"\b(?:don't|do not|dont|never)\b", normalized):
+        return False
+
+    return bool(_SCREENSHOT_CAPTURE_PATTERN.search(normalized))
 
 
 def _is_creator_identity_question(text):
@@ -89,6 +107,7 @@ def apply_ai_runtime_patch():
     original_on_user_message = AIModule.on_user_message
     original_creator_handler = AIModule._is_creator_identity_question
     original_format_tool_success = AIModule._format_tool_success
+    original_generate_response = AIModule._generate_response
     original_voice_on_conversation_mode_set = VoiceModule.on_conversation_mode_set
     original_voice_can_listen = VoiceModule._can_listen
 
@@ -131,6 +150,36 @@ def apply_ai_runtime_patch():
                 request.metadata["screenshot_open_request"] = True
                 print(
                     f"[AI] Selected screenshot-open tool: {request.tool} "
+                    f"(request_id={request.request_id})",
+                    flush=True,
+                )
+                self.event_bus.emit("tool_request", request=request)
+                return
+
+            if _is_screenshot_capture_request(text):
+                screenshot_intent = IntentResult(
+                    intent=IntentType.COMMAND,
+                    confidence=1.0,
+                    normalized_text="take a screenshot",
+                    entities={"action": "screenshot"},
+                    requires_tools=True,
+                    classifier="runtime_patch",
+                )
+                try:
+                    request = self.tool_request_builder.build(screenshot_intent)
+                except ValueError as exc:
+                    print(
+                        f"[AI] Unable to build screenshot request: {exc}",
+                        flush=True,
+                    )
+                    self._emit_assistant_text(
+                        f"I couldn't take the screenshot: {exc}"
+                    )
+                    return
+
+                request.metadata["direct_screenshot_request"] = True
+                print(
+                    f"[AI] Selected screenshot tool: {request.tool} "
                     f"(request_id={request.request_id})",
                     flush=True,
                 )
@@ -198,6 +247,16 @@ def apply_ai_runtime_patch():
             return "Opened the latest screenshot."
         return original_format_tool_success(result)
 
+    def patched_generate_response(self, text):
+        """Emit a completed response once so abbreviations do not become TTS fragments."""
+        response = self.engine.generate_response(text, on_sentence=None)
+        if not response:
+            print("[AI] No response generated.", flush=True)
+            return
+
+        self.event_bus.emit("assistant_sentence", text=response)
+        self.event_bus.emit("assistant_response", text=response)
+
     def patched_voice_on_conversation_mode_set(self, enabled):
         original_voice_on_conversation_mode_set(self, enabled)
         if not enabled:
@@ -218,6 +277,7 @@ def apply_ai_runtime_patch():
     AIModule.on_user_message = patched_on_user_message
     AIModule._is_creator_identity_question = classmethod(patched_creator_handler)
     AIModule._format_tool_success = staticmethod(patched_format_tool_success)
+    AIModule._generate_response = patched_generate_response
     VoiceModule.on_conversation_mode_set = patched_voice_on_conversation_mode_set
     VoiceModule._can_listen = patched_voice_can_listen
     AIModule._asta_runtime_patch_applied = True
