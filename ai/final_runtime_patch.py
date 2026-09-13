@@ -52,14 +52,12 @@ def apply_final_runtime_patch():
                             requires_tools=True,
                             classifier="final_runtime_patch",
                         )
-
                         request = self.tool_request_builder.build(screenshot_intent)
                         request.metadata["post_response_action"] = True
 
-                        def dispatch_screenshot_after_hud():
-                            # The HUD event is emitted after its terminal print and
-                            # flush. A small render-settling delay gives Windows'
-                            # terminal surface time to update before the screenshot.
+                        hud_seen = {"value": False}
+
+                        def schedule_screenshot():
                             print(
                                 "[AI] HUD rendered; waiting briefly before screenshot.",
                                 flush=True,
@@ -80,18 +78,23 @@ def apply_final_runtime_patch():
                             timer.daemon = True
                             timer.start()
 
-                        self.event_bus.subscribe(
-                            "hud_rendered",
-                            dispatch_screenshot_after_hud,
-                        )
+                        def on_hud_rendered(*_args, **_kwargs):
+                            if hud_seen["value"]:
+                                return
+                            hud_seen["value"] = True
+                            self.event_bus.unsubscribe("hud_rendered", on_hud_rendered)
+                            schedule_screenshot()
 
+                        self.event_bus.subscribe("hud_rendered", on_hud_rendered)
                         self._generate_response(prompt)
 
-                        # In the current synchronous EventBus the HUD normally emits
-                        # hud_rendered during _generate_response. Keep a safety
-                        # fallback for environments where no HUD subscriber exists.
-                        if not self.event_bus.has_subscribers("hud_rendered"):
-                            dispatch_screenshot_after_hud()
+                        # Safety fallback for runtimes where the HUD isn't subscribed
+                        # or doesn't emit hud_rendered.
+                        if not hud_seen["value"]:
+                            self.event_bus.unsubscribe("hud_rendered", on_hud_rendered)
+                            hud_seen["value"] = True
+                            schedule_screenshot()
+
                         return
 
         return original(self, text)
