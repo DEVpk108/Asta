@@ -1,5 +1,8 @@
 import threading
 import time
+from collections import deque
+
+import numpy as np
 
 from core.module import Module
 
@@ -10,6 +13,22 @@ from .recognition_engine import RecognitionEngine
 
 
 class VoiceModule(Module):
+
+    INTERRUPT_PHRASES = (
+        "okay okay stop",
+        "okay stop",
+        "ok stop",
+        "stop asta",
+        "stop asta now",
+        "asta stop",
+        "wait asta",
+        "hold on asta",
+        "stop speaking",
+        "stop talking",
+        "stop presentation",
+        "stop the presentation",
+        "hold on",
+    )
 
     def __init__(self, kernel):
         super().__init__(
@@ -25,6 +44,9 @@ class VoiceModule(Module):
 
         self._running = False
         self._thread = None
+        self._barge_thread = None
+        self._barge_stop = threading.Event()
+        self._barge_check_lock = threading.Lock()
 
         self.conversation_timeout = 30.0
         self._conversation_active = False
@@ -33,6 +55,10 @@ class VoiceModule(Module):
         self._tts_active = False
         self._tts_guard_until = 0.0
         self._microphone_paused_for_tts = False
+
+        self._barge_window_seconds = 1.4
+        self._barge_check_interval = 0.65
+        self._barge_min_rms = 0.010
 
         # A pending high-risk tool approval needs a more sensitive listener
         # because responses like "yes" and "no" are intentionally very short.
@@ -56,6 +82,7 @@ class VoiceModule(Module):
         self.event_bus.subscribe("assistant_sentence", self._on_assistant_sentence)
         self.event_bus.subscribe("speech_started", self._on_speech_started)
         self.event_bus.subscribe("speech_finished", self._on_speech_finished)
+        self.event_bus.subscribe("speech_interrupt", self._on_speech_interrupt)
         self.event_bus.subscribe(
             "tool_confirmation_required",
             self._on_tool_confirmation_required,
@@ -84,6 +111,7 @@ class VoiceModule(Module):
         self.event_bus.unsubscribe("assistant_sentence", self._on_assistant_sentence)
         self.event_bus.unsubscribe("speech_started", self._on_speech_started)
         self.event_bus.unsubscribe("speech_finished", self._on_speech_finished)
+        self.event_bus.unsubscribe("speech_interrupt", self._on_speech_interrupt)
         self.event_bus.unsubscribe(
             "tool_confirmation_required",
             self._on_tool_confirmation_required,
@@ -94,6 +122,7 @@ class VoiceModule(Module):
         )
 
         self._running = False
+        self._stop_barge_listener()
 
         try:
             self.microphone.stop()
@@ -158,38 +187,135 @@ class VoiceModule(Module):
         self._tts_active = True
         self._tts_guard_until = time.monotonic() + 0.20
         self.microphone.clear_buffer()
-
-        if not self._microphone_paused_for_tts:
-            try:
-                self.microphone.stop()
-                self._microphone_paused_for_tts = True
-                print("[Voice] Microphone paused during TTS", flush=True)
-            except Exception as exc:
-                print(
-                    f"[Voice] Microphone pause error: {type(exc).__name__}: {exc}",
-                    flush=True,
-                )
+        self._start_barge_listener()
+        print("[Voice] Barge-in listening: ENABLED", flush=True)
 
     def _on_speech_finished(self, *args, **kwargs):
         self._tts_active = False
-        # Give the microphone a little settling time after playback so the
-        # first VAD window cannot start on residual device/room audio.
         self._tts_guard_until = time.monotonic() + 0.60
+        self._stop_barge_listener()
         self.microphone.clear_buffer()
-
-        if self._microphone_paused_for_tts and self._running:
-            try:
-                self.microphone.start()
-                self._microphone_paused_for_tts = False
-                print("[Voice] Microphone resumed after TTS", flush=True)
-            except Exception as exc:
-                print(
-                    f"[Voice] Microphone resume error: {type(exc).__name__}: {exc}",
-                    flush=True,
-                )
+        print("[Voice] Barge-in listening: DISABLED", flush=True)
 
         if self._conversation_active and not self._manual_conversation:
             self._last_interaction = time.monotonic()
+
+    def _on_speech_interrupt(self, *args, **kwargs):
+        print("[Voice] Speech interrupt received.", flush=True)
+        self._tts_active = False
+        self._tts_guard_until = time.monotonic() + 0.05
+        self.microphone.clear_buffer()
+        self._stop_barge_listener()
+
+    def _start_barge_listener(self):
+        with self._barge_check_lock:
+            if (
+                self._barge_thread is not None
+                and self._barge_thread.is_alive()
+            ):
+                return
+
+            self._barge_stop.clear()
+            self._barge_thread = threading.Thread(
+                target=self._barge_listen_loop,
+                name="VoiceBargeInWorker",
+                daemon=True,
+            )
+            self._barge_thread.start()
+
+    def _stop_barge_listener(self):
+        self._barge_stop.set()
+        thread = self._barge_thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=0.5)
+        if thread is threading.current_thread():
+            return
+        self._barge_thread = None
+
+    @classmethod
+    def _extract_interrupt_tail(cls, text):
+        normalized = " ".join(str(text).strip().lower().split())
+        normalized = normalized.rstrip(" .!?;:,")
+        if not normalized:
+            return False, ""
+
+        for phrase in cls.INTERRUPT_PHRASES:
+            marker = phrase
+            if normalized == marker:
+                return True, ""
+            if normalized.startswith(marker + " "):
+                tail = normalized[len(marker):].strip(" ,.-")
+                return True, tail
+            if normalized.endswith(" " + marker):
+                return True, ""
+
+        # A bare "stop" is useful and common, but avoid treating arbitrary
+        # sentences such as "please stop the process" as a speech interrupt.
+        if normalized == "stop":
+            return True, ""
+
+        if normalized.startswith("stop "):
+            remainder = normalized[5:].strip()
+            if remainder in {"speaking", "talking", "presenting", "presentation"}:
+                return True, ""
+
+        return False, ""
+
+    def _barge_listen_loop(self):
+        max_samples = int(self.microphone.sample_rate * self._barge_window_seconds)
+        rolling = deque(maxlen=max_samples)
+        next_check = time.monotonic() + self._barge_check_interval
+
+        while self._running and not self._barge_stop.is_set():
+            try:
+                chunk = self.microphone.get_chunk().flatten()
+            except Exception:
+                if self._barge_stop.wait(0.02):
+                    break
+                continue
+
+            if chunk is None or len(chunk) == 0:
+                continue
+
+            rolling.extend(np.asarray(chunk, dtype=np.float32))
+            now = time.monotonic()
+            if now < next_check:
+                continue
+            next_check = now + self._barge_check_interval
+
+            if len(rolling) < int(self.microphone.sample_rate * 0.55):
+                continue
+
+            audio = np.asarray(rolling, dtype=np.float32)
+            rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+            if rms < self._barge_min_rms:
+                continue
+
+            try:
+                text = self.recognition.transcribe(audio)
+            except Exception as exc:
+                print(
+                    f"[Voice] Barge-in STT error: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+                continue
+
+            if not text:
+                continue
+
+            interrupted, tail = self._extract_interrupt_tail(text)
+            if not interrupted:
+                continue
+
+            print(f"[Interrupt] Barge-in detected: {text!r}", flush=True)
+            self.event_bus.emit("speech_interrupt", text=text)
+
+            if tail:
+                print(f"[Interrupt] Continuing with: {tail}", flush=True)
+                self._last_interaction = time.monotonic()
+                self.event_bus.emit("user_message", text=tail)
+
+            break
 
     def _on_tool_confirmation_required(self, *args, **kwargs):
         self._awaiting_confirmation = True
@@ -205,7 +331,6 @@ class VoiceModule(Module):
         return (
             self._running
             and not self._tts_active
-            and not self._microphone_paused_for_tts
             and time.monotonic() >= self._tts_guard_until
         )
 
@@ -276,9 +401,6 @@ class VoiceModule(Module):
                 speech_timeout=3,
             )
 
-        # Confirmation replies are deliberately short and quieter than normal
-        # commands. Temporarily relax only the VAD acceptance thresholds while
-        # an approval decision is pending, then restore the normal profile.
         original = {
             "min_rms": self.vad.min_rms,
             "min_peak": self.vad.min_peak,
@@ -332,8 +454,6 @@ class VoiceModule(Module):
                 if not self._can_listen():
                     continue
 
-                # Wake-word detection only activates the conversation. Command
-                # recognition starts from fresh microphone audio after this point.
                 self.microphone.clear_buffer()
 
                 audio = self._collect_command_audio()
