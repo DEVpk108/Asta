@@ -19,8 +19,8 @@ class VADEngine:
         threshold=0.65,
         silence_ms=800,
         speech_pad_ms=300,
-        min_rms=0.025,
-        min_peak=0.08,
+        min_rms=0.018,
+        min_peak=0.06,
         start_chunk_rms=0.008,
         pre_roll_ms=200,
     ):
