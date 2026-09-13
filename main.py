@@ -4,6 +4,7 @@ from core.tools import (
     CloseApplicationTool,
     LaunchApplicationTool,
     OpenApplicationTool,
+    OpenScreenshotTool,
     RunCommandTool,
     ScreenshotTool,
     StartProcessTool,
@@ -44,6 +45,7 @@ def main():
         StopProcessTool(),
         CloseApplicationTool(),
         ScreenshotTool(capture=capture_screenshot),
+        OpenScreenshotTool(),
         AudioControlTool("mute"),
         AudioControlTool("unmute"),
     ):
