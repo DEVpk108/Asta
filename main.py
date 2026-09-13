@@ -15,13 +15,8 @@ from speech.speech_module import SpeechModule
 from hud.hud_module import HUDModule
 from ai.ai_module import AIModule
 from input.text_input_module import TextInputModule
-from voice.interrupt_patch import apply_voice_interrupt_patch
 from voice.voice_module import VoiceModule
 from vision.screenshot_backend import capture_screenshot
-
-
-# Apply the barge-in recognizer before the VoiceModule instance is created.
-apply_voice_interrupt_patch()
 
 
 def main():
