@@ -85,6 +85,10 @@ def main():
         )
 
     kernel.start()
+
+    if text_input is not None:
+        text_input.start_input()
+
     kernel.run()
 
 
