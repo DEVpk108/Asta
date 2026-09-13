@@ -21,20 +21,18 @@ class WakeWordEngine:
     def __init__(
         self,
         model_paths=None,
-        threshold=0.45,
+        threshold=0.35,
         debug=True,
-        confirmation_frames=3,
+        confirmation_frames=2,
         strong_threshold=0.85,
-        min_rms=0.006,
-        min_peak=0.020,
+        silence_rms=0.001,
     ):
         self.model_paths = [str(path) for path in (model_paths or DEFAULT_MODELS)]
         self.threshold = float(threshold)
         self.debug = debug
         self.confirmation_frames = max(1, int(confirmation_frames))
         self.strong_threshold = max(self.threshold, float(strong_threshold))
-        self.min_rms = float(min_rms)
-        self.min_peak = float(min_peak)
+        self.silence_rms = float(silence_rms)
 
         self.model = Model(
             wakeword_models=self.model_paths,
@@ -61,10 +59,7 @@ class WakeWordEngine:
             f"frame(s); strong score >= {self.strong_threshold:.2f} still "
             "requires confirmation"
         )
-        print(
-            f"[WakeWord] Acoustic gate: rms >= {self.min_rms:.3f}, "
-            f"peak >= {self.min_peak:.3f}"
-        )
+        print(f"[WakeWord] Silence gate: rms < {self.silence_rms:.4f}")
 
     def wait_for_wakeword(self, microphone, should_continue=None):
         """Wait for a confirmed wake word until the caller asks the listener to pause."""
@@ -94,12 +89,12 @@ class WakeWordEngine:
             )
 
             rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
-            peak = float(np.max(np.abs(audio))) if audio.size else 0.0
 
-            # Do not let silence / low-level background noise contribute to
-            # wakeword confirmation. The wakeword itself is speech, so a small
-            # acoustic-energy gate is a useful second signal alongside the model.
-            if rms < self.min_rms or peak < self.min_peak:
+            # Only use this gate to reject true silence. Do not gate normal
+            # microphone speech on RMS/peak values; the previous acoustic gate
+            # was strong enough to prevent legitimate wake words from reaching
+            # the openWakeWord model on this microphone.
+            if rms < self.silence_rms:
                 candidate_word = None
                 candidate_hits = 0
                 score_history.clear()
@@ -143,8 +138,12 @@ class WakeWordEngine:
             if candidate_hits < self.confirmation_frames:
                 continue
 
+            # Require the confirmation frames to be consistently above a
+            # stronger average threshold. This blocks isolated false spikes
+            # while keeping the detector sensitive enough for normal speech.
             mean_score = float(np.mean(score_history)) if score_history else 0.0
-            if mean_score < self.threshold:
+            required_mean = max(self.threshold, 0.45)
+            if mean_score < required_mean:
                 candidate_word = None
                 candidate_hits = 0
                 score_history.clear()
