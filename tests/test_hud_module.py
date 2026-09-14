@@ -24,8 +24,22 @@ def test_speech_lifecycle_updates_hud_state():
     assert hud.get_state().activity == "speech"
 
     kernel.event_bus.emit("speech_finished")
+    assert hud.get_state().mode == "listening"
+    assert hud.get_state().intensity == "medium"
+    assert hud.get_state().activity == "command"
+
+    hud.shutdown()
+
+
+def test_conversation_mode_controls_hud_state():
+    kernel, hud = build_hud()
+
+    kernel.event_bus.emit("conversation_mode_set", enabled=True)
+    assert hud.get_state().mode == "listening"
+    assert hud.get_state().activity == "conversation"
+
+    kernel.event_bus.emit("conversation_mode_set", enabled=False)
     assert hud.get_state().mode == "idle"
-    assert hud.get_state().intensity == "low"
     assert hud.get_state().activity is None
 
     hud.shutdown()
