@@ -17,5 +17,10 @@ contextBridge.exposeInMainWorld('asta', {
     ipcRenderer.on('asta:hud-state', (_event, state) => {
       try { fn(state) } catch (e) { /* ignore */ }
     })
+  },
+  onHudAudio: (fn) => {
+    ipcRenderer.on('asta:hud-audio', (_event, audio) => {
+      try { fn(audio) } catch (e) { /* ignore */ }
+    })
   }
 })
