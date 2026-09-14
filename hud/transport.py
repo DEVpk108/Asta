@@ -34,6 +34,7 @@ class HUDTransport:
         self._last_state_message: dict[str, Any] | None = None
         self._last_audio_message: dict[str, Any] | None = None
         self._last_lifecycle_message: dict[str, Any] | None = None
+        self._last_chat_history_message: dict[str, Any] | None = None
         self._command_handler: Callable[[dict[str, Any]], None] | None = None
 
     def set_command_handler(self, handler: Callable[[dict[str, Any]], None] | None) -> None:
@@ -103,6 +104,24 @@ class HUDTransport:
         }
         self._broadcast(message)
 
+    def publish_chat_history(self, messages: list[dict[str, Any]]) -> None:
+        """Cache and publish the persisted history used when the HUD connects."""
+        safe_messages = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = "user" if message.get("role") == "user" else "assistant"
+            text = str(message.get("text") or "").strip()
+            if text:
+                safe_messages.append({"role": role, "text": text})
+
+        self._last_chat_history_message = {
+            "type": "hud.chat_history",
+            "version": 1,
+            "messages": safe_messages,
+        }
+        self._broadcast(self._last_chat_history_message)
+
     def publish_lifecycle(self, status: str) -> None:
         """Publish a runtime lifecycle marker such as starting or ready."""
         message = {
@@ -167,6 +186,8 @@ class HUDTransport:
                 self._send_to_client(client, self._last_audio_message)
             if self._last_lifecycle_message is not None:
                 self._send_to_client(client, self._last_lifecycle_message)
+            if self._last_chat_history_message is not None:
+                self._send_to_client(client, self._last_chat_history_message)
 
             threading.Thread(
                 target=self._client_loop,
