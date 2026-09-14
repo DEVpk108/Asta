@@ -37,13 +37,92 @@ class AIEngine:
         self.model_instance_id = None
         self.warmed = False
 
-        self.system_prompt = (
-            "You are ASTA, a local AI voice assistant. "
-            "Respond naturally and concisely. "
-            "Prefer 1–3 short sentences for normal questions. "
-            "Avoid long explanations unless the user asks for detail. "
-            "Sound conversational, helpful, and direct."
-        )
+        self.system_prompt = """
+You are A.S.T.A. (Adaptive System for Technical Assistance), a professional local-first AI engineering assistant.
+
+IDENTITY
+You are a capable AI assistant designed to help the user understand, build, debug, learn, research, and solve problems. Your purpose is to augment the user's capabilities and decision-making, not replace them.
+
+You are A.S.T.A., not ChatGPT. Do not claim capabilities, tools, sensors, memory, access, or permissions that have not actually been provided to you.
+
+CORE BEHAVIOR
+Be useful, truthful, technically competent, context-aware, practical, and professional.
+
+Understand the user's intent before responding. Answer the actual question rather than a nearby question. Use available conversation context to maintain continuity.
+
+Be proactive when it provides genuine value. Point out important risks, trade-offs, mistakes, missing considerations, or better approaches when relevant. Do not add suggestions merely to appear helpful.
+
+COMMUNICATION
+Speak naturally and directly.
+
+For normal conversational questions, prefer concise responses. Use more detail when the problem is complex or the user asks for an explanation, tutorial, comparison, implementation, or deeper reasoning.
+
+Avoid:
+- unnecessary repetition
+- generic filler
+- excessive disclaimers
+- overly formal or robotic language
+- pretending to know something that is unavailable
+
+When teaching, explain the underlying concept instead of only giving the final answer.
+
+CONTEXT AND CONVERSATION
+Treat the current conversation as the primary source of immediate context.
+
+Use recent messages to understand references such as "this", "that", "it", "we", "earlier", and "what were we talking about".
+
+Prefer the most recent relevant topic over unrelated older topics.
+
+Do not invent missing conversation history. When required information is genuinely unavailable, state that clearly and continue with the best possible answer.
+
+ENGINEERING MODE
+You are especially strong as an engineering assistant for software development, AI/ML, LLMs, agentic systems, electronics, automation, debugging, and technical problem solving.
+
+When solving technical problems:
+1. Understand the actual problem and constraints.
+2. Identify the relevant technical considerations.
+3. Compare practical approaches when multiple solutions exist.
+4. Recommend an appropriate solution.
+5. Explain important trade-offs.
+6. Provide implementation details when useful.
+
+For software and code:
+- Prefer correct, maintainable solutions over unnecessarily clever ones.
+- Preserve the existing architecture unless a change is justified.
+- Make the smallest reasonable change when modifying an existing system.
+- Do not invent files, APIs, functions, dependencies, or project behavior.
+- Consider failure cases and edge cases.
+- Clearly distinguish assumptions from known facts.
+
+For electronics and physical systems, consider feasibility, hardware constraints, safety, signal integrity, power, cost, and practical implementation details where relevant.
+
+DECISION MAKING
+When comparing solutions, consider reliability, complexity, performance, maintainability, cost, scalability, compatibility, and implementation effort.
+
+For personal projects, prefer incremental and testable solutions. Avoid unnecessary over-engineering while keeping future expansion in mind.
+
+UNCERTAINTY AND TRUTHFULNESS
+Never fabricate facts, results, actions, tool usage, or capabilities.
+
+Distinguish between known information, reasonable inference, and uncertainty. If an assumption is necessary, state it briefly.
+
+When you do not know something, say so rather than creating a confident-sounding answer.
+
+USER AGENCY
+The user remains the final decision-maker. Give recommendations with reasoning, but do not present personal preferences as mandatory requirements unless a genuine technical or safety constraint makes them necessary.
+
+PROJECT AWARENESS
+The user is developing A.S.T.A. as a modular, local-first AI engineering assistant intended to evolve into a broader personal AI operating system.
+
+The broader architecture may eventually include persistent memory, project awareness, workspaces, workflow management, proactive assistance, tool execution, specialized agents, knowledge retrieval, code execution and testing, and reflection/improvement loops.
+
+These capabilities may not exist in the current version. Never claim that a future capability is already available.
+
+IMPORTANT: Chat history and future long-term memory are different concepts. Conversation history provides immediate continuity; a future Memory Layer may provide durable knowledge and user/project context.
+
+RESPONSE PRINCIPLE
+Your goal is not merely to produce an answer. Help the user understand the problem, make better technical decisions, and build things effectively.
+""".strip()
 
     def set_system_prompt(self, prompt):
         """Replace the system prompt and reset the response chain."""
@@ -75,44 +154,25 @@ class AIEngine:
             try:
                 list_start = time.perf_counter()
                 instance_id = self._find_loaded_instance()
-                print(
-                    f"[AI] Loaded-model check: {time.perf_counter() - list_start:.3f}s",
-                    flush=True,
-                )
+                print(f"[AI] Loaded-model check: {time.perf_counter() - list_start:.3f}s", flush=True)
             except requests.RequestException as exc:
-                print(
-                    f"[AI] Loaded-model check unavailable: {type(exc).__name__}: {exc}",
-                    flush=True,
-                )
+                print(f"[AI] Loaded-model check unavailable: {type(exc).__name__}: {exc}", flush=True)
 
             if instance_id:
                 self.model_instance_id = instance_id
-                print(
-                    f"[AI] Reusing loaded model instance: {instance_id}",
-                    flush=True,
-                )
+                print(f"[AI] Reusing loaded model instance: {instance_id}", flush=True)
             else:
                 load_start = time.perf_counter()
-                response = self.session.post(
-                    self.load_url,
-                    json={"model": self.model},
-                    timeout=self.timeout,
-                )
+                response = self.session.post(self.load_url, json={"model": self.model}, timeout=self.timeout)
                 response.raise_for_status()
                 try:
                     load_result = response.json()
                 except ValueError:
                     load_result = {}
                 self.model_instance_id = load_result.get("instance_id")
-                print(
-                    f"[AI] Model load request: {time.perf_counter() - load_start:.3f}s",
-                    flush=True,
-                )
+                print(f"[AI] Model load request: {time.perf_counter() - load_start:.3f}s", flush=True)
                 if self.model_instance_id:
-                    print(
-                        f"[AI] Loaded model instance: {self.model_instance_id}",
-                        flush=True,
-                    )
+                    print(f"[AI] Loaded model instance: {self.model_instance_id}", flush=True)
 
             warmup_start = time.perf_counter()
             response = self.session.post(
@@ -129,15 +189,9 @@ class AIEngine:
                 headers={"Content-Type": "application/json"},
             )
             response.raise_for_status()
-            print(
-                f"[AI] Inference warm-up: {time.perf_counter() - warmup_start:.3f}s",
-                flush=True,
-            )
+            print(f"[AI] Inference warm-up: {time.perf_counter() - warmup_start:.3f}s", flush=True)
             self.warmed = True
-            print(
-                f"[AI] Warm-up complete: {time.perf_counter() - start:.3f}s",
-                flush=True,
-            )
+            print(f"[AI] Warm-up complete: {time.perf_counter() - start:.3f}s", flush=True)
             return True
         except requests.RequestException as exc:
             print(f"[AI] Warm-up unavailable: {type(exc).__name__}: {exc}", flush=True)
@@ -284,10 +338,7 @@ class AIEngine:
 
                 if first_delta_time is None:
                     first_delta_time = now
-                    print(
-                        f"[AI] Client TTFT: {first_delta_time - request_start:.3f}s",
-                        flush=True,
-                    )
+                    print(f"[AI] Client TTFT: {first_delta_time - request_start:.3f}s", flush=True)
 
                 full_text += delta
                 sentence_buffer += delta
@@ -331,43 +382,15 @@ class AIEngine:
             "ttft": ttft,
             "model_load_time": model_load_time,
             "request_time": total_request_time,
-            "response_open_time": (
-                response_open - request_start if response_open is not None else None
-            ),
-            "first_event_time": (
-                first_event_time - request_start if first_event_time is not None else None
-            ),
-            "chat_start_time": (
-                chat_start_time - request_start if chat_start_time is not None else None
-            ),
-            "model_load_event_time": (
-                model_load_end - model_load_start
-                if model_load_start is not None and model_load_end is not None
-                else None
-            ),
-            "prompt_processing_time": (
-                prompt_end - prompt_start
-                if prompt_start is not None and prompt_end is not None
-                else None
-            ),
-            "prompt_end_to_message_start": (
-                message_start - prompt_end
-                if prompt_end is not None and message_start is not None
-                else None
-            ),
-            "message_start_to_first_delta": (
-                first_delta_time - message_start
-                if first_delta_time is not None and message_start is not None
-                else None
-            ),
-            "request_to_first_delta": (
-                first_delta_time - request_start if first_delta_time is not None else None
-            ),
-            "exhausted_reasoning": (
-                not full_text.strip()
-                and output_tokens >= max_output_tokens
-                and reasoning_tokens >= max_output_tokens
-            ),
+            "response_open_time": response_open - request_start if response_open is not None else None,
+            "first_event_time": first_event_time - request_start if first_event_time is not None else None,
+            "chat_start_time": chat_start_time - request_start if chat_start_time is not None else None,
+            "model_load_event_time": model_load_end - model_load_start if model_load_start is not None and model_load_end is not None else None,
+            "prompt_processing_time": prompt_end - prompt_start if prompt_start is not None and prompt_end is not None else None,
+            "prompt_end_to_message_start": message_start - prompt_end if prompt_end is not None and message_start is not None else None,
+            "message_start_to_first_delta": first_delta_time - message_start if first_delta_time is not None and message_start is not None else None,
+            "request_to_first_delta": first_delta_time - request_start if first_delta_time is not None else None,
+            "exhausted_reasoning": not full_text.strip() and output_tokens >= max_output_tokens and reasoning_tokens >= max_output_tokens,
         }
 
     def generate_response(self, text, on_sentence=None):
@@ -378,22 +401,13 @@ class AIEngine:
         try:
             attempt = self._request(text, on_sentence, self.max_output_tokens)
             if attempt["exhausted_reasoning"] and self.reasoning_retry_tokens > self.max_output_tokens:
-                print(
-                    f"[AI] Output budget exhausted; retrying with {self.reasoning_retry_tokens} output tokens.",
-                    flush=True,
-                )
+                print(f"[AI] Output budget exhausted; retrying with {self.reasoning_retry_tokens} output tokens.", flush=True)
                 attempt = self._request(text, on_sentence, self.reasoning_retry_tokens)
         except requests.RequestException as exc:
-            print(
-                f"[AI] Connection error after {time.perf_counter() - request_start:.2f}s: {exc}",
-                flush=True,
-            )
+            print(f"[AI] Connection error after {time.perf_counter() - request_start:.2f}s: {exc}", flush=True)
             return ""
         except Exception as exc:
-            print(
-                f"[AI] Error after {time.perf_counter() - request_start:.2f}s: {type(exc).__name__}: {exc}",
-                flush=True,
-            )
+            print(f"[AI] Error after {time.perf_counter() - request_start:.2f}s: {type(exc).__name__}: {exc}", flush=True)
             return ""
 
         final_result = attempt["result"]
@@ -411,31 +425,17 @@ class AIEngine:
         if attempt["response_open_time"] is not None:
             print(f"[AI] HTTP headers received: {attempt['response_open_time']:.3f}s", flush=True)
         if attempt["first_event_time"] is not None and attempt["response_open_time"] is not None:
-            print(
-                f"[AI] Headers -> first SSE event: "
-                f"{attempt['first_event_time'] - attempt['response_open_time']:.3f}s",
-                flush=True,
-            )
+            print(f"[AI] Headers -> first SSE event: {attempt['first_event_time'] - attempt['response_open_time']:.3f}s", flush=True)
         if attempt["chat_start_time"] is not None and attempt["response_open_time"] is not None:
-            print(
-                f"[AI] Headers -> chat.start: "
-                f"{attempt['chat_start_time'] - attempt['response_open_time']:.3f}s",
-                flush=True,
-            )
+            print(f"[AI] Headers -> chat.start: {attempt['chat_start_time'] - attempt['response_open_time']:.3f}s", flush=True)
         if attempt["model_load_event_time"] is not None:
             print(f"[AI] Model load event: {attempt['model_load_event_time']:.3f}s", flush=True)
         if attempt["prompt_processing_time"] is not None:
             print(f"[AI] Prompt processing: {attempt['prompt_processing_time']:.3f}s", flush=True)
         if attempt["prompt_end_to_message_start"] is not None:
-            print(
-                f"[AI] prompt.end -> message.start: {attempt['prompt_end_to_message_start']:.3f}s",
-                flush=True,
-            )
+            print(f"[AI] prompt.end -> message.start: {attempt['prompt_end_to_message_start']:.3f}s", flush=True)
         if attempt["message_start_to_first_delta"] is not None:
-            print(
-                f"[AI] Message start -> first delta: {attempt['message_start_to_first_delta']:.3f}s",
-                flush=True,
-            )
+            print(f"[AI] Message start -> first delta: {attempt['message_start_to_first_delta']:.3f}s", flush=True)
         if attempt["model_load_time"] is not None:
             print(f"[AI] Model load: {attempt['model_load_time']:.3f}s", flush=True)
         print(f"[AI] Response: {attempt['text']}", flush=True)
