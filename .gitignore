@@ -37,3 +37,4 @@ venv/
 
 # Runtime artifacts
 runtime/screenshots/
+data/*.db
