@@ -43,8 +43,8 @@ def main():
 
     kernel = Kernel()
 
-    speech = SpeechModule(kernel)
     hud = HUDModule(kernel)
+    speech = SpeechModule(kernel)
     ai = AIModule(kernel)
     voice = VoiceModule(kernel)
     tools = ToolRuntimeModule(kernel)
@@ -67,9 +67,11 @@ def main():
 
     print("===== ASTA KERNEL =====")
 
+    # HUD subscribes before AIModule so synchronous user_message dispatch
+    # reaches THINKING before model inference begins.
+    kernel.register_module(hud)
     kernel.register_module(ai)
     kernel.register_module(speech)
-    kernel.register_module(hud)
     kernel.register_module(voice)
     kernel.register_module(tools)
 
