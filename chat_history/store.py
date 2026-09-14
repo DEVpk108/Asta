@@ -49,15 +49,26 @@ class ChatHistoryStore:
                 ON messages(session_id);
             """
         )
-        connection.execute(
-            "INSERT INTO sessions (id, started_at) VALUES (?, ?)",
-            (self.session_id, self._now()),
-        )
         connection.commit()
         self._connection = connection
 
+    def _ensure_current_session(self) -> None:
+        if self._connection is None:
+            return
+
+        row = self._connection.execute(
+            "SELECT 1 FROM sessions WHERE id = ?",
+            (self.session_id,),
+        ).fetchone()
+        if row is None:
+            self._connection.execute(
+                "INSERT INTO sessions (id, started_at) VALUES (?, ?)",
+                (self.session_id, self._now()),
+            )
+
     def new_session(self) -> str:
         if self._connection is None:
+            self.session_id = uuid.uuid4().hex
             return self.session_id
 
         new_id = uuid.uuid4().hex
@@ -93,6 +104,7 @@ class ChatHistoryStore:
 
         normalized_role = "user" if role == "user" else "assistant"
         with self._lock:
+            self._ensure_current_session()
             self._connection.execute(
                 """
                 INSERT INTO messages (session_id, role, text, created_at)
@@ -140,40 +152,36 @@ class ChatHistoryStore:
                 SELECT
                     s.id,
                     s.started_at,
-                    COALESCE(
-                        (
-                            SELECT m.text
-                            FROM messages m
-                            WHERE m.session_id = s.id AND m.role = 'user'
-                            ORDER BY m.id ASC
-                            LIMIT 1
-                        ),
-                        'New conversation'
+                    (
+                        SELECT m.text
+                        FROM messages m
+                        WHERE m.session_id = s.id AND m.role = 'user'
+                        ORDER BY m.id ASC
+                        LIMIT 1
                     ) AS title,
-                    COALESCE(
-                        (
-                            SELECT m.text
-                            FROM messages m
-                            WHERE m.session_id = s.id
-                            ORDER BY m.id DESC
-                            LIMIT 1
-                        ),
-                        ''
+                    (
+                        SELECT m.text
+                        FROM messages m
+                        WHERE m.session_id = s.id
+                        ORDER BY m.id DESC
+                        LIMIT 1
                     ) AS preview,
                     (
                         SELECT COUNT(*)
                         FROM messages m
                         WHERE m.session_id = s.id
                     ) AS message_count,
-                    COALESCE(
-                        (
-                            SELECT MAX(m.created_at)
-                            FROM messages m
-                            WHERE m.session_id = s.id
-                        ),
-                        s.started_at
+                    (
+                        SELECT MAX(m.created_at)
+                        FROM messages m
+                        WHERE m.session_id = s.id
                     ) AS updated_at
                 FROM sessions s
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM messages m
+                    WHERE m.session_id = s.id
+                )
                 ORDER BY updated_at DESC, s.started_at DESC
                 LIMIT ?
                 """,
@@ -195,7 +203,7 @@ class ChatHistoryStore:
                     "preview": clean_preview,
                     "message_count": int(message_count or 0),
                     "started_at": started_at,
-                    "updated_at": updated_at,
+                    "updated_at": updated_at or started_at,
                     "active": session_id == self.session_id,
                 }
             )
