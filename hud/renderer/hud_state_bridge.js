@@ -92,13 +92,10 @@
   }
 
   var bridge = window.asta || null
-  if (!bridge || !bridge.onCommand) return
+  if (!bridge || !bridge.onHudState) return
 
-  bridge.onCommand(function (cmd) {
-    if (!cmd || cmd.indexOf('hud-state:') !== 0) return
-
+  bridge.onHudState(function (state) {
     try {
-      var state = JSON.parse(cmd.slice('hud-state:'.length))
       renderCanonicalState(state)
     } catch (error) {
       if (window.console) {
