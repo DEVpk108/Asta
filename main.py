@@ -61,8 +61,15 @@ def _start_hud():
         print(f"[HUD] package.json not found: {package_json}", flush=True)
         return None
 
-    npm = shutil.which("npm") or shutil.which("npm.cmd")
-    if not npm:
+    # Windows exposes npm as a .cmd shim. Passing npm.cmd directly to
+    # CreateProcess avoids WinError 193 that occurs when the wrong shim is
+    # selected by shutil.which() from a Python subprocess.
+    npm = None
+    if os.name == "nt":
+        npm = shutil.which("npm.cmd")
+    if npm is None:
+        npm = shutil.which("npm")
+    if npm is None:
         print("[HUD] npm was not found; HUD auto-launch skipped.", flush=True)
         return None
 
@@ -73,6 +80,7 @@ def _start_hud():
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            shell=False,
         )
         print(
             f"[HUD] Electron HUD launched (PID {_HUD_PROCESS.pid}).",
