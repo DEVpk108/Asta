@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('asta', {
   toggleMaximize: () => ipcRenderer.send('win:toggle-maximize'),
   close: () => ipcRenderer.send('win:close'),
   toggleFullscreen: () => ipcRenderer.send('win:toggle-fullscreen'),
+  sendTextMessage: (text) => ipcRenderer.send('hud:text-message', text),
   onCommand: (fn) => {
     ipcRenderer.on('asta:command', (_event, cmd) => {
       try { fn(cmd) } catch (e) { /* ignore */ }
@@ -21,6 +22,11 @@ contextBridge.exposeInMainWorld('asta', {
   onHudAudio: (fn) => {
     ipcRenderer.on('asta:hud-audio', (_event, audio) => {
       try { fn(audio) } catch (e) { /* ignore */ }
+    })
+  },
+  onHudChat: (fn) => {
+    ipcRenderer.on('asta:hud-chat', (_event, message) => {
+      try { fn(message) } catch (e) { /* ignore */ }
     })
   }
 })
