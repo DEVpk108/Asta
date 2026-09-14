@@ -1,4 +1,6 @@
+import ctypes
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -6,6 +8,7 @@ from pathlib import Path
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+MUTEX_ERROR_ALREADY_EXISTS = 183
 
 
 def project_root() -> Path:
@@ -38,38 +41,85 @@ def find_python(root: Path) -> Path:
 
 def show_error(message: str) -> None:
     if os.name == "nt":
-        import ctypes
-
         ctypes.windll.user32.MessageBoxW(0, message, "A.S.T.A.", 0x10)
     else:
         print(message, file=sys.stderr)
 
 
+def acquire_single_instance_lock():
+    """Prevent multiple packaged launches from loading multiple AI stacks."""
+    if os.name != "nt":
+        return None
+
+    handle = ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\ASTA_Runtime_Instance")
+    if not handle:
+        return None
+
+    if ctypes.windll.kernel32.GetLastError() == MUTEX_ERROR_ALREADY_EXISTS:
+        ctypes.windll.kernel32.CloseHandle(handle)
+        show_error("A.S.T.A. is already running.\n\nOnly one A.S.T.A. runtime can run at a time.")
+        return False
+
+    return handle
+
+
+def release_single_instance_lock(handle) -> None:
+    if handle:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def find_npm() -> str | None:
+    if os.name == "nt":
+        return shutil.which("npm.cmd") or shutil.which("npm")
+    return shutil.which("npm")
+
+
 def main() -> int:
+    mutex = acquire_single_instance_lock()
+    if mutex is False:
+        return 0
+
     root = project_root()
     main_py = root / "main.py"
+    hud_dir = root / "hud"
+    package_json = hud_dir / "package.json"
     python_exe = find_python(root)
 
     if not main_py.exists():
+        release_single_instance_lock(mutex)
         show_error(f"A.S.T.A. runtime not found:\n\n{main_py}")
         return 1
 
     if not python_exe.exists():
+        release_single_instance_lock(mutex)
         show_error(
             "A.S.T.A. Python environment was not found.\n\n"
             "Expected .venv\\Scripts\\python.exe next to ASTA.exe."
         )
         return 1
 
+    if not package_json.exists():
+        release_single_instance_lock(mutex)
+        show_error(f"A.S.T.A. HUD package was not found:\n\n{package_json}")
+        return 1
+
+    npm = find_npm()
+    if not npm:
+        release_single_instance_lock(mutex)
+        show_error("Node.js / npm was not found. A.S.T.A. requires npm for the HUD.")
+        return 1
+
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
-    env.pop("ASTA_PRELAUNCHED_HUD", None)
+    env["ASTA_PRELAUNCHED_HUD"] = "1"
+
+    python_process = None
 
     try:
-        # Keep one application-owned runtime process. main.py launches and owns
-        # the Electron HUD, avoiding the memory spike caused by starting both
-        # Python and Electron independently from the packaged launcher.
-        subprocess.Popen(
+        # The launcher starts the Python runtime only. main.py owns Electron
+        # startup, which keeps process ownership simple and avoids duplicate
+        # runtimes during repeated launches.
+        python_process = subprocess.Popen(
             [str(python_exe), str(main_py)],
             cwd=str(root),
             env=env,
@@ -80,11 +130,15 @@ def main() -> int:
             close_fds=True,
             shell=False,
         )
+
+        return python_process.wait()
     except OSError as exc:
         show_error(f"Could not start A.S.T.A.\n\n{type(exc).__name__}: {exc}")
         return 1
-
-    return 0
+    finally:
+        if python_process is not None and python_process.poll() is None:
+            python_process.terminate()
+        release_single_instance_lock(mutex)
 
 
 if __name__ == "__main__":
