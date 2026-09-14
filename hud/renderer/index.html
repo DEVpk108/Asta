@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" />
+<title>ASTA HUD</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="titlebar">
+    <div class="tb-drag">
+      <span class="tb-mark"></span>
+      <span class="tb-title">ASTA</span>
+      <span class="tb-sub">NEURAL INTERFACE</span>
+    </div>
+    <div class="tb-right">
+      <button id="wcMin" title="Minimize">&#9866;</button>
+      <button id="wcMax" title="Maximize">&#9723;</button>
+      <button id="wcClose" title="Close">&#10005;</button>
+    </div>
+  </div>
+
+  <div class="stage">
+    <canvas id="gl"></canvas>
+    <canvas id="fallback"></canvas>
+
+    <div class="hud">
+      <div class="meta">
+        <div>MODE <b id="statusMode">IDLE</b></div>
+        <div>INTENSITY <b id="statusIntensity">LOW</b></div>
+      </div>
+
+      <div class="readout" id="readout">
+        <div class="label" id="readoutLabel">ASSEMBLING...</div>
+        <div class="pct" id="readoutPct">0%</div>
+      </div>
+
+      <div class="waveform" id="waveform"></div>
+
+      <div class="dock">
+        <button data-state="idle" class="active">IDLE</button>
+        <button data-state="listening">LISTEN</button>
+        <button data-state="thinking">THINK</button>
+        <button data-state="speaking">SPEAK</button>
+        <button id="reassembleBtn" title="Re-assemble (R)">
+          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /><path d="M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+          <span>RE-ASSEMBLE</span>
+        </button>
+      </div>
+
+      <div class="shortcuts">1 IDLE &middot; 2 LISTEN &middot; 3 THINK &middot; 4 SPEAK &middot; R RE-ASSEMBLE &middot; F FULLSCREEN &middot; M MUTE</div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <div class="sb-left">
+      <span class="led" id="engineLed"></span><span id="engineLabel">INITIALIZING</span>
+    </div>
+    <div class="sb-mid">
+      <span>PARTICLES <b id="particleCount">&mdash;</b></span>
+      <span>FPS <b id="fps">&mdash;</b></span>
+      <span>UPTIME <b id="uptime">00:00</b></span>
+    </div>
+    <div class="sb-right">
+      <button id="muteBtn">AMBIENCE ON</button>
+    </div>
+  </div>
+
+  <script src="engine.js"></script>
+  <script src="fallback2d.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
