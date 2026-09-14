@@ -20,6 +20,7 @@ let runtimeReady = false
 let latestHudLifecycle = null
 let latestHudState = null
 let latestHudAudio = null
+let latestHudChatHistory = null
 
 function send (cmd) {
   if (win && !win.isDestroyed()) win.webContents.send('asta:command', cmd)
@@ -49,6 +50,12 @@ function sendHudAudio (audio) {
   win.webContents.send('asta:hud-audio', audio)
 }
 
+function sendHudChatHistory (history) {
+  latestHudChatHistory = history
+  if (!rendererReady || !win || win.isDestroyed()) return
+  win.webContents.send('asta:hud-chat-history', history)
+}
+
 function sendHudChat (message) {
   if (!rendererReady || !win || win.isDestroyed()) return
   win.webContents.send('asta:hud-chat', message)
@@ -60,6 +67,7 @@ function flushRendererTelemetry () {
   if (latestHudLifecycle) win.webContents.send('asta:hud-lifecycle', latestHudLifecycle)
   if (latestHudState) win.webContents.send('asta:hud-state', latestHudState)
   if (latestHudAudio) win.webContents.send('asta:hud-audio', latestHudAudio)
+  if (latestHudChatHistory) win.webContents.send('asta:hud-chat-history', latestHudChatHistory)
 }
 
 function sendTextToAsta (text) {
@@ -120,6 +128,11 @@ function handleHudMessage (message) {
 
   if (message.type === 'hud.audio') {
     sendHudAudio(message.audio || {})
+    return
+  }
+
+  if (message.type === 'hud.chat_history') {
+    sendHudChatHistory(Array.isArray(message.messages) ? message.messages : [])
     return
   }
 
