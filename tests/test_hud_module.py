@@ -89,3 +89,18 @@ def test_user_message_enters_thinking_without_overwriting_speech():
     assert hud.get_state().mode == "speaking"
 
     hud.shutdown()
+
+
+def test_hud_text_input_uses_normal_user_message_event():
+    kernel, hud = build_hud()
+
+    hud.on_transport_message({
+        "type": "hud.input",
+        "version": 1,
+        "input": {"text": "hello from HUD"},
+    })
+
+    assert hud.get_state().mode == "thinking"
+    assert hud.get_state().activity == "reasoning"
+
+    hud.shutdown()
