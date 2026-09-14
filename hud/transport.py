@@ -12,7 +12,7 @@ import os
 import socket
 import threading
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Callable
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -33,6 +33,11 @@ class HUDTransport:
         self._stop = threading.Event()
         self._last_state_message: dict[str, Any] | None = None
         self._last_audio_message: dict[str, Any] | None = None
+        self._command_handler: Callable[[dict[str, Any]], None] | None = None
+
+    def set_command_handler(self, handler: Callable[[dict[str, Any]], None] | None) -> None:
+        """Register a callback for messages sent from the Electron HUD."""
+        self._command_handler = handler
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -83,6 +88,18 @@ class HUDTransport:
             },
         }
         self._last_audio_message = message
+        self._broadcast(message)
+
+    def publish_chat(self, *, role: str, text: str) -> None:
+        """Publish a conversation message to the HUD."""
+        message = {
+            "type": "hud.chat",
+            "version": 1,
+            "chat": {
+                "role": str(role),
+                "text": str(text),
+            },
+        }
         self._broadcast(message)
 
     def stop(self) -> None:
@@ -144,6 +161,7 @@ class HUDTransport:
             ).start()
 
     def _client_loop(self, client: socket.socket) -> None:
+        buffer = b""
         try:
             while not self._stop.is_set():
                 try:
@@ -156,18 +174,36 @@ class HUDTransport:
                     break
                 if not data:
                     break
-                # V1 is one-way. We keep the read side alive so the protocol
-                # can grow to bidirectional commands later without changing
-                # the connection model.
-                for _line in data.splitlines():
-                    if not _line:
+
+                buffer += data
+                lines = buffer.split(b"\n")
+                buffer = lines.pop() or b""
+
+                for line in lines:
+                    if not line:
                         continue
                     try:
-                        json.loads(_line.decode("utf-8"))
+                        message = json.loads(line.decode("utf-8"))
                     except (UnicodeDecodeError, json.JSONDecodeError):
                         continue
+                    self._handle_incoming(message)
         finally:
             self._remove_client(client)
+
+    def _handle_incoming(self, message: dict[str, Any]) -> None:
+        if not isinstance(message, dict):
+            return
+        if message.get("type") != "hud.input":
+            return
+        if self._command_handler is None:
+            return
+        try:
+            self._command_handler(message)
+        except Exception as exc:
+            print(
+                f"[HUD] Input handler failed: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
 
     def _broadcast(self, message: dict[str, Any]) -> None:
         with self._clients_lock:
