@@ -1,5 +1,6 @@
 import ctypes
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -38,6 +39,12 @@ def find_python(root: Path) -> Path:
     return Path(sys.executable if not getattr(sys, "frozen", False) else "python")
 
 
+def find_npm() -> str | None:
+    if os.name == "nt":
+        return shutil.which("npm.cmd") or shutil.which("npm")
+    return shutil.which("npm")
+
+
 def show_error(message: str) -> None:
     if os.name == "nt":
         ctypes.windll.user32.MessageBoxW(0, message, "A.S.T.A.", 0x10)
@@ -74,6 +81,8 @@ def main() -> int:
 
     root = project_root()
     main_py = root / "main.py"
+    hud_dir = root / "hud"
+    package_json = hud_dir / "package.json"
     python_exe = find_python(root)
 
     if not main_py.exists():
@@ -89,14 +98,35 @@ def main() -> int:
         )
         return 1
 
+    npm = find_npm()
+    if not package_json.exists() or not npm:
+        release_single_instance_lock(mutex)
+        show_error("A.S.T.A. HUD dependencies were not found.\n\nInstall Node.js/npm and run npm install inside the hud directory.")
+        return 1
+
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    env["ASTA_PRELAUNCHED_HUD"] = "1"
 
+    hud_process = None
     python_process = None
 
     try:
-        # Keep process ownership simple: the launcher starts only Python.
-        # main.py remains the owner of the Electron HUD lifecycle.
+        # Launch Electron immediately. This removes the 10–15 second delay
+        # caused by importing the heavy Python/AI stack before the HUD can
+        # appear. The HUD shows its INITIALIZING state while Python starts.
+        hud_process = subprocess.Popen(
+            [npm, "start"],
+            cwd=str(hud_dir),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+            close_fds=True,
+            shell=False,
+        )
+
         python_process = subprocess.Popen(
             [str(python_exe), str(main_py)],
             cwd=str(root),
@@ -116,6 +146,14 @@ def main() -> int:
     finally:
         if python_process is not None and python_process.poll() is None:
             python_process.terminate()
+        if hud_process is not None and hud_process.poll() is None:
+            try:
+                hud_process.terminate()
+                hud_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                hud_process.kill()
+            except OSError:
+                pass
         release_single_instance_lock(mutex)
 
 
