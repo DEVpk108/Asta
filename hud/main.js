@@ -24,12 +24,23 @@ function sendHudState (state) {
   if (win && !win.isDestroyed()) win.webContents.send('asta:hud-state', state)
 }
 
-function handleHudMessage (message) {
-  if (!message || message.type !== 'hud.state') return
+function sendHudAudio (audio) {
+  if (win && !win.isDestroyed()) win.webContents.send('asta:hud-audio', audio)
+}
 
-  const state = message.state || {}
-  sendHudState(state)
-  console.log(`[HUD] A.S.T.A. state: ${state.mode || 'unknown'}`)
+function handleHudMessage (message) {
+  if (!message) return
+
+  if (message.type === 'hud.state') {
+    const state = message.state || {}
+    sendHudState(state)
+    console.log(`[HUD] A.S.T.A. state: ${state.mode || 'unknown'}`)
+    return
+  }
+
+  if (message.type === 'hud.audio') {
+    sendHudAudio(message.audio || {})
+  }
 }
 
 function scheduleHudReconnect () {
