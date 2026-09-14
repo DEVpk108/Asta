@@ -161,6 +161,7 @@
 
 .chat.chat-fullscreen .chat-recent {
   flex-basis: 280px;
+  padding-top: 330px;
 }
 
 .chat.chat-fullscreen .chat-show-history .chat-recent {
@@ -200,6 +201,10 @@
 
 @media (max-width: 850px) {
   .chat.chat-fullscreen .chat-recent { flex-basis: 220px; }
+}
+
+@media (max-width: 800px) {
+  .chat.chat-fullscreen .chat-recent { padding-top: 190px; }
 }
 
 @media (max-width: 650px) {
