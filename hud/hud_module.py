@@ -132,7 +132,14 @@ class HUDModule(Module):
         return self.state
 
     def on_user_message(self, text):
-        """Enter thinking state when a user command reaches the AI layer."""
+        """Enter thinking state as soon as the user command reaches the kernel.
+
+        HUD is registered before AIModule so this callback runs before model
+        inference. Synchronous EventBus dispatch therefore gives the renderer a
+        real THINKING transition instead of applying it after inference.
+        """
+        if self.state.mode in {"speaking", "approval", "executing"}:
+            return
         self.set_state(
             mode="thinking",
             intensity="high",
