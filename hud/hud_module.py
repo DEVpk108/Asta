@@ -36,6 +36,7 @@ class HUDModule(Module):
         self._conversation_active = False
 
     def initialize(self):
+        self.event_bus.subscribe("kernel_ready", self.on_kernel_ready)
         self.event_bus.subscribe("assistant_sentence", self.on_assistant_sentence)
         self.event_bus.subscribe("user_message", self.on_user_message)
         self.event_bus.subscribe("conversation_mode_set", self.on_conversation_mode_set)
@@ -56,6 +57,7 @@ class HUDModule(Module):
 
         try:
             self.transport.start()
+            self.transport.publish_lifecycle("starting")
             self._publish_state()
             self.transport.publish_audio_level(0.0)
         except OSError as exc:
@@ -124,6 +126,11 @@ class HUDModule(Module):
         self._publish_state()
         self.transport.publish_audio_level(0.0)
         return self.state
+
+    def on_kernel_ready(self):
+        """Start the visual HUD lifecycle only after the whole kernel is ready."""
+        self.transport.publish_lifecycle("ready")
+        self._publish_state()
 
     def on_conversation_mode_set(self, enabled):
         self._conversation_active = bool(enabled)
@@ -280,12 +287,13 @@ class HUDModule(Module):
             )
 
     def on_assistant_sentence(self, text):
-        """Render the same assistant sentences used by TTS in the chat."""
+        """Render the original assistant sentence in chat; TTS sanitizes separately."""
         if not isinstance(text, str) or not text.strip():
             return
         self.transport.publish_chat(role="assistant", text=text.strip())
 
     def shutdown(self):
+        self.event_bus.unsubscribe("kernel_ready", self.on_kernel_ready)
         self.event_bus.unsubscribe("assistant_sentence", self.on_assistant_sentence)
         self.event_bus.unsubscribe("user_message", self.on_user_message)
         self.event_bus.unsubscribe("conversation_mode_set", self.on_conversation_mode_set)
