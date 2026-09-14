@@ -1,16 +1,96 @@
 'use strict'
 
 const { app, BrowserWindow, ipcMain, Menu, shell } = require('electron')
+const net = require('net')
 const path = require('path')
 
 /* the HUD starts its ambient drone on boot, so allow audio without a gesture */
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
 const isMac = process.platform === 'darwin'
+const HUD_HOST = process.env.ASTA_HUD_HOST || '127.0.0.1'
+const HUD_PORT = Number(process.env.ASTA_HUD_PORT || 18765)
 let win = null
+let hudSocket = null
+let hudReconnectTimer = null
+let hudClosing = false
+let hudBuffer = ''
 
 function send (cmd) {
   if (win && !win.isDestroyed()) win.webContents.send('asta:command', cmd)
+}
+
+function mapHudMode (mode) {
+  const supported = new Set(['idle', 'listening', 'thinking', 'speaking'])
+  if (supported.has(mode)) return mode
+  if (mode === 'executing') return 'thinking'
+  if (mode === 'approval') return 'listening'
+  if (mode === 'error') return 'thinking'
+  return 'idle'
+}
+
+function handleHudMessage (message) {
+  if (!message || message.type !== 'hud.state') return
+  const state = message.state || {}
+  const mode = mapHudMode(state.mode)
+  send('state:' + mode)
+  console.log(
+    `[HUD] A.S.T.A. state: ${state.mode || 'unknown'} → renderer:${mode}`
+  )
+}
+
+function scheduleHudReconnect () {
+  if (hudClosing || hudReconnectTimer) return
+  hudReconnectTimer = setTimeout(() => {
+    hudReconnectTimer = null
+    connectToAstaHud()
+  }, 1000)
+}
+
+function disconnectHudSocket () {
+  const socket = hudSocket
+  hudSocket = null
+  if (!socket) return
+  try { socket.destroy() } catch (e) { /* ignore */ }
+}
+
+function connectToAstaHud () {
+  if (hudClosing || (hudSocket && !hudSocket.destroyed)) return
+
+  const socket = new net.Socket()
+  hudSocket = socket
+  hudBuffer = ''
+  socket.setEncoding('utf8')
+
+  socket.on('connect', () => {
+    console.log(`[HUD] Connected to A.S.T.A. at ${HUD_HOST}:${HUD_PORT}`)
+  })
+
+  socket.on('data', (chunk) => {
+    hudBuffer += chunk
+    const lines = hudBuffer.split('\n')
+    hudBuffer = lines.pop() || ''
+
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        handleHudMessage(JSON.parse(line))
+      } catch (e) {
+        console.warn('[HUD] Invalid transport message:', e.message)
+      }
+    }
+  })
+
+  socket.on('error', (error) => {
+    console.warn(`[HUD] A.S.T.A. transport unavailable: ${error.message}`)
+  })
+
+  socket.on('close', () => {
+    if (hudSocket === socket) hudSocket = null
+    if (!hudClosing) scheduleHudReconnect()
+  })
+
+  socket.connect(HUD_PORT, HUD_HOST)
 }
 
 function createWindow () {
@@ -94,9 +174,17 @@ if (!gotLock) {
   app.whenReady().then(() => {
     buildMenu()
     createWindow()
+    connectToAstaHud()
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
+  })
+
+  app.on('before-quit', () => {
+    hudClosing = true
+    if (hudReconnectTimer) clearTimeout(hudReconnectTimer)
+    hudReconnectTimer = null
+    disconnectHudSocket()
   })
 
   app.on('window-all-closed', () => {
