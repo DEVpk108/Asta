@@ -9,8 +9,16 @@
   var chatPanel = document.getElementById('chatPanel')
   var fullscreenButton = document.getElementById('chatFullscreen')
   var fullscreenLabel = fullscreenButton && fullscreenButton.querySelector('.chat-expand-label')
+  var historyButton = document.getElementById('chatHistory')
+  var recentPanel = document.getElementById('chatRecent')
+  var recentList = document.getElementById('chatRecentList')
+  var recentEmpty = document.getElementById('chatRecentEmpty')
+  var newChatButton = document.getElementById('chatNew')
 
-  if (!form || !input || !messages) return
+  if (!form || !input || !messages || !chatPanel) return
+
+  var currentSessionId = null
+  var recentVisible = false
 
   function removeEmpty () {
     if (empty && empty.parentNode) empty.parentNode.removeChild(empty)
@@ -20,15 +28,14 @@
   function progressiveReveal (body, text) {
     var chars = Array.from(String(text || ''))
     if (!chars.length) return
-
     body.textContent = ''
     var index = 0
     var chunk = chars.length > 600 ? 10 : chars.length > 300 ? 7 : 4
     var timer = window.setInterval(function () {
       var end = Math.min(chars.length, index + chunk)
       body.textContent += chars.slice(index, end).join('')
-      index = end
       messages.scrollTop = messages.scrollHeight
+      index = end
       if (index >= chars.length) window.clearInterval(timer)
     }, 9)
   }
@@ -36,7 +43,6 @@
   function appendMessage (role, text, animate) {
     var value = String(text || '').trim()
     if (!value) return
-
     removeEmpty()
 
     var item = document.createElement('div')
@@ -62,10 +68,13 @@
   }
 
   function loadHistory (history) {
-    var items = Array.isArray(history) ? history : []
+    var payload = Array.isArray(history) ? { messages: history, sessions: [] } : (history || {})
+    currentSessionId = payload.session_id || currentSessionId
+    renderRecents(Array.isArray(payload.sessions) ? payload.sessions : [])
+
+    var items = Array.isArray(payload.messages) ? payload.messages : []
     messages.innerHTML = ''
     empty = null
-
     for (var index = 0; index < items.length; index += 1) {
       var message = items[index]
       if (!message || !message.text) continue
@@ -76,16 +85,64 @@
       empty = document.createElement('div')
       empty.className = 'chat-empty'
       empty.id = 'chatEmpty'
-      empty.textContent = 'TEXT CHANNEL READY'
+      empty.textContent = 'NEW CONVERSATION'
       messages.appendChild(empty)
     }
-
     messages.scrollTop = messages.scrollHeight
+  }
+
+  function renderRecents (sessions) {
+    recentList.innerHTML = ''
+    recentEmpty.style.display = sessions.length ? 'none' : 'block'
+
+    for (var i = 0; i < sessions.length; i += 1) {
+      var session = sessions[i]
+      if (!session || !session.id) continue
+
+      var button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'chat-recent-item' + (session.id === currentSessionId ? ' active' : '')
+      button.dataset.sessionId = session.id
+      button.title = session.preview || session.title || 'Conversation'
+
+      var title = document.createElement('span')
+      title.className = 'chat-recent-title'
+      title.textContent = session.title || 'New conversation'
+
+      var meta = document.createElement('span')
+      meta.className = 'chat-recent-meta'
+      var count = Number(session.message_count || 0)
+      meta.textContent = count ? count + (count === 1 ? ' MESSAGE' : ' MESSAGES') : 'NEW'
+
+      button.appendChild(title)
+      button.appendChild(meta)
+
+      button.addEventListener('click', function () {
+        var id = this.dataset.sessionId
+        if (bridge && bridge.selectChatSession && id) {
+          bridge.selectChatSession(id)
+        }
+      })
+
+      recentList.appendChild(button)
+    }
+  }
+
+  function setRecents (enabled) {
+    recentVisible = !!enabled
+    chatPanel.classList.toggle('chat-show-history', recentVisible)
+    if (historyButton) {
+      historyButton.classList.toggle('active', recentVisible)
+      historyButton.setAttribute('aria-pressed', recentVisible ? 'true' : 'false')
+    }
+  }
+
+  function toggleRecents () {
+    setRecents(!recentVisible)
   }
 
   function setFullscreen (enabled) {
     if (!chatPanel) return
-
     chatPanel.classList.toggle('chat-fullscreen', enabled)
     document.body.classList.toggle('text-chat-fullscreen', enabled)
 
@@ -93,8 +150,9 @@
       fullscreenButton.title = enabled ? 'Exit fullscreen chat' : 'Expand conversation'
       fullscreenButton.setAttribute('aria-label', enabled ? 'Exit fullscreen chat' : 'Expand conversation')
     }
-
     if (fullscreenLabel) fullscreenLabel.textContent = enabled ? 'EXIT' : 'FULLSCREEN'
+
+    if (enabled) setRecents(true)
 
     window.requestAnimationFrame(function () {
       window.dispatchEvent(new Event('resize'))
@@ -104,8 +162,24 @@
   }
 
   function toggleFullscreen () {
-    var enabled = chatPanel && chatPanel.classList.contains('chat-fullscreen')
+    var enabled = chatPanel.classList.contains('chat-fullscreen')
     setFullscreen(!enabled)
+  }
+
+  if (historyButton) {
+    historyButton.addEventListener('click', function (event) {
+      event.preventDefault()
+      event.stopPropagation()
+      toggleRecents()
+    })
+  }
+
+  if (newChatButton) {
+    newChatButton.addEventListener('click', function (event) {
+      event.preventDefault()
+      event.stopPropagation()
+      if (bridge && bridge.startNewChat) bridge.startNewChat()
+    })
   }
 
   if (fullscreenButton) {
@@ -117,7 +191,7 @@
   }
 
   window.addEventListener('keydown', function (event) {
-    if (event.key === 'Escape' && chatPanel && chatPanel.classList.contains('chat-fullscreen')) {
+    if (event.key === 'Escape' && chatPanel.classList.contains('chat-fullscreen')) {
       event.preventDefault()
       setFullscreen(false)
       input.focus()
@@ -128,12 +202,10 @@
     event.preventDefault()
     var text = input.value.trim()
     if (!text) return
-
     if (!bridge || !bridge.sendTextMessage) {
       console.warn('[ASTA HUD] Text input bridge unavailable')
       return
     }
-
     input.value = ''
     input.focus()
     bridge.sendTextMessage(text)
@@ -159,4 +231,6 @@
       }
     })
   }
+
+  setRecents(false)
 })()
