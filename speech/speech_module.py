@@ -71,6 +71,39 @@ class SpeechModule(Module):
         self._speech_thread = None
         print("[Speech] Stopped", flush=True)
 
+    @staticmethod
+    def _remove_emoji(text):
+        """Remove emoji/presentation characters from text before TTS.
+
+        The original text still flows through the normal assistant_sentence
+        event for the HUD/chat. Only the speech synthesis copy is sanitized.
+        """
+        if not text:
+            return ""
+
+        ranges = (
+            (0x1F1E6, 0x1F1FF),  # regional indicator symbols / flags
+            (0x1F300, 0x1F5FF),  # misc symbols and pictographs
+            (0x1F600, 0x1F64F),  # emoticons
+            (0x1F680, 0x1F6FF),  # transport and map symbols
+            (0x1F700, 0x1F77F),
+            (0x1F780, 0x1F7FF),
+            (0x1F800, 0x1F8FF),
+            (0x1F900, 0x1F9FF),  # supplemental symbols and pictographs
+            (0x1FA00, 0x1FAFF),  # extended symbols and pictographs
+            (0x2600, 0x26FF),    # misc symbols
+            (0x2700, 0x27BF),    # dingbats
+        )
+
+        def is_emoji_char(ch):
+            code = ord(ch)
+            if ch in {"\ufe0e", "\ufe0f", "\u200d", "\u20e3"}:
+                return True
+            return any(start <= code <= end for start, end in ranges)
+
+        cleaned = "".join(ch for ch in str(text) if not is_emoji_char(ch))
+        return " ".join(cleaned.split())
+
     def on_assistant_sentence(self, text):
         if not text:
             return
@@ -85,6 +118,12 @@ class SpeechModule(Module):
             return
         else:
             queued_text = text
+
+        # Keep chat/display text untouched, but prevent emoji/presentation
+        # glyphs from being sent into Kokoro.
+        queued_text = self._remove_emoji(queued_text)
+        if not queued_text:
+            return
 
         with self._state_lock:
             self._queued_text += 1
