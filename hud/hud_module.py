@@ -11,29 +11,11 @@ _WAKEWORD_CHAT_SUPPRESSED = {"yes?"}
 
 
 class HUDModule(Module):
-
-    VALID_MODES = {
-        "idle",
-        "listening",
-        "thinking",
-        "speaking",
-        "executing",
-        "approval",
-        "error",
-    }
-
-    VALID_INTENSITIES = {
-        "low",
-        "medium",
-        "high",
-    }
+    VALID_MODES = {"idle", "listening", "thinking", "speaking", "executing", "approval", "error"}
+    VALID_INTENSITIES = {"low", "medium", "high"}
 
     def __init__(self, kernel):
-        super().__init__(
-            name="HUD",
-            event_bus=kernel.event_bus,
-            kernel=kernel,
-        )
+        super().__init__(name="HUD", event_bus=kernel.event_bus, kernel=kernel)
         self.state = HUDState()
         self.transport = HUDTransport()
         self.chat_history = ChatHistoryStore()
@@ -41,10 +23,6 @@ class HUDModule(Module):
         self._runtime_ready = False
 
     def initialize(self):
-        # The HUD may boot several seconds before the backend. Keep lifecycle
-        # state separate from visual assembly: Python owns readiness, and the
-        # voice listener is the final gate because this is the point at which
-        # A.S.T.A. can actually hear a wake word.
         self.event_bus.subscribe("voice_ready", self.on_voice_ready)
         self.event_bus.subscribe("assistant_sentence", self.on_assistant_sentence)
         self.event_bus.subscribe("user_message", self.on_user_message)
@@ -54,62 +32,43 @@ class HUDModule(Module):
         self.event_bus.subscribe("speech_interrupt", self.on_speech_interrupt)
         self.event_bus.subscribe("speech_audio_level", self.on_speech_audio_level)
         self.event_bus.subscribe("tool_request", self.on_tool_request)
-        self.event_bus.subscribe(
-            "tool_confirmation_required",
-            self.on_tool_confirmation_required,
-        )
-        self.event_bus.subscribe(
-            "tool_confirmation_response",
-            self.on_tool_confirmation_response,
-        )
+        self.event_bus.subscribe("tool_confirmation_required", self.on_tool_confirmation_required)
+        self.event_bus.subscribe("tool_confirmation_response", self.on_tool_confirmation_response)
         self.transport.set_command_handler(self.on_transport_message)
-
         try:
             self.chat_history.initialize()
             self.transport.start()
             self.transport.publish_lifecycle("starting")
-            self.transport.publish_chat_history(self.chat_history.recent())
+            self._publish_chat_context()
             self._publish_state()
             self.transport.publish_audio_level(0.0)
-            print(
-                f"[Chat] History ready: {self.chat_history.db_path}",
-                flush=True,
-            )
+            print(f"[Chat] History ready: {self.chat_history.db_path}", flush=True)
         except OSError as exc:
-            print(
-                f"[HUD] Transport unavailable: {type(exc).__name__}: {exc}",
-                flush=True,
-            )
+            print(f"[HUD] Transport unavailable: {type(exc).__name__}: {exc}", flush=True)
+
+    def _publish_chat_context(self):
+        self.transport.publish_chat_history(self.chat_history.recent(), session_id=self.chat_history.session_id)
+        self.transport.publish_chat_sessions(self.chat_history.sessions())
+
+    def _publish_chat_index(self):
+        self.transport.publish_chat_sessions(self.chat_history.sessions())
 
     def get_state(self):
-        """Return the current HUD presentation state."""
         return self.state
 
-    def set_state(
-        self,
-        *,
-        mode=None,
-        intensity=None,
-        status=None,
-        progress=_UNSET,
-        activity=_UNSET,
-    ):
-        """Update the HUD presentation state with validated values."""
+    def set_state(self, *, mode=None, intensity=None, status=None, progress=_UNSET, activity=_UNSET):
         if mode is not None:
             mode = str(mode).lower()
             if mode not in self.VALID_MODES:
                 raise ValueError(f"Unsupported HUD mode: {mode}")
             self.state.mode = mode
-
         if intensity is not None:
             intensity = str(intensity).lower()
             if intensity not in self.VALID_INTENSITIES:
                 raise ValueError(f"Unsupported HUD intensity: {intensity}")
             self.state.intensity = intensity
-
         if status is not None:
             self.state.status = str(status)
-
         if progress is not _UNSET:
             if progress is None:
                 self.state.progress = None
@@ -118,10 +77,8 @@ class HUDModule(Module):
                 if not 0.0 <= progress <= 1.0:
                     raise ValueError("HUD progress must be between 0.0 and 1.0")
                 self.state.progress = progress
-
         if activity is not _UNSET:
             self.state.activity = None if activity is None else str(activity)
-
         self._publish_state()
         return self.state
 
@@ -129,13 +86,9 @@ class HUDModule(Module):
         try:
             self.transport.publish_state(self.state)
         except OSError as exc:
-            print(
-                f"[HUD] State publish failed: {type(exc).__name__}: {exc}",
-                flush=True,
-            )
+            print(f"[HUD] State publish failed: {type(exc).__name__}: {exc}", flush=True)
 
     def reset_state(self):
-        """Reset the HUD to its initial idle state."""
         self.state = HUDState()
         self._conversation_active = False
         self._runtime_ready = False
@@ -144,47 +97,26 @@ class HUDModule(Module):
         return self.state
 
     def on_voice_ready(self):
-        """Mark A.S.T.A. ready only when the voice listener is actually running."""
         if self._runtime_ready:
             return
-
         self._runtime_ready = True
         print("[HUD] Voice listener ready; publishing runtime ready.", flush=True)
-        self.set_state(
-            mode="idle",
-            intensity="low",
-            status="READY",
-            progress=None,
-            activity="runtime",
-        )
+        self.set_state(mode="idle", intensity="low", status="READY", progress=None, activity="runtime")
         self.transport.publish_lifecycle("ready")
 
     def on_conversation_mode_set(self, enabled):
         self._conversation_active = bool(enabled)
-
         if self._conversation_active:
-            self.set_state(
-                mode="listening",
-                intensity="medium",
-                status="LISTENING",
-                progress=None,
-                activity="conversation",
-            )
+            self.set_state(mode="listening", intensity="medium", status="LISTENING", progress=None, activity="conversation")
         else:
-            self.set_state(
-                mode="idle",
-                intensity="low",
-                status="IDLE",
-                progress=None,
-                activity=None,
-            )
+            self.set_state(mode="idle", intensity="low", status="IDLE", progress=None, activity=None)
 
     def on_transport_message(self, message):
-        """Translate HUD-originated commands into normal Kernel operations."""
         if not isinstance(message, dict):
             return
+        message_type = message.get("type")
 
-        if message.get("type") == "hud.shutdown":
+        if message_type == "hud.shutdown":
             print("[HUD] Shutdown requested by Electron HUD.", flush=True)
             try:
                 self.transport.publish_lifecycle("stopping")
@@ -193,84 +125,61 @@ class HUDModule(Module):
             self.kernel.shutdown()
             return
 
+        if message_type == "hud.chat_select":
+            session_id = str(message.get("session_id") or "").strip()
+            if self.chat_history.switch_session(session_id):
+                print(f"[Chat] Selected session {session_id}", flush=True)
+                self.transport.publish_chat_history(self.chat_history.recent(), session_id=self.chat_history.session_id)
+                self._publish_chat_index()
+            return
+
+        if message_type == "hud.chat_new":
+            session_id = self.chat_history.new_session()
+            print(f"[Chat] New session {session_id}", flush=True)
+            self.transport.publish_chat_history([], session_id=session_id)
+            self._publish_chat_index()
+            return
+
         if not self._runtime_ready:
             print("[HUD] Ignoring text input while A.S.T.A. is still booting.", flush=True)
             return
-
+        if message_type != "hud.input":
+            return
         payload = message.get("input") or {}
         text = payload.get("text") if isinstance(payload, dict) else None
         if not isinstance(text, str):
             return
-
         text = text.strip()
         if not text:
             return
-
         self.event_bus.emit("user_message", text=text)
 
     def on_user_message(self, text):
-        """Enter thinking state and render every input source in the HUD chat."""
         if isinstance(text, str) and text.strip():
             value = text.strip()
             self.chat_history.append("user", value)
             self.transport.publish_chat(role="user", text=value)
-
+            self._publish_chat_index()
         if self.state.mode in {"speaking", "approval", "executing"}:
             return
-        self.set_state(
-            mode="thinking",
-            intensity="high",
-            status="THINKING",
-            progress=None,
-            activity="reasoning",
-        )
+        self.set_state(mode="thinking", intensity="high", status="THINKING", progress=None, activity="reasoning")
 
     def on_speech_started(self, *args, **kwargs):
-        self.set_state(
-            mode="speaking",
-            intensity="high",
-            status="SPEAKING",
-            progress=None,
-            activity="speech",
-        )
+        self.set_state(mode="speaking", intensity="high", status="SPEAKING", progress=None, activity="speech")
         self.transport.publish_audio_level(0.0)
 
     def on_speech_finished(self, *args, **kwargs):
         if self._conversation_active:
-            self.set_state(
-                mode="listening",
-                intensity="medium",
-                status="LISTENING",
-                progress=None,
-                activity="command",
-            )
+            self.set_state(mode="listening", intensity="medium", status="LISTENING", progress=None, activity="command")
         else:
-            self.set_state(
-                mode="idle",
-                intensity="low",
-                status="IDLE",
-                progress=None,
-                activity=None,
-            )
+            self.set_state(mode="idle", intensity="low", status="IDLE", progress=None, activity=None)
         self.transport.publish_audio_level(0.0)
 
     def on_speech_interrupt(self, *args, **kwargs):
         if self._conversation_active:
-            self.set_state(
-                mode="listening",
-                intensity="medium",
-                status="LISTENING",
-                progress=None,
-                activity="interrupt",
-            )
+            self.set_state(mode="listening", intensity="medium", status="LISTENING", progress=None, activity="interrupt")
         else:
-            self.set_state(
-                mode="idle",
-                intensity="low",
-                status="IDLE",
-                progress=None,
-                activity=None,
-            )
+            self.set_state(mode="idle", intensity="low", status="IDLE", progress=None, activity=None)
         self.transport.publish_audio_level(0.0)
 
     def on_speech_audio_level(self, level=0.0, *args, **kwargs):
@@ -281,87 +190,45 @@ class HUDModule(Module):
         self.transport.publish_audio_level(max(0.0, min(1.0, value)))
 
     def on_tool_request(self, request):
-        tool_name = getattr(request, "tool", None)
-        self.set_state(
-            mode="executing",
-            intensity="high",
-            status="EXECUTING",
-            progress=None,
-            activity=tool_name or "tool",
-        )
+        self.set_state(mode="executing", intensity="high", status="EXECUTING", progress=None, activity=getattr(request, "tool", None) or "tool")
 
     def on_tool_confirmation_required(self, request=None, reason=None):
-        activity = "approval"
-        if reason:
-            activity = str(reason)
-        self.set_state(
-            mode="approval",
-            intensity="high",
-            status="APPROVAL",
-            progress=None,
-            activity=activity,
-        )
+        self.set_state(mode="approval", intensity="high", status="APPROVAL", progress=None, activity=str(reason) if reason else "approval")
 
     def on_tool_confirmation_response(self, request_id=None, approved=False):
         if approved:
-            self.set_state(
-                mode="executing",
-                intensity="high",
-                status="EXECUTING",
-                progress=None,
-                activity="tool",
-            )
+            self.set_state(mode="executing", intensity="high", status="EXECUTING", progress=None, activity="tool")
         elif self._conversation_active:
-            self.set_state(
-                mode="listening",
-                intensity="medium",
-                status="LISTENING",
-                progress=None,
-                activity="approval_rejected",
-            )
+            self.set_state(mode="listening", intensity="medium", status="LISTENING", progress=None, activity="approval_rejected")
         else:
-            self.set_state(
-                mode="idle",
-                intensity="low",
-                status="IDLE",
-                progress=None,
-                activity=None,
-            )
+            self.set_state(mode="idle", intensity="low", status="IDLE", progress=None, activity=None)
 
     def on_assistant_sentence(self, text):
-        """Render assistant sentences, excluding the voice wake-word acknowledgment."""
         if not isinstance(text, str) or not text.strip():
             return
-
         value = text.strip()
         if value.lower() in _WAKEWORD_CHAT_SUPPRESSED:
-            print(
-                f"[HUD] Suppressed wake-word acknowledgment from chat: {value!r}",
-                flush=True,
-            )
+            print(f"[HUD] Suppressed wake-word acknowledgment from chat: {value!r}", flush=True)
             return
-
         self.chat_history.append("assistant", value)
         self.transport.publish_chat(role="assistant", text=value)
+        self._publish_chat_index()
 
     def shutdown(self):
-        self.event_bus.unsubscribe("voice_ready", self.on_voice_ready)
-        self.event_bus.unsubscribe("assistant_sentence", self.on_assistant_sentence)
-        self.event_bus.unsubscribe("user_message", self.on_user_message)
-        self.event_bus.unsubscribe("conversation_mode_set", self.on_conversation_mode_set)
-        self.event_bus.unsubscribe("speech_started", self.on_speech_started)
-        self.event_bus.unsubscribe("speech_finished", self.on_speech_finished)
-        self.event_bus.unsubscribe("speech_interrupt", self.on_speech_interrupt)
-        self.event_bus.unsubscribe("speech_audio_level", self.on_speech_audio_level)
-        self.event_bus.unsubscribe("tool_request", self.on_tool_request)
-        self.event_bus.unsubscribe(
-            "tool_confirmation_required",
-            self.on_tool_confirmation_required,
-        )
-        self.event_bus.unsubscribe(
-            "tool_confirmation_response",
-            self.on_tool_confirmation_response,
-        )
+        for event_name, callback in (
+            ("voice_ready", self.on_voice_ready),
+            ("assistant_sentence", self.on_assistant_sentence),
+            ("user_message", self.on_user_message),
+            ("conversation_mode_set", self.on_conversation_mode_set),
+            ("speech_started", self.on_speech_started),
+            ("speech_finished", self.on_speech_finished),
+            ("speech_interrupt", self.on_speech_interrupt),
+            ("speech_audio_level", self.on_speech_audio_level),
+            ("tool_request", self.on_tool_request),
+            ("tool_confirmation_required", self.on_tool_confirmation_required),
+            ("tool_confirmation_response", self.on_tool_confirmation_response),
+        ):
+            self.event_bus.unsubscribe(event_name, callback)
         self.transport.set_command_handler(None)
         try:
             self.transport.publish_audio_level(0.0)
