@@ -7,7 +7,10 @@ from .transport import HUDTransport
 
 
 _UNSET = object()
-_WAKEWORD_CHAT_SUPPRESSED = {"yes?"}
+_WAKEWORD_CHAT_SUPPRESSED = {
+    "yes?",
+    "hello! how can i help?",
+}
 
 
 class HUDModule(Module):
