@@ -15,17 +15,36 @@ let hudSocket = null
 let hudReconnectTimer = null
 let hudClosing = false
 let hudBuffer = ''
+let rendererReady = false
+let latestHudState = null
+let latestHudAudio = null
 
 function send (cmd) {
   if (win && !win.isDestroyed()) win.webContents.send('asta:command', cmd)
 }
 
 function sendHudState (state) {
-  if (win && !win.isDestroyed()) win.webContents.send('asta:hud-state', state)
+  latestHudState = state
+  if (!rendererReady || !win || win.isDestroyed()) return
+  win.webContents.send('asta:hud-state', state)
 }
 
 function sendHudAudio (audio) {
-  if (win && !win.isDestroyed()) win.webContents.send('asta:hud-audio', audio)
+  latestHudAudio = audio
+  if (!rendererReady || !win || win.isDestroyed()) return
+  win.webContents.send('asta:hud-audio', audio)
+}
+
+function flushRendererTelemetry () {
+  if (!rendererReady || !win || win.isDestroyed()) return
+
+  if (latestHudState) {
+    win.webContents.send('asta:hud-state', latestHudState)
+  }
+
+  if (latestHudAudio) {
+    win.webContents.send('asta:hud-audio', latestHudAudio)
+  }
 }
 
 function handleHudMessage (message) {
@@ -117,9 +136,20 @@ function createWindow () {
     }
   })
 
+  rendererReady = false
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
+
+  win.webContents.once('did-finish-load', () => {
+    rendererReady = true
+    console.log('[HUD] Renderer ready; flushing latest runtime telemetry')
+    flushRendererTelemetry()
+  })
+
   win.once('ready-to-show', () => win.show())
-  win.on('closed', () => { win = null })
+  win.on('closed', () => {
+    rendererReady = false
+    win = null
+  })
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
