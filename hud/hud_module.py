@@ -141,8 +141,14 @@ class HUDModule(Module):
 
         self._runtime_ready = True
         print("[HUD] Voice listener ready; publishing runtime ready.", flush=True)
+        self.set_state(
+            mode="idle",
+            intensity="low",
+            status="READY",
+            progress=None,
+            activity="runtime",
+        )
         self.transport.publish_lifecycle("ready")
-        self._publish_state()
 
     def on_conversation_mode_set(self, enabled):
         self._conversation_active = bool(enabled)
@@ -165,12 +171,21 @@ class HUDModule(Module):
             )
 
     def on_transport_message(self, message):
-        """Translate HUD-originated input into the normal Kernel event."""
-        if not self._runtime_ready:
-            print("[HUD] Ignoring text input while A.S.T.A. is still booting.", flush=True)
+        """Translate HUD-originated commands into normal Kernel operations."""
+        if not isinstance(message, dict):
             return
 
-        if not isinstance(message, dict):
+        if message.get("type") == "hud.shutdown":
+            print("[HUD] Shutdown requested by Electron HUD.", flush=True)
+            try:
+                self.transport.publish_lifecycle("stopping")
+            except OSError:
+                pass
+            self.kernel.shutdown()
+            return
+
+        if not self._runtime_ready:
+            print("[HUD] Ignoring text input while A.S.T.A. is still booting.", flush=True)
             return
 
         payload = message.get("input") or {}
