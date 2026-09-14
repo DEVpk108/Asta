@@ -117,29 +117,38 @@ class ChatHistoryStore:
     def recent(self) -> list[dict[str, str]]:
         return self.messages_for_session(self.session_id)
 
-    def messages_for_session(self, session_id: str, *, limit: int | None = None) -> list[dict[str, str]]:
-        value = str(session_id or "").strip()
-        if not value or self._connection is None:
+    def latest_active_context(self, *, limit: int = 12) -> list[dict[str, str]]:
+        """Return the most recently active session's latest messages.
+
+        This is intentionally lightweight: it gives conversational follow-up
+        handling access to the current chat session without turning chat history
+        into the future long-term memory system.
+        """
+        if self._connection is None:
             return []
 
-        max_items = self.history_limit if limit is None else max(1, int(limit))
+        max_items = max(1, int(limit))
         with self._lock:
-            rows = self._connection.execute(
+            row = self._connection.execute(
                 """
-                SELECT role, text, created_at
-                FROM messages
-                WHERE session_id = ?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (value, max_items),
-            ).fetchall()
+                SELECT s.id
+                FROM sessions s
+                WHERE EXISTS (
+                    SELECT 1 FROM messages m WHERE m.session_id = s.id
+                )
+                ORDER BY (
+                    SELECT MAX(m.created_at)
+                    FROM messages m
+                    WHERE m.session_id = s.id
+                ) DESC, s.started_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
 
-        rows.reverse()
-        return [
-            {"role": role, "text": text, "created_at": created_at}
-            for role, text, created_at in rows
-        ]
+        if row is None:
+            return []
+
+        return self.messages_for_session(row[0], limit=max_items)
 
     def sessions(self, *, limit: int = 50) -> list[dict[str, object]]:
         if self._connection is None:
