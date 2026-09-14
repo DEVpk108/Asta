@@ -35,6 +35,7 @@ class HUDTransport:
         self._last_audio_message: dict[str, Any] | None = None
         self._last_lifecycle_message: dict[str, Any] | None = None
         self._last_chat_history_message: dict[str, Any] | None = None
+        self._last_chat_sessions_message: dict[str, Any] | None = None
         self._command_handler: Callable[[dict[str, Any]], None] | None = None
 
     def set_command_handler(self, handler: Callable[[dict[str, Any]], None] | None) -> None:
@@ -113,6 +114,7 @@ class HUDTransport:
             history = {
                 "type": "hud.chat_history",
                 "version": 1,
+                "session_id": None,
                 "messages": [],
             }
             self._last_chat_history_message = history
@@ -123,7 +125,12 @@ class HUDTransport:
 
         self._broadcast(message)
 
-    def publish_chat_history(self, messages: list[dict[str, Any]]) -> None:
+    def publish_chat_history(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        session_id: str | None = None,
+    ) -> None:
         """Cache and publish the persisted history used when the HUD connects."""
         safe_messages = []
         for message in messages:
@@ -137,9 +144,19 @@ class HUDTransport:
         self._last_chat_history_message = {
             "type": "hud.chat_history",
             "version": 1,
+            "session_id": session_id,
             "messages": safe_messages[-200:],
         }
         self._broadcast(self._last_chat_history_message)
+
+    def publish_chat_sessions(self, sessions: list[dict[str, Any]]) -> None:
+        """Publish the recent conversation/session index for the HUD sidebar."""
+        self._last_chat_sessions_message = {
+            "type": "hud.chat_sessions",
+            "version": 1,
+            "sessions": [dict(session) for session in sessions if isinstance(session, dict)],
+        }
+        self._broadcast(self._last_chat_sessions_message)
 
     def publish_lifecycle(self, status: str) -> None:
         """Publish a runtime lifecycle marker such as starting or ready."""
@@ -207,6 +224,8 @@ class HUDTransport:
                 self._send_to_client(client, self._last_lifecycle_message)
             if self._last_chat_history_message is not None:
                 self._send_to_client(client, self._last_chat_history_message)
+            if self._last_chat_sessions_message is not None:
+                self._send_to_client(client, self._last_chat_sessions_message)
 
             threading.Thread(
                 target=self._client_loop,
@@ -224,8 +243,6 @@ class HUDTransport:
                 except socket.timeout:
                     continue
                 except OSError:
-                    # Expected during shutdown: HUDTransport.stop() closes
-                    # connected sockets to unblock recv().
                     break
                 if not data:
                     break
@@ -246,11 +263,7 @@ class HUDTransport:
             self._remove_client(client)
 
     def _handle_incoming(self, message: dict[str, Any]) -> None:
-        if not isinstance(message, dict):
-            return
-        if message.get("type") != "hud.input":
-            return
-        if self._command_handler is None:
+        if not isinstance(message, dict) or self._command_handler is None:
             return
         try:
             self._command_handler(message)
