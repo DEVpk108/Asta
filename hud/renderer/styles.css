@@ -229,6 +229,7 @@ canvas {
 }
 
 .chat-message {
+  position: relative;
   max-width: 88%;
   padding: 8px 10px;
   border: 1px solid rgba(0, 229, 255, 0.11);
@@ -237,6 +238,35 @@ canvas {
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  will-change: transform, opacity, filter;
+  animation: chat-message-in 280ms cubic-bezier(0.22, 0.8, 0.24, 1) both;
+}
+
+.chat-message.user {
+  align-self: flex-end;
+  background: rgba(0, 229, 255, 0.08);
+  border-color: rgba(0, 229, 255, 0.22);
+  transform-origin: bottom right;
+}
+
+.chat-message.assistant {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.025);
+  transform-origin: bottom left;
+  animation-duration: 360ms;
+}
+
+.chat-message.assistant::after {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  background: var(--cyan);
+  box-shadow: 0 0 12px rgba(0, 229, 255, 0.7);
+  opacity: 0;
+  animation: chat-message-scan 420ms ease-out 40ms both;
 }
 
 .chat-message .chat-role {
@@ -246,15 +276,58 @@ canvas {
   color: rgba(190, 220, 235, 0.42);
 }
 
-.chat-message.user {
-  align-self: flex-end;
-  background: rgba(0, 229, 255, 0.08);
-  border-color: rgba(0, 229, 255, 0.22);
+@keyframes chat-message-in {
+  0% {
+    opacity: 0;
+    transform: translate3d(14px, 8px, 0) scale(0.96);
+    filter: blur(4px);
+  }
+  60% {
+    opacity: 1;
+    transform: translate3d(-2px, 0, 0) scale(1.01);
+    filter: blur(0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
 }
 
 .chat-message.assistant {
-  align-self: flex-start;
-  background: rgba(255, 255, 255, 0.025);
+  animation-name: chat-assistant-in;
+}
+
+@keyframes chat-assistant-in {
+  0% {
+    opacity: 0;
+    transform: translate3d(-18px, 7px, 0) scale(0.96);
+    filter: blur(4px);
+  }
+  55% {
+    opacity: 1;
+    transform: translate3d(2px, 0, 0) scale(1.015);
+    filter: blur(0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes chat-message-scan {
+  0% { opacity: 0; transform: translateY(-18%); }
+  15% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(118%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-message,
+  .chat-message.assistant,
+  .chat-message.assistant::after {
+    animation: none;
+  }
 }
 
 .chat-input {
