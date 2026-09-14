@@ -13,6 +13,7 @@ let win = null
 let hudSocket = null
 let hudReconnectTimer = null
 let hudClosing = false
+let shutdownSent = false
 let hudBuffer = ''
 let rendererReady = false
 let runtimeReady = false
@@ -80,6 +81,24 @@ function sendTextToAsta (text) {
     return true
   } catch (error) {
     console.warn('[HUD] Text send failed:', error.message)
+    return false
+  }
+}
+
+function sendShutdownToAsta () {
+  if (shutdownSent) return false
+  shutdownSent = true
+
+  if (!hudSocket || hudSocket.destroyed || !hudSocket.writable) {
+    console.warn('[HUD] Backend shutdown requested, but A.S.T.A. transport is unavailable')
+    return false
+  }
+
+  try {
+    hudSocket.write(JSON.stringify({ type: 'hud.shutdown', version: 1 }) + '\n')
+    return true
+  } catch (error) {
+    console.warn('[HUD] Backend shutdown request failed:', error.message)
     return false
   }
 }
@@ -192,11 +211,10 @@ function createWindow () {
     flushRendererTelemetry()
   })
 
-  // Show the real HUD as soon as Electron has rendered it. During startup the
-  // status bar/renderer remains in INITIALIZING state until Kernel READY.
   win.once('ready-to-show', () => {
     if (!win.isDestroyed()) win.show()
   })
+
   win.on('closed', () => {
     rendererReady = false
     win = null
@@ -264,11 +282,21 @@ if (!gotLock) {
     })
   })
 
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
+    if (hudClosing) return
+
     hudClosing = true
+    event.preventDefault()
+
     if (hudReconnectTimer) clearTimeout(hudReconnectTimer)
     hudReconnectTimer = null
-    disconnectHudSocket()
+
+    sendShutdownToAsta()
+
+    setTimeout(() => {
+      disconnectHudSocket()
+      app.exit(0)
+    }, 150)
   })
 
   app.on('window-all-closed', () => {
