@@ -47,8 +47,13 @@ class HUDModule(Module):
             print(f"[HUD] Transport unavailable: {type(exc).__name__}: {exc}", flush=True)
 
     def _publish_chat_context(self):
-        self.transport.publish_chat_history(self.chat_history.recent(), session_id=self.chat_history.session_id)
-        self.transport.publish_chat_sessions(self.chat_history.sessions())
+        sessions = self.chat_history.sessions()
+        self.transport.publish_chat_history(
+            self.chat_history.recent(),
+            session_id=self.chat_history.session_id,
+            sessions=sessions,
+        )
+        self.transport.publish_chat_sessions(sessions)
 
     def _publish_chat_index(self):
         self.transport.publish_chat_sessions(self.chat_history.sessions())
@@ -115,7 +120,6 @@ class HUDModule(Module):
         if not isinstance(message, dict):
             return
         message_type = message.get("type")
-
         if message_type == "hud.shutdown":
             print("[HUD] Shutdown requested by Electron HUD.", flush=True)
             try:
@@ -129,15 +133,21 @@ class HUDModule(Module):
             session_id = str(message.get("session_id") or "").strip()
             if self.chat_history.switch_session(session_id):
                 print(f"[Chat] Selected session {session_id}", flush=True)
-                self.transport.publish_chat_history(self.chat_history.recent(), session_id=self.chat_history.session_id)
-                self._publish_chat_index()
+                sessions = self.chat_history.sessions()
+                self.transport.publish_chat_history(
+                    self.chat_history.recent(),
+                    session_id=self.chat_history.session_id,
+                    sessions=sessions,
+                )
+                self.transport.publish_chat_sessions(sessions)
             return
 
         if message_type == "hud.chat_new":
             session_id = self.chat_history.new_session()
             print(f"[Chat] New session {session_id}", flush=True)
-            self.transport.publish_chat_history([], session_id=session_id)
-            self._publish_chat_index()
+            sessions = self.chat_history.sessions()
+            self.transport.publish_chat_history([], session_id=session_id, sessions=sessions)
+            self.transport.publish_chat_sessions(sessions)
             return
 
         if not self._runtime_ready:
