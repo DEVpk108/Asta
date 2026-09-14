@@ -4,6 +4,7 @@
   width: auto;
   height: auto;
   min-width: 0;
+  height: auto;
   min-height: 0;
   padding: 0;
   border-width: 0;
@@ -42,21 +43,44 @@
   backdrop-filter: blur(6px);
 }
 
-/* Keep the conversation in a readable column while reserving the left side for the hologram. */
 .chat.chat-fullscreen .chat-messages {
   align-items: stretch;
   width: min(1000px, calc(100% - 410px));
   margin-left: 370px;
   margin-right: auto;
-  padding: 34px 0 34px 28px;
+  padding: 34px 18px 34px 28px;
   gap: 22px;
   background: transparent;
   overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+.chat.chat-fullscreen .chat-messages::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chat.chat-fullscreen .chat-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat.chat-fullscreen .chat-messages::-webkit-scrollbar-thumb {
+  background: rgba(0, 229, 255, 0.18);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+.chat.chat-fullscreen .chat-messages::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 229, 255, 0.34);
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
 .chat.chat-fullscreen .chat-message {
   width: fit-content;
-  max-width: 78%;
+  max-width: calc(100% - 18px);
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -69,17 +93,15 @@
   animation: fullscreen-message-fade 220ms ease-out forwards;
 }
 
-/* A.S.T.A. stays on the left side of the reading column. */
 .chat.chat-fullscreen .chat-message.assistant {
   align-self: flex-start;
   padding-right: 24px;
 }
 
-/* User messages sit clearly on the right, like a modern AI chat composer. */
 .chat.chat-fullscreen .chat-message.user {
   align-self: flex-end;
   padding-left: 80px;
-  padding-right: 0;
+  padding-right: 6px;
   text-align: right;
 }
 
@@ -107,12 +129,11 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* Wide ChatGPT-style composer, aligned with the conversation column. */
 .chat.chat-fullscreen .chat-input {
   width: min(1000px, calc(100% - 410px));
   margin-left: 370px;
   margin-right: auto;
-  padding: 14px 0 20px 28px;
+  padding: 14px 18px 20px 28px;
   gap: 10px;
   background: linear-gradient(180deg, rgba(0, 0, 0, 0), rgba(0, 8, 12, 0.44));
 }
@@ -198,7 +219,6 @@
 .chat.chat-fullscreen .chat-expand-label { display: inline; }
 .chat-expand-label { display: none; }
 
-/* Compact A.S.T.A. hologram stays visible in the upper-left while fullscreen chat is active. */
 body.text-chat-fullscreen .stage canvas,
 body.text-chat-fullscreen .stage #fallback {
   width: 330px;
@@ -237,11 +257,13 @@ body.text-chat-fullscreen .stage .shortcuts {
     width: calc(100% - 300px);
     margin-left: 270px;
     padding-left: 24px;
+    padding-right: 18px;
   }
   .chat.chat-fullscreen .chat-input {
     width: calc(100% - 300px);
     margin-left: 270px;
     padding-left: 24px;
+    padding-right: 18px;
   }
 }
 
@@ -258,6 +280,7 @@ body.text-chat-fullscreen .stage .shortcuts {
   }
   .chat.chat-fullscreen .chat-message.user {
     padding-left: 40px;
+    padding-right: 4px;
   }
   body.text-chat-fullscreen .stage canvas,
   body.text-chat-fullscreen .stage #fallback { width: 190px; height: 190px; }
