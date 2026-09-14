@@ -40,9 +40,11 @@ class HUDModule(Module):
             self.on_assistant_response,
         )
         self.event_bus.subscribe("user_message", self.on_user_message)
+        self.event_bus.subscribe("conversation_mode_set", self.on_conversation_mode_set)
         self.event_bus.subscribe("speech_started", self.on_speech_started)
         self.event_bus.subscribe("speech_finished", self.on_speech_finished)
         self.event_bus.subscribe("speech_interrupt", self.on_speech_interrupt)
+        self.event_bus.subscribe("speech_audio_level", self.on_speech_audio_level)
         self.event_bus.subscribe("tool_request", self.on_tool_request)
         self.event_bus.subscribe(
             "tool_confirmation_required",
@@ -56,6 +58,7 @@ class HUDModule(Module):
         try:
             self.transport.start()
             self._publish_state()
+            self.transport.publish_audio_level(0.0)
         except OSError as exc:
             # The HUD is optional infrastructure. A transport bind failure
             # must not prevent the rest of A.S.T.A. from starting.
@@ -125,22 +128,35 @@ class HUDModule(Module):
         """Reset the HUD to its initial idle state."""
         self.state = HUDState()
         self._publish_state()
+        self.transport.publish_audio_level(0.0)
         return self.state
 
     def on_user_message(self, text):
-        """Enter thinking state after a user command reaches the AI layer.
+        """Enter thinking state when a user command reaches the AI layer."""
+        self.set_state(
+            mode="thinking",
+            intensity="high",
+            status="THINKING",
+            progress=None,
+            activity="reasoning",
+        )
 
-        The EventBus is synchronous, so the AI and speech modules may already
-        have advanced the HUD to a newer state by the time this callback runs.
-        Do not overwrite speaking/approval states that are already active.
-        """
-        if self.state.mode not in {"speaking", "approval"}:
+    def on_conversation_mode_set(self, enabled):
+        if enabled:
             self.set_state(
-                mode="thinking",
-                intensity="high",
-                status="THINKING",
+                mode="listening",
+                intensity="medium",
+                status="LISTENING",
                 progress=None,
-                activity="reasoning",
+                activity="conversation",
+            )
+        else:
+            self.set_state(
+                mode="idle",
+                intensity="low",
+                status="IDLE",
+                progress=None,
+                activity=None,
             )
 
     def on_speech_started(self, *args, **kwargs):
@@ -151,15 +167,19 @@ class HUDModule(Module):
             progress=None,
             activity="speech",
         )
+        self.transport.publish_audio_level(0.0)
 
     def on_speech_finished(self, *args, **kwargs):
+        # A.S.T.A. is voice-first, so after an utterance completes the natural
+        # next presentation state is waiting for the user's next command.
         self.set_state(
-            mode="idle",
-            intensity="low",
-            status="IDLE",
+            mode="listening",
+            intensity="medium",
+            status="LISTENING",
             progress=None,
-            activity=None,
+            activity="command",
         )
+        self.transport.publish_audio_level(0.0)
 
     def on_speech_interrupt(self, *args, **kwargs):
         self.set_state(
@@ -169,6 +189,14 @@ class HUDModule(Module):
             progress=None,
             activity="interrupt",
         )
+        self.transport.publish_audio_level(0.0)
+
+    def on_speech_audio_level(self, level=0.0, *args, **kwargs):
+        try:
+            value = float(level)
+        except (TypeError, ValueError):
+            value = 0.0
+        self.transport.publish_audio_level(max(0.0, min(1.0, value)))
 
     def on_tool_request(self, request):
         tool_name = getattr(request, "tool", None)
@@ -215,8 +243,6 @@ class HUDModule(Module):
             f"[HUD] {text}",
             flush=True,
         )
-        # Let runtime patches and tools wait until the HUD has handed the
-        # completed response to the terminal before taking a desktop screenshot.
         self.event_bus.emit("hud_rendered", text=text)
 
     def shutdown(self):
@@ -225,9 +251,11 @@ class HUDModule(Module):
             self.on_assistant_response,
         )
         self.event_bus.unsubscribe("user_message", self.on_user_message)
+        self.event_bus.unsubscribe("conversation_mode_set", self.on_conversation_mode_set)
         self.event_bus.unsubscribe("speech_started", self.on_speech_started)
         self.event_bus.unsubscribe("speech_finished", self.on_speech_finished)
         self.event_bus.unsubscribe("speech_interrupt", self.on_speech_interrupt)
+        self.event_bus.unsubscribe("speech_audio_level", self.on_speech_audio_level)
         self.event_bus.unsubscribe("tool_request", self.on_tool_request)
         self.event_bus.unsubscribe(
             "tool_confirmation_required",
@@ -237,4 +265,8 @@ class HUDModule(Module):
             "tool_confirmation_response",
             self.on_tool_confirmation_response,
         )
+        try:
+            self.transport.publish_audio_level(0.0)
+        except OSError:
+            pass
         self.transport.stop()
