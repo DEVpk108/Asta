@@ -37,6 +37,20 @@
 
       <div class="waveform" id="waveform"></div>
 
+      <section class="chat" aria-label="A.S.T.A. conversation">
+        <div class="chat-header">
+          <span class="chat-dot"></span>
+          <span>CONVERSATION</span>
+        </div>
+        <div class="chat-messages" id="chatMessages" aria-live="polite">
+          <div class="chat-empty" id="chatEmpty">TEXT CHANNEL READY</div>
+        </div>
+        <form class="chat-input" id="chatForm" autocomplete="off">
+          <input id="chatInput" type="text" placeholder="Type a message..." aria-label="Message A.S.T.A." />
+          <button type="submit" id="chatSend">SEND</button>
+        </form>
+      </section>
+
       <div class="dock">
         <button data-state="idle" class="active">IDLE</button>
         <button data-state="listening">LISTEN</button>
