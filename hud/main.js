@@ -30,12 +30,8 @@ function sendHudLifecycle (lifecycle) {
   latestHudLifecycle = lifecycle
   if (!rendererReady || !win || win.isDestroyed()) return
   win.webContents.send('asta:hud-lifecycle', lifecycle)
-
-  if (lifecycle && lifecycle.status === 'ready') {
-    runtimeReady = true
-  } else if (lifecycle && lifecycle.status === 'starting') {
-    runtimeReady = false
-  }
+  if (lifecycle && lifecycle.status === 'ready') runtimeReady = true
+  else if (lifecycle && lifecycle.status === 'starting') runtimeReady = false
 }
 
 function sendHudState (state) {
@@ -63,82 +59,73 @@ function sendHudChat (message) {
 
 function flushRendererTelemetry () {
   if (!rendererReady || !win || win.isDestroyed()) return
-
   if (latestHudLifecycle) win.webContents.send('asta:hud-lifecycle', latestHudLifecycle)
   if (latestHudState) win.webContents.send('asta:hud-state', latestHudState)
   if (latestHudAudio) win.webContents.send('asta:hud-audio', latestHudAudio)
   if (latestHudChatHistory) win.webContents.send('asta:hud-chat-history', latestHudChatHistory)
 }
 
-function sendTextToAsta (text) {
-  const value = String(text || '').trim()
-  if (!value) return false
+function writeHudMessage (message) {
   if (!hudSocket || hudSocket.destroyed || !hudSocket.writable) {
-    console.warn('[HUD] Cannot send text: A.S.T.A. transport is unavailable')
+    console.warn('[HUD] Cannot send command: A.S.T.A. transport is unavailable')
     return false
   }
-
-  const message = {
-    type: 'hud.input',
-    version: 1,
-    input: { text: value }
-  }
-
   try {
     hudSocket.write(JSON.stringify(message) + '\n')
     return true
   } catch (error) {
-    console.warn('[HUD] Text send failed:', error.message)
+    console.warn('[HUD] Command send failed:', error.message)
     return false
   }
+}
+
+function sendTextToAsta (text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+  return writeHudMessage({ type: 'hud.input', version: 1, input: { text: value } })
+}
+
+function selectChatSession (sessionId) {
+  const value = String(sessionId || '').trim()
+  if (!value) return false
+  return writeHudMessage({ type: 'hud.chat_select', version: 1, session_id: value })
+}
+
+function startNewChat () {
+  return writeHudMessage({ type: 'hud.chat_new', version: 1 })
 }
 
 function sendShutdownToAsta () {
   if (shutdownSent) return false
   shutdownSent = true
-
-  if (!hudSocket || hudSocket.destroyed || !hudSocket.writable) {
-    console.warn('[HUD] Backend shutdown requested, but A.S.T.A. transport is unavailable')
-    return false
-  }
-
-  try {
-    hudSocket.write(JSON.stringify({ type: 'hud.shutdown', version: 1 }) + '\n')
-    return true
-  } catch (error) {
-    console.warn('[HUD] Backend shutdown request failed:', error.message)
-    return false
-  }
+  return writeHudMessage({ type: 'hud.shutdown', version: 1 })
 }
 
 function handleHudMessage (message) {
   if (!message) return
-
   if (message.type === 'hud.lifecycle') {
     sendHudLifecycle(message.lifecycle || {})
     console.log(`[HUD] A.S.T.A. lifecycle: ${(message.lifecycle || {}).status || 'unknown'}`)
     return
   }
-
   if (message.type === 'hud.state') {
     sendHudState(message.state || {})
     console.log(`[HUD] A.S.T.A. state: ${(message.state || {}).mode || 'unknown'}`)
     return
   }
-
   if (message.type === 'hud.audio') {
     sendHudAudio(message.audio || {})
     return
   }
-
   if (message.type === 'hud.chat_history') {
-    sendHudChatHistory(Array.isArray(message.messages) ? message.messages : [])
+    sendHudChatHistory({
+      session_id: message.session_id || null,
+      sessions: Array.isArray(message.sessions) ? message.sessions : [],
+      messages: Array.isArray(message.messages) ? message.messages : [],
+    })
     return
   }
-
-  if (message.type === 'hud.chat') {
-    sendHudChat(message.chat || {})
-  }
+  if (message.type === 'hud.chat') sendHudChat(message.chat || {})
 }
 
 function scheduleHudReconnect () {
@@ -158,40 +145,25 @@ function disconnectHudSocket () {
 
 function connectToAstaHud () {
   if (hudClosing || (hudSocket && !hudSocket.destroyed)) return
-
   const socket = new net.Socket()
   hudSocket = socket
   hudBuffer = ''
   socket.setEncoding('utf8')
-
-  socket.on('connect', () => {
-    console.log(`[HUD] Connected to A.S.T.A. at ${HUD_HOST}:${HUD_PORT}`)
-  })
-
+  socket.on('connect', () => console.log(`[HUD] Connected to A.S.T.A. at ${HUD_HOST}:${HUD_PORT}`))
   socket.on('data', (chunk) => {
     hudBuffer += chunk
     const lines = hudBuffer.split('\n')
     hudBuffer = lines.pop() || ''
-
     for (const line of lines) {
       if (!line.trim()) continue
-      try {
-        handleHudMessage(JSON.parse(line))
-      } catch (e) {
-        console.warn('[HUD] Invalid transport message:', e.message)
-      }
+      try { handleHudMessage(JSON.parse(line)) } catch (e) { console.warn('[HUD] Invalid transport message:', e.message) }
     }
   })
-
-  socket.on('error', (error) => {
-    console.warn(`[HUD] A.S.T.A. transport unavailable: ${error.message}`)
-  })
-
+  socket.on('error', (error) => console.warn(`[HUD] A.S.T.A. transport unavailable: ${error.message}`))
   socket.on('close', () => {
     if (hudSocket === socket) hudSocket = null
     if (!hudClosing) scheduleHudReconnect()
   })
-
   socket.connect(HUD_PORT, HUD_HOST)
 }
 
@@ -217,32 +189,19 @@ function createWindow () {
 
   rendererReady = false
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
-
   win.webContents.once('did-finish-load', () => {
     rendererReady = true
     console.log('[HUD] Renderer ready; flushing latest runtime telemetry')
     flushRendererTelemetry()
   })
-
-  win.once('ready-to-show', () => {
-    if (!win.isDestroyed()) win.show()
-  })
-
-  win.on('closed', () => {
-    rendererReady = false
-    win = null
-  })
-
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
-    return { action: 'deny' }
-  })
+  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show() })
+  win.on('closed', () => { rendererReady = false; win = null })
+  win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' } })
 }
 
 function buildMenu () {
   const template = []
   if (isMac) template.push({ role: 'appMenu' })
-
   template.push({
     label: 'Core',
     submenu: [
@@ -257,7 +216,6 @@ function buildMenu () {
       isMac ? { role: 'close' } : { role: 'quit' }
     ]
   })
-
   template.push({
     label: 'View',
     submenu: [
@@ -269,7 +227,6 @@ function buildMenu () {
       { role: 'zoomOut' }
     ]
   })
-
   template.push({ role: 'windowMenu' })
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
@@ -285,36 +242,22 @@ if (!gotLock) {
       win.focus()
     }
   })
-
   app.whenReady().then(() => {
     buildMenu()
     createWindow()
     connectToAstaHud()
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow()
-    })
+    app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
   })
-
   app.on('before-quit', (event) => {
     if (hudClosing) return
-
     hudClosing = true
     event.preventDefault()
-
     if (hudReconnectTimer) clearTimeout(hudReconnectTimer)
     hudReconnectTimer = null
-
     sendShutdownToAsta()
-
-    setTimeout(() => {
-      disconnectHudSocket()
-      app.exit(0)
-    }, 150)
+    setTimeout(() => { disconnectHudSocket(); app.exit(0) }, 150)
   })
-
-  app.on('window-all-closed', () => {
-    if (!isMac) app.quit()
-  })
+  app.on('window-all-closed', () => { if (!isMac) app.quit() })
 }
 
 ipcMain.on('win:minimize', () => { if (win) win.minimize() })
@@ -325,6 +268,6 @@ ipcMain.on('win:toggle-maximize', () => {
 })
 ipcMain.on('win:close', () => { if (win) win.close() })
 ipcMain.on('win:toggle-fullscreen', () => { if (win) win.setFullScreen(!win.isFullScreen()) })
-ipcMain.on('hud:text-message', (_event, text) => {
-  sendTextToAsta(text)
-})
+ipcMain.on('hud:text-message', (_event, text) => { sendTextToAsta(text) })
+ipcMain.on('hud:select-chat', (_event, sessionId) => { selectChatSession(sessionId) })
+ipcMain.on('hud:new-chat', () => { startNewChat() })
