@@ -1,0 +1,87 @@
+/* Fullscreen chat safety overrides. Keep the panel state class
+   separate from the button styling so the panel can never inherit the
+   compact-button geometry. */
+.chat.chat-fullscreen {
+  margin-left: 0;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border-width: 0;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  cursor: default;
+  pointer-events: auto;
+  overflow: hidden;
+}
+
+.chat-expand-button {
+  margin-left: auto;
+  flex: 0 0 auto;
+  min-width: 26px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid rgba(0, 229, 255, 0.18);
+  border-radius: 3px;
+  background: rgba(0, 229, 255, 0.04);
+  color: rgba(220, 242, 255, 0.62);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font: inherit;
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.chat-expand-button:hover {
+  border-color: rgba(0, 229, 255, 0.48);
+  background: rgba(0, 229, 255, 0.10);
+  color: #fff;
+}
+
+.chat-expand-icon {
+  display: inline-flex;
+  transition: transform 180ms ease;
+}
+
+.chat.chat-fullscreen .chat-expand-icon {
+  transform: rotate(180deg);
+}
+
+.chat.chat-fullscreen .chat-expand-button {
+  min-width: 62px;
+  height: 28px;
+  padding: 0 10px;
+  border-color: rgba(0, 229, 255, 0.30);
+  background: rgba(0, 229, 255, 0.08);
+  color: rgba(226, 246, 255, 0.86);
+  position: relative;
+  z-index: 40;
+}
+
+.chat.chat-fullscreen .chat-expand-button:hover {
+  border-color: rgba(0, 229, 255, 0.65);
+  background: rgba(0, 229, 255, 0.16);
+  color: #fff;
+}
+
+.chat.chat-fullscreen .chat-expand-label {
+  display: inline;
+}
+
+.chat-expand-label {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .chat.chat-fullscreen .chat-expand-button {
+    min-width: 58px;
+    padding: 0 8px;
+  }
+}
