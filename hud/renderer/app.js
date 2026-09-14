@@ -39,21 +39,74 @@
         else if (cmd === 'mute') toggleMute()
         else if (cmd && cmd.indexOf('state:') === 0) {
           forceComplete()
-          setState(cmd.slice(6))
+          setVisualProfile(cmd.slice(6))
         }
       })
     }
   }
 
-  /* ---------- states ---------- */
+  /* ---------- visual profiles ---------- */
   var STATES = {
     idle: { mode: 'IDLE', intensity: 'LOW', amp: 0.17, colorMix: 0.30, wave: 0.16 },
-    listening: { mode: 'LISTENING', intensity: 'MEDIUM', amp: 0.52, colorMix: 0.58, wave: 0.55 },
-    thinking: { mode: 'THINKING', intensity: 'HIGH', amp: 0.74, colorMix: 0.82, wave: 0.72 },
-    speaking: { mode: 'SPEAKING', intensity: 'HIGH', amp: 1.00, colorMix: 1.00, wave: 1.00 }
+    listening: { mode: 'LISTENING', intensity: 'MEDIUM', amp: 0.52, colorMix: 0.58, wave: 0.42 },
+    thinking: { mode: 'THINKING', intensity: 'HIGH', amp: 0.74, colorMix: 0.82, wave: 0.62 },
+    speaking: { mode: 'SPEAKING', intensity: 'HIGH', amp: 0.52, colorMix: 1.00, wave: 0.32 }
   }
+
+  var MODE_LABELS = {
+    idle: 'IDLE',
+    listening: 'LISTENING',
+    thinking: 'THINKING',
+    speaking: 'SPEAKING',
+    executing: 'EXECUTING',
+    approval: 'APPROVAL',
+    error: 'ERROR'
+  }
+
+  var INTENSITY_LABELS = {
+    low: 'LOW',
+    medium: 'MEDIUM',
+    high: 'HIGH'
+  }
+
+  var VISUAL_PROFILE = {
+    idle: 'idle',
+    listening: 'listening',
+    thinking: 'thinking',
+    speaking: 'speaking',
+    executing: 'thinking',
+    approval: 'listening',
+    error: 'thinking'
+  }
+
+  var VALID_MODES = {
+    idle: true,
+    listening: true,
+    thinking: true,
+    speaking: true,
+    executing: true,
+    approval: true,
+    error: true
+  }
+
+  var VALID_INTENSITIES = {
+    low: true,
+    medium: true,
+    high: true
+  }
+
   var current = 'idle'
+  var visualProfile = 'idle'
+  var canonicalState = {
+    mode: 'idle',
+    intensity: 'low',
+    status: 'IDLE',
+    progress: null,
+    activity: null
+  }
   var live = { amp: 0.05, colorMix: 0, wave: 0.1 }
+  var audioTarget = 0
+  var audioLevel = 0
   var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
   var ASSEMBLE_MS = reduced ? 900 : 5200
   var assembleStart = performance.now()
@@ -94,7 +147,7 @@
     bars.push(bar)
   }
 
-  /* ---------- audio ---------- */
+  /* ---------- audio ambience ---------- */
   var audio = { ctx: null, master: null, nodes: [], muted: false, level: 0.16 }
 
   function startDrone () {
@@ -224,29 +277,101 @@
   window.addEventListener('keydown', unlock)
 
   /* ---------- state handling ---------- */
-  function setState (name) {
+  function updateCanonicalLabels () {
+    var mode = canonicalState.mode
+    var intensity = canonicalState.intensity
+    statusMode.textContent = MODE_LABELS[mode] || 'IDLE'
+    statusIntensity.textContent = INTENSITY_LABELS[intensity] || 'LOW'
+
+    if (assembled) {
+      readoutLabel.textContent = canonicalState.status || MODE_LABELS[mode] || 'STATUS:'
+      readoutPct.textContent = MODE_LABELS[mode] || 'IDLE'
+      readoutPct.className = 'pct status-big' + (mode === 'speaking' ? ' pulse' : '')
+    }
+  }
+
+  function setVisualProfile (name) {
     if (!STATES[name]) return
+    visualProfile = name
     current = name
-    statusMode.textContent = STATES[name].mode
-    statusIntensity.textContent = STATES[name].intensity
+
     for (var i = 0; i < dockButtons.length; i++) {
       var isActive = dockButtons[i].getAttribute('data-state') === name
       if (isActive) dockButtons[i].classList.add('active')
       else dockButtons[i].classList.remove('active')
     }
-    if (assembled) renderBigStatus()
+
+    if (assembled) updateCanonicalLabels()
+  }
+
+  function setState (name) {
+    setVisualProfile(name)
+    canonicalState = {
+      mode: name,
+      intensity: STATES[name] ? String(STATES[name].intensity).toLowerCase() : 'low',
+      status: STATES[name] ? STATES[name].mode : 'IDLE',
+      progress: null,
+      activity: 'manual'
+    }
+  }
+
+  function applyCanonicalState (state) {
+    state = state || {}
+
+    var mode = String(state.mode || 'idle').toLowerCase()
+    var intensity = String(state.intensity || 'low').toLowerCase()
+    if (!VALID_MODES[mode]) mode = 'idle'
+    if (!VALID_INTENSITIES[intensity]) intensity = 'low'
+
+    canonicalState = {
+      mode: mode,
+      intensity: intensity,
+      status: state.status || MODE_LABELS[mode],
+      progress: state.progress == null ? null : Number(state.progress),
+      activity: state.activity || null
+    }
+
+    /* A backend state is authoritative. It must never be overwritten by the
+       startup demo assembly sequence after the real runtime has connected. */
+    if (!assembled) {
+      assembled = true
+      progress = 1
+    }
+
+    setVisualProfile(VISUAL_PROFILE[mode] || 'idle')
+    updateCanonicalLabels()
+  }
+
+  function setAudioLevel (level) {
+    var value = Number(level)
+    if (!isFinite(value)) value = 0
+    audioTarget = Math.max(0, Math.min(1, value))
+  }
+
+  window.AstaHUD = {
+    applyCanonicalState: applyCanonicalState,
+    setAudioLevel: setAudioLevel
   }
 
   function renderBigStatus () {
-    readoutLabel.textContent = 'STATUS:'
-    readoutPct.textContent = STATES[current].mode
-    readoutPct.className = 'pct status-big' + (current === 'speaking' ? ' pulse' : '')
+    readoutLabel.textContent = canonicalState.status || MODE_LABELS[canonicalState.mode] || 'STATUS:'
+    readoutPct.textContent = MODE_LABELS[canonicalState.mode] || 'IDLE'
+    readoutPct.className = 'pct status-big' + (canonicalState.mode === 'speaking' ? ' pulse' : '')
   }
 
   function completeAssembly () {
     assembled = true
     progress = 1
-    setState('speaking')
+    if (!canonicalState || canonicalState.mode === 'idle') {
+      canonicalState = {
+        mode: 'idle',
+        intensity: 'low',
+        status: 'IDLE',
+        progress: 1,
+        activity: null
+      }
+      setVisualProfile('idle')
+    }
     renderBigStatus()
     speakReady()
   }
@@ -259,10 +384,18 @@
     assembled = false
     progress = 0
     assembleStart = performance.now()
+    canonicalState = {
+      mode: 'idle',
+      intensity: 'low',
+      status: 'IDLE',
+      progress: null,
+      activity: 'assembly'
+    }
+    audioTarget = 0
     readoutPct.className = 'pct'
     readoutLabel.textContent = 'ASSEMBLING...'
     readoutPct.textContent = '0%'
-    setState('idle')
+    setVisualProfile('idle')
   }
   if (reassembleBtn) reassembleBtn.addEventListener('click', reassemble)
 
@@ -270,6 +403,7 @@
     dockButtons[d].addEventListener('click', function () {
       forceComplete()
       setState(this.getAttribute('data-state'))
+      updateCanonicalLabels()
     })
   }
 
@@ -293,6 +427,7 @@
       e.preventDefault()
       forceComplete()
       setState(map[k])
+      updateCanonicalLabels()
     } else if (k === 'r') {
       e.preventDefault()
       reassemble()
@@ -325,18 +460,30 @@
       if (progress >= 1) completeAssembly()
     }
 
-    var target = STATES[current]
-    var wantAmp = assembled ? target.amp : (0.18 + 0.42 * progress)
-    var wantMix = assembled ? target.colorMix : (0.15 + 0.55 * progress)
-    var wantWave = assembled ? target.wave : (0.12 + 0.30 * progress)
+    /* Smooth real speech telemetry before it touches the particle engine. */
+    var audioK = Math.min(1, dt * 16.0)
+    audioLevel += (audioTarget - audioLevel) * audioK
+
+    var target = STATES[visualProfile]
+    var liveAudio = canonicalState.mode === 'speaking' ? audioLevel : 0
+    var wantAmp = assembled
+      ? Math.min(1.30, target.amp + liveAudio * 0.62)
+      : (0.18 + 0.42 * progress)
+    var wantMix = assembled
+      ? Math.min(1.20, target.colorMix + liveAudio * 0.18)
+      : (0.15 + 0.55 * progress)
+    var wantWave = assembled
+      ? Math.min(1.45, target.wave + liveAudio * 1.05)
+      : (0.12 + 0.30 * progress)
+
     var k = Math.min(1, dt * 3.0)
     live.amp += (wantAmp - live.amp) * k
     live.colorMix += (wantMix - live.colorMix) * k
     live.wave += (wantWave - live.wave) * k
 
     /* gentle sway instead of a full spin, so the face stays toward the viewer */
-    swayT += dt * (0.17 + 0.10 * live.amp)
-    rot = Math.sin(swayT) * 0.17
+    swayT += dt * (0.17 + 0.10 * live.amp + liveAudio * 0.12)
+    rot = Math.sin(swayT) * (0.14 + liveAudio * 0.04)
 
     if (engine && engine.render) {
       engine.render({
@@ -345,7 +492,7 @@
         amp: live.amp,
         colorMix: live.colorMix,
         rot: rot,
-        bloom: 1.15 + 0.45 * live.amp
+        bloom: 1.05 + 0.55 * live.amp + 0.65 * liveAudio
       })
     }
 
@@ -354,7 +501,8 @@
     for (var i = 0; i < bars.length; i++) {
       var center = 1 - Math.abs(i / (bars.length - 1) - 0.5) * 2
       var wob = 0.35 + 0.65 * Math.abs(Math.sin(now / 1000 * (2.1 + i * 0.17) + i))
-      bars[i].style.height = (3 + 25 * live.wave * wob * (0.35 + 0.65 * center)).toFixed(1) + 'px'
+      var signal = live.wave * (0.35 + liveAudio * 1.8)
+      bars[i].style.height = (3 + 25 * signal * wob * (0.35 + 0.65 * center)).toFixed(1) + 'px'
     }
 
     frames++
@@ -380,5 +528,6 @@
     if (engine && engine.resize) engine.resize()
   })
 
-  setState('idle')
+  setVisualProfile('idle')
+  updateCanonicalLabels()
 })()
