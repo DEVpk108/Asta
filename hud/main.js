@@ -20,22 +20,13 @@ function send (cmd) {
   if (win && !win.isDestroyed()) win.webContents.send('asta:command', cmd)
 }
 
-function mapHudMode (mode) {
-  const supported = new Set(['idle', 'listening', 'thinking', 'speaking'])
-  if (supported.has(mode)) return mode
-  if (mode === 'executing') return 'thinking'
-  if (mode === 'approval') return 'listening'
-  if (mode === 'error') return 'thinking'
-  return 'idle'
-}
-
 function handleHudMessage (message) {
   if (!message || message.type !== 'hud.state') return
+
   const state = message.state || {}
-  const mode = mapHudMode(state.mode)
-  send('state:' + mode)
+  send('hud-state:' + JSON.stringify(state))
   console.log(
-    `[HUD] A.S.T.A. state: ${state.mode || 'unknown'} → renderer:${mode}`
+    `[HUD] A.S.T.A. state: ${state.mode || 'unknown'}`
   )
 }
 
