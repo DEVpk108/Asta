@@ -1,6 +1,4 @@
-/* Fullscreen chat safety overrides. Keep the panel state class
-   separate from the button styling so the panel can never inherit the
-   compact-button geometry. */
+/* Fullscreen text mode: polished conversation layout with a live A.S.T.A. avatar zone. */
 .chat.chat-fullscreen {
   margin-left: 0;
   width: auto;
@@ -15,6 +13,68 @@
   cursor: default;
   pointer-events: auto;
   overflow: hidden;
+  z-index: 10;
+}
+
+.chat.chat-fullscreen::before {
+  content: "";
+  position: absolute;
+  inset: 46px auto 0 0;
+  width: 360px;
+  background:
+    radial-gradient(circle at 50% 35%, rgba(0, 229, 255, 0.11), transparent 58%),
+    linear-gradient(90deg, rgba(0, 229, 255, 0.045), rgba(0, 229, 255, 0));
+  border-right: 1px solid rgba(0, 229, 255, 0.08);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.chat.chat-fullscreen .chat-header,
+.chat.chat-fullscreen .chat-messages,
+.chat.chat-fullscreen .chat-input {
+  position: relative;
+  z-index: 2;
+}
+
+.chat.chat-fullscreen .chat-messages {
+  padding: 30px clamp(40px, 7vw, 110px) 28px 390px;
+  gap: 14px;
+}
+
+.chat.chat-fullscreen .chat-message {
+  max-width: min(820px, 78%);
+  padding: 11px 14px;
+  font-size: 13px;
+  line-height: 1.62;
+  border-radius: 5px;
+}
+
+.chat.chat-fullscreen .chat-message .chat-role {
+  margin-bottom: 5px;
+  font-size: 8px;
+}
+
+.chat.chat-fullscreen .chat-empty {
+  font-size: 10px;
+}
+
+.chat.chat-fullscreen .chat-input {
+  padding: 14px clamp(24px, 5vw, 70px) 16px;
+  gap: 10px;
+  background: rgba(0, 8, 12, 0.88);
+}
+
+.chat.chat-fullscreen .chat-input input {
+  height: 46px;
+  font-size: 14px;
+  padding: 11px 13px;
+}
+
+.chat.chat-fullscreen .chat-input button {
+  min-width: 76px;
+  height: 46px;
+  font-size: 10px;
+  padding: 0 15px;
 }
 
 .chat-expand-button {
@@ -55,9 +115,9 @@
 }
 
 .chat.chat-fullscreen .chat-expand-button {
-  min-width: 62px;
-  height: 28px;
-  padding: 0 10px;
+  min-width: 70px;
+  height: 30px;
+  padding: 0 11px;
   border-color: rgba(0, 229, 255, 0.30);
   background: rgba(0, 229, 255, 0.08);
   color: rgba(226, 246, 255, 0.86);
@@ -79,9 +139,73 @@
   display: none;
 }
 
+/* Keep the hologram visible and interactive only as a visual layer. */
+body.text-chat-fullscreen .stage canvas,
+body.text-chat-fullscreen .stage #fallback {
+  width: 330px;
+  height: 330px;
+  inset: 0 auto auto 0;
+  z-index: 20;
+  pointer-events: none;
+}
+
+body.text-chat-fullscreen .stage .meta {
+  top: 18px;
+  left: 20px;
+  z-index: 21;
+  pointer-events: none;
+  text-shadow: 0 0 14px rgba(0, 229, 255, 0.24);
+}
+
+body.text-chat-fullscreen .stage .meta::after {
+  content: "A.S.T.A. // ONLINE";
+  display: block;
+  margin-top: 150px;
+  color: rgba(0, 229, 255, 0.50);
+  font-size: 8px;
+  letter-spacing: 0.22em;
+}
+
+body.text-chat-fullscreen .stage .readout,
+body.text-chat-fullscreen .stage .waveform,
+body.text-chat-fullscreen .stage .dock,
+body.text-chat-fullscreen .stage .shortcuts {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .chat.chat-fullscreen .chat-messages {
+    padding-left: 280px;
+  }
+
+  body.text-chat-fullscreen .stage canvas,
+  body.text-chat-fullscreen .stage #fallback {
+    width: 240px;
+    height: 240px;
+  }
+
+  body.text-chat-fullscreen .stage .meta::after {
+    margin-top: 105px;
+  }
+}
+
 @media (max-width: 700px) {
-  .chat.chat-fullscreen .chat-expand-button {
-    min-width: 58px;
-    padding: 0 8px;
+  .chat.chat-fullscreen::before {
+    width: 210px;
+  }
+
+  .chat.chat-fullscreen .chat-messages {
+    padding-left: 24px;
+    padding-top: 24px;
+  }
+
+  body.text-chat-fullscreen .stage canvas,
+  body.text-chat-fullscreen .stage #fallback {
+    width: 180px;
+    height: 180px;
+  }
+
+  body.text-chat-fullscreen .stage .meta {
+    display: none;
   }
 }
