@@ -21,6 +21,7 @@ let latestHudLifecycle = null
 let latestHudState = null
 let latestHudAudio = null
 let latestHudChatHistory = null
+let latestHudChatSessions = null
 
 function send (cmd) {
   if (win && !win.isDestroyed()) win.webContents.send('asta:command', cmd)
@@ -52,6 +53,12 @@ function sendHudChatHistory (history) {
   win.webContents.send('asta:hud-chat-history', history)
 }
 
+function sendHudChatSessions (sessions) {
+  latestHudChatSessions = sessions
+  if (!rendererReady || !win || win.isDestroyed()) return
+  win.webContents.send('asta:hud-chat-sessions', sessions)
+}
+
 function sendHudChat (message) {
   if (!rendererReady || !win || win.isDestroyed()) return
   win.webContents.send('asta:hud-chat', message)
@@ -63,6 +70,7 @@ function flushRendererTelemetry () {
   if (latestHudState) win.webContents.send('asta:hud-state', latestHudState)
   if (latestHudAudio) win.webContents.send('asta:hud-audio', latestHudAudio)
   if (latestHudChatHistory) win.webContents.send('asta:hud-chat-history', latestHudChatHistory)
+  if (latestHudChatSessions) win.webContents.send('asta:hud-chat-sessions', latestHudChatSessions)
 }
 
 function writeHudMessage (message) {
@@ -105,12 +113,10 @@ function handleHudMessage (message) {
   if (!message) return
   if (message.type === 'hud.lifecycle') {
     sendHudLifecycle(message.lifecycle || {})
-    console.log(`[HUD] A.S.T.A. lifecycle: ${(message.lifecycle || {}).status || 'unknown'}`)
     return
   }
   if (message.type === 'hud.state') {
     sendHudState(message.state || {})
-    console.log(`[HUD] A.S.T.A. state: ${(message.state || {}).mode || 'unknown'}`)
     return
   }
   if (message.type === 'hud.audio') {
@@ -123,6 +129,10 @@ function handleHudMessage (message) {
       sessions: Array.isArray(message.sessions) ? message.sessions : [],
       messages: Array.isArray(message.messages) ? message.messages : [],
     })
+    return
+  }
+  if (message.type === 'hud.chat_sessions') {
+    sendHudChatSessions(Array.isArray(message.sessions) ? message.sessions : [])
     return
   }
   if (message.type === 'hud.chat') sendHudChat(message.chat || {})
@@ -186,7 +196,6 @@ function createWindow () {
       backgroundThrottling: false
     }
   })
-
   rendererReady = false
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
   win.webContents.once('did-finish-load', () => {
