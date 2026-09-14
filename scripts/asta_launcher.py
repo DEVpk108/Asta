@@ -74,6 +74,34 @@ def release_single_instance_lock(handle) -> None:
         ctypes.windll.kernel32.CloseHandle(handle)
 
 
+def terminate_process_tree(process) -> None:
+    """Terminate a process and every descendant it spawned."""
+    if process is None or process.poll() is not None:
+        return
+
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                creationflags=CREATE_NO_WINDOW,
+            )
+        else:
+            process.terminate()
+            process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+            process.wait(timeout=2)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    except OSError:
+        pass
+
+
 def main() -> int:
     mutex = acquire_single_instance_lock()
     if mutex is False:
@@ -112,9 +140,8 @@ def main() -> int:
     python_process = None
 
     try:
-        # Launch Electron immediately. This removes the 10–15 second delay
-        # caused by importing the heavy Python/AI stack before the HUD can
-        # appear. The HUD shows its INITIALIZING state while Python starts.
+        # Launch Electron immediately. The HUD assembles visually while the
+        # Python/AI stack initializes in parallel.
         hud_process = subprocess.Popen(
             [npm, "start"],
             cwd=str(hud_dir),
@@ -144,16 +171,8 @@ def main() -> int:
         show_error(f"Could not start A.S.T.A.\n\n{type(exc).__name__}: {exc}")
         return 1
     finally:
-        if python_process is not None and python_process.poll() is None:
-            python_process.terminate()
-        if hud_process is not None and hud_process.poll() is None:
-            try:
-                hud_process.terminate()
-                hud_process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                hud_process.kill()
-            except OSError:
-                pass
+        terminate_process_tree(python_process)
+        terminate_process_tree(hud_process)
         release_single_instance_lock(mutex)
 
 
