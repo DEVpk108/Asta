@@ -93,15 +93,34 @@ class HUDTransport:
         self._broadcast(message)
 
     def publish_chat(self, *, role: str, text: str) -> None:
-        """Publish a conversation message to the HUD without modifying text."""
+        """Publish a conversation message and keep reconnect history current."""
+        normalized_role = "user" if role == "user" else "assistant"
+        value = str(text or "").strip()
+        if not value:
+            return
+
         message = {
             "type": "hud.chat",
             "version": 1,
             "chat": {
-                "role": str(role),
-                "text": str(text),
+                "role": normalized_role,
+                "text": value,
             },
         }
+
+        history = self._last_chat_history_message
+        if history is None:
+            history = {
+                "type": "hud.chat_history",
+                "version": 1,
+                "messages": [],
+            }
+            self._last_chat_history_message = history
+
+        history["messages"].append({"role": normalized_role, "text": value})
+        if len(history["messages"]) > 200:
+            history["messages"] = history["messages"][-200:]
+
         self._broadcast(message)
 
     def publish_chat_history(self, messages: list[dict[str, Any]]) -> None:
@@ -118,7 +137,7 @@ class HUDTransport:
         self._last_chat_history_message = {
             "type": "hud.chat_history",
             "version": 1,
-            "messages": safe_messages,
+            "messages": safe_messages[-200:],
         }
         self._broadcast(self._last_chat_history_message)
 
