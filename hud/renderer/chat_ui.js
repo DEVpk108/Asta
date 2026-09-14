@@ -21,7 +21,7 @@
     removeEmpty()
 
     var item = document.createElement('div')
-    item.className = 'chat-message ' + (role === 'user' ? 'chat-user' : 'chat-assistant')
+    item.className = 'chat-message ' + (role === 'user' ? 'user' : 'assistant')
 
     var label = document.createElement('div')
     label.className = 'chat-role'
@@ -47,7 +47,6 @@
       return
     }
 
-    appendMessage('user', text)
     input.value = ''
     input.focus()
     bridge.sendTextMessage(text)
