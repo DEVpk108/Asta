@@ -1,5 +1,4 @@
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -37,12 +36,6 @@ def find_python(root: Path) -> Path:
     return Path(sys.executable if not getattr(sys, "frozen", False) else "python")
 
 
-def find_npm() -> str | None:
-    if os.name == "nt":
-        return shutil.which("npm.cmd") or shutil.which("npm")
-    return shutil.which("npm")
-
-
 def show_error(message: str) -> None:
     if os.name == "nt":
         import ctypes
@@ -55,8 +48,6 @@ def show_error(message: str) -> None:
 def main() -> int:
     root = project_root()
     main_py = root / "main.py"
-    hud_dir = root / "hud"
-    package_json = hud_dir / "package.json"
     python_exe = find_python(root)
 
     if not main_py.exists():
@@ -70,39 +61,15 @@ def main() -> int:
         )
         return 1
 
-    if not package_json.exists():
-        show_error(f"A.S.T.A. HUD package was not found:\n\n{package_json}")
-        return 1
-
-    npm = find_npm()
-    if not npm:
-        show_error("Node.js / npm was not found. A.S.T.A. requires npm for the HUD.")
-        return 1
-
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
-    env["ASTA_PRELAUNCHED_HUD"] = "1"
-
-    hud_process = None
-    python_process = None
+    env.pop("ASTA_PRELAUNCHED_HUD", None)
 
     try:
-        # Start Electron immediately so its renderer can initialize while the
-        # Python/AI stack is importing. main.py will reuse this HUD instead of
-        # starting a second Electron process.
-        hud_process = subprocess.Popen(
-            [npm, "start"],
-            cwd=str(hud_dir),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
-            close_fds=True,
-            shell=False,
-        )
-
-        python_process = subprocess.Popen(
+        # Keep one application-owned runtime process. main.py launches and owns
+        # the Electron HUD, avoiding the memory spike caused by starting both
+        # Python and Electron independently from the packaged launcher.
+        subprocess.Popen(
             [str(python_exe), str(main_py)],
             cwd=str(root),
             env=env,
@@ -113,23 +80,11 @@ def main() -> int:
             close_fds=True,
             shell=False,
         )
-
-        return_code = python_process.wait()
-        return return_code
     except OSError as exc:
         show_error(f"Could not start A.S.T.A.\n\n{type(exc).__name__}: {exc}")
         return 1
-    finally:
-        if python_process is not None and python_process.poll() is None:
-            python_process.terminate()
-        if hud_process is not None and hud_process.poll() is None:
-            try:
-                hud_process.terminate()
-                hud_process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                hud_process.kill()
-            except OSError:
-                pass
+
+    return 0
 
 
 if __name__ == "__main__":
