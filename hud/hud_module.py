@@ -35,9 +35,14 @@ class HUDModule(Module):
         self.state = HUDState()
         self.transport = HUDTransport()
         self._conversation_active = False
+        self._runtime_ready = False
 
     def initialize(self):
-        self.event_bus.subscribe("kernel_ready", self.on_kernel_ready)
+        # The HUD may boot several seconds before the backend. Keep lifecycle
+        # state separate from visual assembly: Python owns readiness, and the
+        # voice listener is the final gate because this is the point at which
+        # A.S.T.A. can actually hear a wake word.
+        self.event_bus.subscribe("voice_ready", self.on_voice_ready)
         self.event_bus.subscribe("assistant_sentence", self.on_assistant_sentence)
         self.event_bus.subscribe("user_message", self.on_user_message)
         self.event_bus.subscribe("conversation_mode_set", self.on_conversation_mode_set)
@@ -124,12 +129,18 @@ class HUDModule(Module):
         """Reset the HUD to its initial idle state."""
         self.state = HUDState()
         self._conversation_active = False
+        self._runtime_ready = False
         self._publish_state()
         self.transport.publish_audio_level(0.0)
         return self.state
 
-    def on_kernel_ready(self):
-        """Start the visual HUD lifecycle only after the whole kernel is ready."""
+    def on_voice_ready(self):
+        """Mark A.S.T.A. ready only when the voice listener is actually running."""
+        if self._runtime_ready:
+            return
+
+        self._runtime_ready = True
+        print("[HUD] Voice listener ready; publishing runtime ready.", flush=True)
         self.transport.publish_lifecycle("ready")
         self._publish_state()
 
@@ -155,6 +166,10 @@ class HUDModule(Module):
 
     def on_transport_message(self, message):
         """Translate HUD-originated input into the normal Kernel event."""
+        if not self._runtime_ready:
+            print("[HUD] Ignoring text input while A.S.T.A. is still booting.", flush=True)
+            return
+
         if not isinstance(message, dict):
             return
 
@@ -294,13 +309,16 @@ class HUDModule(Module):
 
         value = text.strip()
         if value.lower() in _WAKEWORD_CHAT_SUPPRESSED:
-            print(f"[HUD] Suppressed wake-word acknowledgment from chat: {value!r}", flush=True)
+            print(
+                f"[HUD] Suppressed wake-word acknowledgment from chat: {value!r}",
+                flush=True,
+            )
             return
 
         self.transport.publish_chat(role="assistant", text=value)
 
     def shutdown(self):
-        self.event_bus.unsubscribe("kernel_ready", self.on_kernel_ready)
+        self.event_bus.unsubscribe("voice_ready", self.on_voice_ready)
         self.event_bus.unsubscribe("assistant_sentence", self.on_assistant_sentence)
         self.event_bus.unsubscribe("user_message", self.on_user_message)
         self.event_bus.unsubscribe("conversation_mode_set", self.on_conversation_mode_set)
