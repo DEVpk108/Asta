@@ -20,7 +20,7 @@ DEFAULT_PORT = 18765
 
 
 class HUDTransport:
-    """Small localhost JSON-lines server for HUD state messages."""
+    """Small localhost JSON-lines server for HUD state and live telemetry."""
 
     def __init__(self, host: str | None = None, port: int | None = None):
         self.host = host or os.getenv("ASTA_HUD_HOST", DEFAULT_HOST)
@@ -31,7 +31,8 @@ class HUDTransport:
         self._clients: set[socket.socket] = set()
         self._clients_lock = threading.Lock()
         self._stop = threading.Event()
-        self._last_message: dict[str, Any] | None = None
+        self._last_state_message: dict[str, Any] | None = None
+        self._last_audio_message: dict[str, Any] | None = None
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -63,7 +64,25 @@ class HUDTransport:
             "version": 1,
             "state": asdict(state),
         }
-        self._last_message = message
+        self._last_state_message = message
+        self._broadcast(message)
+
+    def publish_audio_level(self, level: float) -> None:
+        """Publish a normalized 0..1 speech playback envelope."""
+        try:
+            value = float(level)
+        except (TypeError, ValueError):
+            value = 0.0
+
+        value = max(0.0, min(1.0, value))
+        message = {
+            "type": "hud.audio",
+            "version": 1,
+            "audio": {
+                "level": value,
+            },
+        }
+        self._last_audio_message = message
         self._broadcast(message)
 
     def stop(self) -> None:
@@ -112,8 +131,10 @@ class HUDTransport:
             with self._clients_lock:
                 self._clients.add(client)
 
-            if self._last_message is not None:
-                self._send_to_client(client, self._last_message)
+            if self._last_state_message is not None:
+                self._send_to_client(client, self._last_state_message)
+            if self._last_audio_message is not None:
+                self._send_to_client(client, self._last_audio_message)
 
             threading.Thread(
                 target=self._client_loop,
