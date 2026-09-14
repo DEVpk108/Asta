@@ -12,5 +12,10 @@ contextBridge.exposeInMainWorld('asta', {
     ipcRenderer.on('asta:command', (_event, cmd) => {
       try { fn(cmd) } catch (e) { /* ignore */ }
     })
+  },
+  onHudState: (fn) => {
+    ipcRenderer.on('asta:hud-state', (_event, state) => {
+      try { fn(state) } catch (e) { /* ignore */ }
+    })
   }
 })
