@@ -117,6 +117,31 @@ class ChatHistoryStore:
     def recent(self) -> list[dict[str, str]]:
         return self.messages_for_session(self.session_id)
 
+    def messages_for_session(self, session_id: str, *, limit: int | None = None) -> list[dict[str, str]]:
+        """Return recent messages for one chat session in chronological order."""
+        value = str(session_id or "").strip()
+        if not value or self._connection is None:
+            return []
+
+        max_items = self.history_limit if limit is None else max(1, int(limit))
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT role, text, created_at
+                FROM messages
+                WHERE session_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (value, max_items),
+            ).fetchall()
+
+        rows.reverse()
+        return [
+            {"role": role, "text": text, "created_at": created_at}
+            for role, text, created_at in rows
+        ]
+
     def latest_active_context(self, *, limit: int = 12) -> list[dict[str, str]]:
         """Return the most recently active session's latest messages.
 
