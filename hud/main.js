@@ -20,14 +20,16 @@ function send (cmd) {
   if (win && !win.isDestroyed()) win.webContents.send('asta:command', cmd)
 }
 
+function sendHudState (state) {
+  if (win && !win.isDestroyed()) win.webContents.send('asta:hud-state', state)
+}
+
 function handleHudMessage (message) {
   if (!message || message.type !== 'hud.state') return
 
   const state = message.state || {}
-  send('hud-state:' + JSON.stringify(state))
-  console.log(
-    `[HUD] A.S.T.A. state: ${state.mode || 'unknown'}`
-  )
+  sendHudState(state)
+  console.log(`[HUD] A.S.T.A. state: ${state.mode || 'unknown'}`)
 }
 
 function scheduleHudReconnect () {
