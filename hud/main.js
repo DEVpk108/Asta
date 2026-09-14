@@ -35,6 +35,11 @@ function sendHudAudio (audio) {
   win.webContents.send('asta:hud-audio', audio)
 }
 
+function sendHudChat (message) {
+  if (!rendererReady || !win || win.isDestroyed()) return
+  win.webContents.send('asta:hud-chat', message)
+}
+
 function flushRendererTelemetry () {
   if (!rendererReady || !win || win.isDestroyed()) return
 
@@ -44,6 +49,29 @@ function flushRendererTelemetry () {
 
   if (latestHudAudio) {
     win.webContents.send('asta:hud-audio', latestHudAudio)
+  }
+}
+
+function sendTextToAsta (text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+  if (!hudSocket || hudSocket.destroyed || !hudSocket.writable) {
+    console.warn('[HUD] Cannot send text: A.S.T.A. transport is unavailable')
+    return false
+  }
+
+  const message = {
+    type: 'hud.input',
+    version: 1,
+    input: { text: value }
+  }
+
+  try {
+    hudSocket.write(JSON.stringify(message) + '\n')
+    return true
+  } catch (error) {
+    console.warn('[HUD] Text send failed:', error.message)
+    return false
   }
 }
 
@@ -59,6 +87,11 @@ function handleHudMessage (message) {
 
   if (message.type === 'hud.audio') {
     sendHudAudio(message.audio || {})
+    return
+  }
+
+  if (message.type === 'hud.chat') {
+    sendHudChat(message.chat || {})
   }
 }
 
@@ -234,3 +267,6 @@ ipcMain.on('win:toggle-maximize', () => {
 })
 ipcMain.on('win:close', () => { if (win) win.close() })
 ipcMain.on('win:toggle-fullscreen', () => { if (win) win.setFullScreen(!win.isFullScreen()) })
+ipcMain.on('hud:text-message', (_event, text) => {
+  sendTextToAsta(text)
+})
