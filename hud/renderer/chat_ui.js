@@ -8,6 +8,7 @@
   var empty = document.getElementById('chatEmpty')
   var chatPanel = document.getElementById('chatPanel')
   var fullscreenButton = document.getElementById('chatFullscreen')
+  var fullscreenLabel = fullscreenButton && fullscreenButton.querySelector('.chat-expand-label')
 
   if (!form || !input || !messages) return
 
@@ -46,8 +47,12 @@
     document.body.classList.toggle('text-chat-fullscreen', enabled)
 
     if (fullscreenButton) {
-      fullscreenButton.title = enabled ? 'Return to HUD view' : 'Expand conversation'
-      fullscreenButton.setAttribute('aria-label', enabled ? 'Return to HUD view' : 'Expand conversation')
+      fullscreenButton.title = enabled ? 'Exit fullscreen chat' : 'Expand conversation'
+      fullscreenButton.setAttribute('aria-label', enabled ? 'Exit fullscreen chat' : 'Expand conversation')
+    }
+
+    if (fullscreenLabel) {
+      fullscreenLabel.textContent = enabled ? 'EXIT' : 'FULLSCREEN'
     }
 
     window.requestAnimationFrame(function () {
@@ -62,7 +67,11 @@
   }
 
   if (fullscreenButton) {
-    fullscreenButton.addEventListener('click', toggleFullscreen)
+    fullscreenButton.addEventListener('click', function (event) {
+      event.preventDefault()
+      event.stopPropagation()
+      toggleFullscreen()
+    })
   }
 
   window.addEventListener('keydown', function (event) {
