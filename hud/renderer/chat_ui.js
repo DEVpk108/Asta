@@ -10,7 +10,6 @@
   var fullscreenButton = document.getElementById('chatFullscreen')
   var fullscreenLabel = fullscreenButton && fullscreenButton.querySelector('.chat-expand-label')
   var historyButton = document.getElementById('chatHistory')
-  var recentPanel = document.getElementById('chatRecent')
   var recentList = document.getElementById('chatRecentList')
   var recentEmpty = document.getElementById('chatRecentEmpty')
   var newChatButton = document.getElementById('chatNew')
@@ -44,34 +43,25 @@
     var value = String(text || '').trim()
     if (!value) return
     removeEmpty()
-
     var item = document.createElement('div')
     item.className = 'chat-message ' + (role === 'user' ? 'user' : 'assistant')
-
     var label = document.createElement('div')
     label.className = 'chat-role'
     label.textContent = role === 'user' ? 'YOU' : 'A.S.T.A.'
-
     var body = document.createElement('div')
     body.className = 'chat-text'
-
     item.appendChild(label)
     item.appendChild(body)
     messages.appendChild(item)
     messages.scrollTop = messages.scrollHeight
-
-    if (animate && role === 'assistant' && document.body.classList.contains('text-chat-fullscreen')) {
-      progressiveReveal(body, value)
-    } else {
-      body.textContent = value
-    }
+    if (animate && role === 'assistant' && document.body.classList.contains('text-chat-fullscreen')) progressiveReveal(body, value)
+    else body.textContent = value
   }
 
   function loadHistory (history) {
     var payload = Array.isArray(history) ? { messages: history, sessions: [] } : (history || {})
     currentSessionId = payload.session_id || currentSessionId
     renderRecents(Array.isArray(payload.sessions) ? payload.sessions : [])
-
     var items = Array.isArray(payload.messages) ? payload.messages : []
     messages.innerHTML = ''
     empty = null
@@ -80,7 +70,6 @@
       if (!message || !message.text) continue
       appendMessage(message.role === 'user' ? 'user' : 'assistant', message.text, false)
     }
-
     if (!messages.children.length) {
       empty = document.createElement('div')
       empty.className = 'chat-empty'
@@ -94,36 +83,27 @@
   function renderRecents (sessions) {
     recentList.innerHTML = ''
     recentEmpty.style.display = sessions.length ? 'none' : 'block'
-
     for (var i = 0; i < sessions.length; i += 1) {
       var session = sessions[i]
       if (!session || !session.id) continue
-
       var button = document.createElement('button')
       button.type = 'button'
       button.className = 'chat-recent-item' + (session.id === currentSessionId ? ' active' : '')
       button.dataset.sessionId = session.id
       button.title = session.preview || session.title || 'Conversation'
-
       var title = document.createElement('span')
       title.className = 'chat-recent-title'
       title.textContent = session.title || 'New conversation'
-
       var meta = document.createElement('span')
       meta.className = 'chat-recent-meta'
       var count = Number(session.message_count || 0)
       meta.textContent = count ? count + (count === 1 ? ' MESSAGE' : ' MESSAGES') : 'NEW'
-
       button.appendChild(title)
       button.appendChild(meta)
-
       button.addEventListener('click', function () {
         var id = this.dataset.sessionId
-        if (bridge && bridge.selectChatSession && id) {
-          bridge.selectChatSession(id)
-        }
+        if (bridge && bridge.selectChatSession && id) bridge.selectChatSession(id)
       })
-
       recentList.appendChild(button)
     }
   }
@@ -137,23 +117,17 @@
     }
   }
 
-  function toggleRecents () {
-    setRecents(!recentVisible)
-  }
+  function toggleRecents () { setRecents(!recentVisible) }
 
   function setFullscreen (enabled) {
-    if (!chatPanel) return
     chatPanel.classList.toggle('chat-fullscreen', enabled)
     document.body.classList.toggle('text-chat-fullscreen', enabled)
-
     if (fullscreenButton) {
       fullscreenButton.title = enabled ? 'Exit fullscreen chat' : 'Expand conversation'
       fullscreenButton.setAttribute('aria-label', enabled ? 'Exit fullscreen chat' : 'Expand conversation')
     }
     if (fullscreenLabel) fullscreenLabel.textContent = enabled ? 'EXIT' : 'FULLSCREEN'
-
     if (enabled) setRecents(true)
-
     window.requestAnimationFrame(function () {
       window.dispatchEvent(new Event('resize'))
       messages.scrollTop = messages.scrollHeight
@@ -161,34 +135,23 @@
     })
   }
 
-  function toggleFullscreen () {
-    var enabled = chatPanel.classList.contains('chat-fullscreen')
-    setFullscreen(!enabled)
-  }
+  if (historyButton) historyButton.addEventListener('click', function (event) {
+    event.preventDefault()
+    event.stopPropagation()
+    toggleRecents()
+  })
 
-  if (historyButton) {
-    historyButton.addEventListener('click', function (event) {
-      event.preventDefault()
-      event.stopPropagation()
-      toggleRecents()
-    })
-  }
+  if (newChatButton) newChatButton.addEventListener('click', function (event) {
+    event.preventDefault()
+    event.stopPropagation()
+    if (bridge && bridge.startNewChat) bridge.startNewChat()
+  })
 
-  if (newChatButton) {
-    newChatButton.addEventListener('click', function (event) {
-      event.preventDefault()
-      event.stopPropagation()
-      if (bridge && bridge.startNewChat) bridge.startNewChat()
-    })
-  }
-
-  if (fullscreenButton) {
-    fullscreenButton.addEventListener('click', function (event) {
-      event.preventDefault()
-      event.stopPropagation()
-      toggleFullscreen()
-    })
-  }
+  if (fullscreenButton) fullscreenButton.addEventListener('click', function (event) {
+    event.preventDefault()
+    event.stopPropagation()
+    setFullscreen(!chatPanel.classList.contains('chat-fullscreen'))
+  })
 
   window.addEventListener('keydown', function (event) {
     if (event.key === 'Escape' && chatPanel.classList.contains('chat-fullscreen')) {
@@ -202,10 +165,7 @@
     event.preventDefault()
     var text = input.value.trim()
     if (!text) return
-    if (!bridge || !bridge.sendTextMessage) {
-      console.warn('[ASTA HUD] Text input bridge unavailable')
-      return
-    }
+    if (!bridge || !bridge.sendTextMessage) return
     input.value = ''
     input.focus()
     bridge.sendTextMessage(text)
@@ -213,11 +173,13 @@
 
   if (bridge && bridge.onHudChatHistory) {
     bridge.onHudChatHistory(function (history) {
-      try {
-        loadHistory(history)
-      } catch (error) {
-        console.warn('[ASTA HUD] Invalid chat history:', error)
-      }
+      try { loadHistory(history) } catch (error) { console.warn('[ASTA HUD] Invalid chat history:', error) }
+    })
+  }
+
+  if (bridge && bridge.onHudChatSessions) {
+    bridge.onHudChatSessions(function (sessions) {
+      try { renderRecents(Array.isArray(sessions) ? sessions : []) } catch (error) { console.warn('[ASTA HUD] Invalid chat sessions:', error) }
     })
   }
 
@@ -226,9 +188,7 @@
       try {
         if (!message || !message.text) return
         appendMessage(message.role === 'user' ? 'user' : 'assistant', message.text, true)
-      } catch (error) {
-        console.warn('[ASTA HUD] Invalid chat message:', error)
-      }
+      } catch (error) { console.warn('[ASTA HUD] Invalid chat message:', error) }
     })
   }
 
