@@ -52,6 +52,7 @@ class HUDModule(Module):
             "tool_confirmation_response",
             self.on_tool_confirmation_response,
         )
+        self.transport.set_command_handler(self.on_transport_message)
 
         try:
             self.transport.start()
@@ -143,6 +144,23 @@ class HUDModule(Module):
                 progress=None,
                 activity=None,
             )
+
+    def on_transport_message(self, message):
+        """Translate HUD-originated input into the normal Kernel event."""
+        if not isinstance(message, dict):
+            return
+
+        payload = message.get("input") or {}
+        text = payload.get("text") if isinstance(payload, dict) else None
+        if not isinstance(text, str):
+            return
+
+        text = text.strip()
+        if not text:
+            return
+
+        self.event_bus.emit("user_message", text=text)
+        self.transport.publish_chat(role="user", text=text)
 
     def on_user_message(self, text):
         """Enter thinking state as soon as the user command reaches the kernel."""
@@ -261,6 +279,7 @@ class HUDModule(Module):
 
     def on_assistant_response(self, text):
         print(f"[HUD] {text}", flush=True)
+        self.transport.publish_chat(role="assistant", text=text)
         self.event_bus.emit("hud_rendered", text=text)
 
     def shutdown(self):
@@ -280,6 +299,7 @@ class HUDModule(Module):
             "tool_confirmation_response",
             self.on_tool_confirmation_response,
         )
+        self.transport.set_command_handler(None)
         try:
             self.transport.publish_audio_level(0.0)
         except OSError:
