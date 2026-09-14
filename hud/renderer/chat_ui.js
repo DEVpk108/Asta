@@ -17,6 +17,22 @@
     empty = null
   }
 
+  function progressiveReveal (body, text) {
+    var chars = Array.from(String(text || ''))
+    if (!chars.length) return
+
+    body.textContent = ''
+    var index = 0
+    var chunk = chars.length > 600 ? 10 : chars.length > 300 ? 7 : 4
+    var timer = window.setInterval(function () {
+      var end = Math.min(chars.length, index + chunk)
+      body.textContent += chars.slice(index, end).join('')
+      index = end
+      messages.scrollTop = messages.scrollHeight
+      if (index >= chars.length) window.clearInterval(timer)
+    }, 9)
+  }
+
   function appendMessage (role, text) {
     var value = String(text || '').trim()
     if (!value) return
@@ -32,12 +48,17 @@
 
     var body = document.createElement('div')
     body.className = 'chat-text'
-    body.textContent = value
 
     item.appendChild(label)
     item.appendChild(body)
     messages.appendChild(item)
     messages.scrollTop = messages.scrollHeight
+
+    if (role === 'assistant' && document.body.classList.contains('text-chat-fullscreen')) {
+      progressiveReveal(body, value)
+    } else {
+      body.textContent = value
+    }
   }
 
   function setFullscreen (enabled) {
@@ -51,12 +72,11 @@
       fullscreenButton.setAttribute('aria-label', enabled ? 'Exit fullscreen chat' : 'Expand conversation')
     }
 
-    if (fullscreenLabel) {
-      fullscreenLabel.textContent = enabled ? 'EXIT' : 'FULLSCREEN'
-    }
+    if (fullscreenLabel) fullscreenLabel.textContent = enabled ? 'EXIT' : 'FULLSCREEN'
 
     window.requestAnimationFrame(function () {
       window.dispatchEvent(new Event('resize'))
+      messages.scrollTop = messages.scrollHeight
       if (enabled) input.focus()
     })
   }
