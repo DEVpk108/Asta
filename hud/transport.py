@@ -33,6 +33,7 @@ class HUDTransport:
         self._stop = threading.Event()
         self._last_state_message: dict[str, Any] | None = None
         self._last_audio_message: dict[str, Any] | None = None
+        self._last_lifecycle_message: dict[str, Any] | None = None
         self._command_handler: Callable[[dict[str, Any]], None] | None = None
 
     def set_command_handler(self, handler: Callable[[dict[str, Any]], None] | None) -> None:
@@ -91,7 +92,7 @@ class HUDTransport:
         self._broadcast(message)
 
     def publish_chat(self, *, role: str, text: str) -> None:
-        """Publish a conversation message to the HUD."""
+        """Publish a conversation message to the HUD without modifying text."""
         message = {
             "type": "hud.chat",
             "version": 1,
@@ -100,6 +101,18 @@ class HUDTransport:
                 "text": str(text),
             },
         }
+        self._broadcast(message)
+
+    def publish_lifecycle(self, status: str) -> None:
+        """Publish a runtime lifecycle marker such as starting or ready."""
+        message = {
+            "type": "hud.lifecycle",
+            "version": 1,
+            "lifecycle": {
+                "status": str(status),
+            },
+        }
+        self._last_lifecycle_message = message
         self._broadcast(message)
 
     def stop(self) -> None:
@@ -152,6 +165,8 @@ class HUDTransport:
                 self._send_to_client(client, self._last_state_message)
             if self._last_audio_message is not None:
                 self._send_to_client(client, self._last_audio_message)
+            if self._last_lifecycle_message is not None:
+                self._send_to_client(client, self._last_lifecycle_message)
 
             threading.Thread(
                 target=self._client_loop,
@@ -215,7 +230,7 @@ class HUDTransport:
 
     @staticmethod
     def _send_to_client(client: socket.socket, message: dict[str, Any]) -> bool:
-        payload = (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
+        payload = (json.dumps(message, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
         try:
             client.sendall(payload)
             return True
