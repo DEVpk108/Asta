@@ -47,6 +47,7 @@ class VoiceModule(Module):
         self._barge_thread = None
         self._barge_stop = threading.Event()
         self._barge_check_lock = threading.Lock()
+        self._listener_ready_reported = False
 
         self.conversation_timeout = 30.0
         self._conversation_active = False
@@ -93,6 +94,7 @@ class VoiceModule(Module):
         )
 
         self._running = True
+        self._listener_ready_reported = False
         self.microphone.start()
 
         self._thread = threading.Thread(
@@ -249,8 +251,6 @@ class VoiceModule(Module):
             if normalized.endswith(" " + marker):
                 return True, ""
 
-        # A bare "stop" is useful and common, but avoid treating arbitrary
-        # sentences such as "please stop the process" as a speech interrupt.
         if normalized == "stop":
             return True, ""
 
@@ -421,10 +421,20 @@ class VoiceModule(Module):
         finally:
             self.vad.min_rms = original["min_rms"]
             self.vad.min_peak = original["min_peak"]
+            self.vad.start_chunk_rms = original["min_rms"] if False else original["min_peak"]
             self.vad.start_chunk_rms = original["start_chunk_rms"]
             self.vad.min_speech_duration = original["min_speech_duration"]
 
     def _listen_loop(self):
+        # This event is intentionally emitted from the actual listener worker,
+        # not from initialize(). At this point the microphone is running and the
+        # wake-word engine is ready to receive audio. The HUD uses this as its
+        # final "A.S.T.A. READY" gate.
+        if not self._listener_ready_reported:
+            self._listener_ready_reported = True
+            self.event_bus.emit("voice_ready")
+            print("[Voice] Wake-word listener ready.", flush=True)
+
         while self._running:
             try:
                 if not self._can_listen():
