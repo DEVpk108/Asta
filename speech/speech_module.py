@@ -38,6 +38,8 @@ class SpeechModule(Module):
         self._synthesis_inflight = 0
         self._presentation_mode_active = False
         self._interrupt_event = threading.Event()
+        self._last_audio_level_at = 0.0
+        self._audio_level_interval = 0.04  # ~25 HUD updates/sec
 
     def initialize(self):
         print("[Speech] Initializing...", flush=True)
@@ -57,6 +59,7 @@ class SpeechModule(Module):
         print("[Speech] Shutting down...", flush=True)
         self._running = False
         self._interrupt_event.set()
+        self._publish_audio_level(0.0, force=True)
         self.event_bus.unsubscribe("assistant_sentence", self.on_assistant_sentence)
         self.event_bus.unsubscribe("speech_interrupt", self.on_speech_interrupt)
 
@@ -91,6 +94,7 @@ class SpeechModule(Module):
         if was_inactive:
             # A new response is allowed to speak after a previous interrupt.
             self._interrupt_event.clear()
+            self._publish_audio_level(0.0, force=True)
             self.event_bus.emit("speech_started")
 
         self._queue.put(queued_text)
@@ -99,6 +103,7 @@ class SpeechModule(Module):
         """Cancel current speech and discard anything queued behind it."""
         print("[Speech] Interrupt requested.", flush=True)
         self._interrupt_event.set()
+        self._publish_audio_level(0.0, force=True)
 
         drained = 0
         while True:
@@ -121,6 +126,21 @@ class SpeechModule(Module):
             print(f"[Speech] Discarded {drained} queued speech item(s).", flush=True)
         if was_active:
             self.event_bus.emit("speech_finished")
+
+    def _publish_audio_level(self, level, *, force=False):
+        now = time.monotonic()
+        if not force and level > 0.0 and now - self._last_audio_level_at < self._audio_level_interval:
+            return
+
+        try:
+            value = max(0.0, min(1.0, float(level)))
+        except (TypeError, ValueError):
+            value = 0.0
+
+        if value > 0.0:
+            self._last_audio_level_at = now
+
+        self.event_bus.emit("speech_audio_level", level=value)
 
     def _get_coalesced_text(self, first_text):
         parts = [first_text]
@@ -187,15 +207,18 @@ class SpeechModule(Module):
                                 self._running
                                 and not self._interrupt_event.is_set()
                             ),
+                            on_level=self._publish_audio_level,
                         )
                         if not completed:
                             print("[Speech] Playback interrupted.", flush=True)
                 except Exception as exc:
+                    self._publish_audio_level(0.0, force=True)
                     print(
                         f"[Speech] Speech worker error: {type(exc).__name__}: {exc}",
                         flush=True,
                     )
                 finally:
+                    self._publish_audio_level(0.0, force=True)
                     with self._state_lock:
                         self._synthesis_inflight -= 1
                     self._queue.task_done()
@@ -215,5 +238,6 @@ class SpeechModule(Module):
             self._speech_active = False
             self._presentation_mode_active = False
 
+        self._publish_audio_level(0.0, force=True)
         self.event_bus.emit("speech_finished")
         return True
