@@ -1,4 +1,4 @@
-'use strict'
+;'use strict'
 
 /*
  * A.S.T.A. HUD runtime bridge.
@@ -6,7 +6,7 @@
  * Python owns canonical state and live speech telemetry. The app renderer
  * owns the actual visual state machine and WebGL animation response.
  */
-(function () {
+;(function () {
   var bridge = window.asta || null
   if (!bridge) return
 
