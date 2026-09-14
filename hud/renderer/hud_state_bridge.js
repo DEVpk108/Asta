@@ -15,12 +15,33 @@
      actually ready to listen. */
   var nativeSpeak = null
   var backendReady = false
+  var readyPending = false
   if (window.speechSynthesis && typeof window.speechSynthesis.speak === 'function') {
     nativeSpeak = window.speechSynthesis.speak.bind(window.speechSynthesis)
     window.speechSynthesis.speak = function (utterance) {
       var text = utterance && String(utterance.text || '').trim().toLowerCase()
-      if (!backendReady && text === 'ready') return
+      if (!backendReady && text === 'ready') {
+        readyPending = true
+        return
+      }
       nativeSpeak(utterance)
+    }
+  }
+
+  function announceReady () {
+    if (!backendReady || !readyPending || !nativeSpeak || !window.speechSynthesis) return
+    readyPending = false
+
+    try {
+      var utterance = new SpeechSynthesisUtterance('Ready')
+      utterance.rate = 0.85
+      utterance.pitch = 0.55
+      utterance.volume = 0.9
+      nativeSpeak(utterance)
+    } catch (error) {
+      if (window.console) {
+        console.warn('[ASTA HUD] Ready announcement failed:', error)
+      }
     }
   }
 
@@ -41,9 +62,9 @@
 
         if (status === 'ready') {
           backendReady = true
-          if (nativeSpeak && window.speechSynthesis) {
-            window.speechSynthesis.speak = nativeSpeak
-          }
+          announceReady()
+        } else if (status === 'starting') {
+          backendReady = false
         }
 
         if (status === 'ready' && window.AstaHUD && window.AstaHUD.beginRuntime) {
