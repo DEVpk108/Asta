@@ -33,7 +33,7 @@
     }, 9)
   }
 
-  function appendMessage (role, text) {
+  function appendMessage (role, text, animate) {
     var value = String(text || '').trim()
     if (!value) return
 
@@ -54,11 +54,33 @@
     messages.appendChild(item)
     messages.scrollTop = messages.scrollHeight
 
-    if (role === 'assistant' && document.body.classList.contains('text-chat-fullscreen')) {
+    if (animate && role === 'assistant' && document.body.classList.contains('text-chat-fullscreen')) {
       progressiveReveal(body, value)
     } else {
       body.textContent = value
     }
+  }
+
+  function loadHistory (history) {
+    var items = Array.isArray(history) ? history : []
+    messages.innerHTML = ''
+    empty = null
+
+    for (var index = 0; index < items.length; index += 1) {
+      var message = items[index]
+      if (!message || !message.text) continue
+      appendMessage(message.role === 'user' ? 'user' : 'assistant', message.text, false)
+    }
+
+    if (!messages.children.length) {
+      empty = document.createElement('div')
+      empty.className = 'chat-empty'
+      empty.id = 'chatEmpty'
+      empty.textContent = 'TEXT CHANNEL READY'
+      messages.appendChild(empty)
+    }
+
+    messages.scrollTop = messages.scrollHeight
   }
 
   function setFullscreen (enabled) {
@@ -117,11 +139,21 @@
     bridge.sendTextMessage(text)
   })
 
+  if (bridge && bridge.onHudChatHistory) {
+    bridge.onHudChatHistory(function (history) {
+      try {
+        loadHistory(history)
+      } catch (error) {
+        console.warn('[ASTA HUD] Invalid chat history:', error)
+      }
+    })
+  }
+
   if (bridge && bridge.onHudChat) {
     bridge.onHudChat(function (message) {
       try {
         if (!message || !message.text) return
-        appendMessage(message.role === 'user' ? 'user' : 'assistant', message.text)
+        appendMessage(message.role === 'user' ? 'user' : 'assistant', message.text, true)
       } catch (error) {
         console.warn('[ASTA HUD] Invalid chat message:', error)
       }
