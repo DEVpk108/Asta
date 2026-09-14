@@ -160,10 +160,12 @@ class HUDModule(Module):
             return
 
         self.event_bus.emit("user_message", text=text)
-        self.transport.publish_chat(role="user", text=text)
 
     def on_user_message(self, text):
-        """Enter thinking state as soon as the user command reaches the kernel."""
+        """Enter thinking state and render the user message in the HUD chat."""
+        if isinstance(text, str) and text.strip():
+            self.transport.publish_chat(role="user", text=text.strip())
+
         if self.state.mode in {"speaking", "approval", "executing"}:
             return
         self.set_state(
