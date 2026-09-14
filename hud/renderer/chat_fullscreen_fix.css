@@ -18,8 +18,6 @@
   box-shadow: none;
 }
 
-/* Reuse the main HUD background treatment instead of creating a different
-   fullscreen-chat backdrop. The HUD canvas remains visible behind this panel. */
 .chat.chat-fullscreen::before {
   content: "";
   position: absolute;
@@ -44,20 +42,21 @@
   backdrop-filter: blur(6px);
 }
 
+/* Keep the conversation in a readable column while reserving the left side for the hologram. */
 .chat.chat-fullscreen .chat-messages {
-  align-items: flex-start;
-  width: min(900px, calc(100% - 390px));
+  align-items: stretch;
+  width: min(1000px, calc(100% - 410px));
   margin-left: 370px;
   margin-right: auto;
-  padding: 34px 34px 34px 26px;
-  gap: 18px;
+  padding: 34px 0 34px 28px;
+  gap: 22px;
   background: transparent;
   overflow-y: auto;
 }
 
 .chat.chat-fullscreen .chat-message {
-  width: auto;
-  max-width: 100%;
+  width: fit-content;
+  max-width: 78%;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -70,14 +69,18 @@
   animation: fullscreen-message-fade 220ms ease-out forwards;
 }
 
-.chat.chat-fullscreen .chat-message.user {
-  align-self: stretch;
-  padding-left: 46px;
+/* A.S.T.A. stays on the left side of the reading column. */
+.chat.chat-fullscreen .chat-message.assistant {
+  align-self: flex-start;
+  padding-right: 24px;
 }
 
-.chat.chat-fullscreen .chat-message.assistant {
-  align-self: stretch;
-  padding-right: 22px;
+/* User messages sit clearly on the right, like a modern AI chat composer. */
+.chat.chat-fullscreen .chat-message.user {
+  align-self: flex-end;
+  padding-left: 80px;
+  padding-right: 0;
+  text-align: right;
 }
 
 .chat.chat-fullscreen .chat-message .chat-role {
@@ -86,13 +89,17 @@
   color: rgba(190, 220, 235, 0.42);
 }
 
+.chat.chat-fullscreen .chat-message.user .chat-role {
+  text-align: right;
+}
+
 .chat.chat-fullscreen .chat-text {
   display: block;
   color: rgba(234, 246, 255, 0.92);
 }
 
 .chat.chat-fullscreen .chat-message.user .chat-text {
-  color: rgba(213, 243, 255, 0.86);
+  color: rgba(213, 243, 255, 0.90);
 }
 
 @keyframes fullscreen-message-fade {
@@ -100,25 +107,47 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* Wide ChatGPT-style composer, aligned with the conversation column. */
 .chat.chat-fullscreen .chat-input {
-  padding: 14px 30px 18px 370px;
+  width: min(1000px, calc(100% - 410px));
+  margin-left: 370px;
+  margin-right: auto;
+  padding: 14px 0 20px 28px;
   gap: 10px;
   background: linear-gradient(180deg, rgba(0, 0, 0, 0), rgba(0, 8, 12, 0.44));
 }
 
 .chat.chat-fullscreen .chat-input input {
-  height: 48px;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  height: 52px;
   font-size: 14px;
-  padding: 11px 14px;
-  background: rgba(0, 0, 0, 0.42);
-  border-color: rgba(0, 229, 255, 0.20);
+  padding: 13px 17px;
+  border: 1px solid rgba(0, 229, 255, 0.22);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.48);
+  box-shadow: inset 0 0 18px rgba(0, 229, 255, 0.025);
 }
 
 .chat.chat-fullscreen .chat-input button {
-  min-width: 78px;
-  height: 48px;
-  font-size: 10px;
-  padding: 0 16px;
+  flex: 0 0 58px;
+  width: 58px;
+  min-width: 58px;
+  height: 52px;
+  padding: 0;
+  border: 1px solid rgba(0, 229, 255, 0.30);
+  border-radius: 8px;
+  background: rgba(0, 229, 255, 0.10);
+  color: rgba(226, 246, 255, 0.88);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+}
+
+.chat.chat-fullscreen .chat-input button:hover {
+  border-color: rgba(0, 229, 255, 0.62);
+  background: rgba(0, 229, 255, 0.18);
+  box-shadow: 0 0 18px rgba(0, 229, 255, 0.10);
 }
 
 .chat-expand-button {
@@ -205,10 +234,15 @@ body.text-chat-fullscreen .stage .shortcuts {
 
 @media (max-width: 1050px) {
   .chat.chat-fullscreen .chat-messages {
-    width: calc(100% - 290px);
+    width: calc(100% - 300px);
     margin-left: 270px;
+    padding-left: 24px;
   }
-  .chat.chat-fullscreen .chat-input { padding-left: 270px; }
+  .chat.chat-fullscreen .chat-input {
+    width: calc(100% - 300px);
+    margin-left: 270px;
+    padding-left: 24px;
+  }
 }
 
 @media (max-width: 800px) {
@@ -217,6 +251,13 @@ body.text-chat-fullscreen .stage .shortcuts {
     margin-left: 0;
     width: 100%;
     padding-left: 24px;
+    padding-right: 24px;
+  }
+  .chat.chat-fullscreen .chat-message {
+    max-width: 88%;
+  }
+  .chat.chat-fullscreen .chat-message.user {
+    padding-left: 40px;
   }
   body.text-chat-fullscreen .stage canvas,
   body.text-chat-fullscreen .stage #fallback { width: 190px; height: 190px; }
