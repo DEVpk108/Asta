@@ -1,5 +1,7 @@
 from core.module import Module
 
+from chat_history import ChatHistoryStore
+
 from .hud_state import HUDState
 from .transport import HUDTransport
 
@@ -34,6 +36,7 @@ class HUDModule(Module):
         )
         self.state = HUDState()
         self.transport = HUDTransport()
+        self.chat_history = ChatHistoryStore()
         self._conversation_active = False
         self._runtime_ready = False
 
@@ -62,10 +65,16 @@ class HUDModule(Module):
         self.transport.set_command_handler(self.on_transport_message)
 
         try:
+            self.chat_history.initialize()
             self.transport.start()
             self.transport.publish_lifecycle("starting")
+            self.transport.publish_chat_history(self.chat_history.recent())
             self._publish_state()
             self.transport.publish_audio_level(0.0)
+            print(
+                f"[Chat] History ready: {self.chat_history.db_path}",
+                flush=True,
+            )
         except OSError as exc:
             print(
                 f"[HUD] Transport unavailable: {type(exc).__name__}: {exc}",
@@ -202,7 +211,9 @@ class HUDModule(Module):
     def on_user_message(self, text):
         """Enter thinking state and render every input source in the HUD chat."""
         if isinstance(text, str) and text.strip():
-            self.transport.publish_chat(role="user", text=text.strip())
+            value = text.strip()
+            self.chat_history.append("user", value)
+            self.transport.publish_chat(role="user", text=value)
 
         if self.state.mode in {"speaking", "approval", "executing"}:
             return
@@ -330,6 +341,7 @@ class HUDModule(Module):
             )
             return
 
+        self.chat_history.append("assistant", value)
         self.transport.publish_chat(role="assistant", text=value)
 
     def shutdown(self):
@@ -356,3 +368,4 @@ class HUDModule(Module):
         except OSError:
             pass
         self.transport.stop()
+        self.chat_history.close()
