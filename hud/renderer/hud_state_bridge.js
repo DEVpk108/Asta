@@ -10,6 +10,13 @@
   var bridge = window.asta || null
   if (!bridge) return
 
+  /* Start the visual runtime as soon as the HUD is loaded. Python/kernel
+     readiness remains authoritative for canonical state, but the visual
+     assembly should not wait for the AI stack to finish initializing. */
+  if (window.AstaHUD && window.AstaHUD.beginRuntime) {
+    window.AstaHUD.beginRuntime()
+  }
+
   if (bridge.onHudLifecycle) {
     bridge.onHudLifecycle(function (lifecycle) {
       try {
