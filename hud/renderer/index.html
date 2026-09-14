@@ -42,18 +42,35 @@
         <div class="chat-header">
           <span class="chat-dot"></span>
           <span>CONVERSATION</span>
+          <button class="chat-history-button" id="chatHistory" type="button" title="Show recent conversations" aria-label="Show recent conversations">
+            <span>RECENTS</span>
+          </button>
           <button class="chat-expand-button" id="chatFullscreen" type="button" title="Expand conversation" aria-label="Expand conversation">
             <span class="chat-expand-icon" aria-hidden="true">&#10530;</span>
             <span class="chat-expand-label">FULLSCREEN</span>
           </button>
         </div>
-        <div class="chat-messages" id="chatMessages" aria-live="polite">
-          <div class="chat-empty" id="chatEmpty">TEXT CHANNEL READY</div>
+
+        <div class="chat-workspace">
+          <aside class="chat-recent" id="chatRecent" aria-label="Recent conversations">
+            <div class="chat-recent-header">
+              <span>RECENTS</span>
+              <button id="chatNew" type="button" title="New conversation">+</button>
+            </div>
+            <div class="chat-recent-list" id="chatRecentList"></div>
+            <div class="chat-recent-empty" id="chatRecentEmpty">NO RECENT CONVERSATIONS</div>
+          </aside>
+
+          <div class="chat-main">
+            <div class="chat-messages" id="chatMessages" aria-live="polite">
+              <div class="chat-empty" id="chatEmpty">TEXT CHANNEL READY</div>
+            </div>
+            <form class="chat-input" id="chatForm" autocomplete="off">
+              <input id="chatInput" type="text" placeholder="Message A.S.T.A..." aria-label="Message A.S.T.A." />
+              <button type="submit" id="chatSend" title="Send message" aria-label="Send message">&#8593;</button>
+            </form>
+          </div>
         </div>
-        <form class="chat-input" id="chatForm" autocomplete="off">
-          <input id="chatInput" type="text" placeholder="Message A.S.T.A..." aria-label="Message A.S.T.A." />
-          <button type="submit" id="chatSend" title="Send message" aria-label="Send message">&#8593;</button>
-        </form>
       </section>
 
       <div class="dock">
