@@ -4,7 +4,6 @@ const { app, BrowserWindow, ipcMain, Menu, shell } = require('electron')
 const net = require('net')
 const path = require('path')
 
-/* the HUD starts its ambient drone on boot, so allow audio without a gesture */
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
 const isMac = process.platform === 'darwin'
@@ -32,7 +31,6 @@ function sendHudLifecycle (lifecycle) {
 
   if (lifecycle && lifecycle.status === 'ready') {
     runtimeReady = true
-    if (!win.isDestroyed() && !win.isVisible()) win.show()
   } else if (lifecycle && lifecycle.status === 'starting') {
     runtimeReady = false
   }
@@ -58,17 +56,9 @@ function sendHudChat (message) {
 function flushRendererTelemetry () {
   if (!rendererReady || !win || win.isDestroyed()) return
 
-  if (latestHudLifecycle) {
-    win.webContents.send('asta:hud-lifecycle', latestHudLifecycle)
-  }
-
-  if (latestHudState) {
-    win.webContents.send('asta:hud-state', latestHudState)
-  }
-
-  if (latestHudAudio) {
-    win.webContents.send('asta:hud-audio', latestHudAudio)
-  }
+  if (latestHudLifecycle) win.webContents.send('asta:hud-lifecycle', latestHudLifecycle)
+  if (latestHudState) win.webContents.send('asta:hud-state', latestHudState)
+  if (latestHudAudio) win.webContents.send('asta:hud-audio', latestHudAudio)
 }
 
 function sendTextToAsta (text) {
@@ -104,9 +94,8 @@ function handleHudMessage (message) {
   }
 
   if (message.type === 'hud.state') {
-    const state = message.state || {}
-    sendHudState(state)
-    console.log(`[HUD] A.S.T.A. state: ${state.mode || 'unknown'}`)
+    sendHudState(message.state || {})
+    console.log(`[HUD] A.S.T.A. state: ${(message.state || {}).mode || 'unknown'}`)
     return
   }
 
@@ -203,8 +192,10 @@ function createWindow () {
     flushRendererTelemetry()
   })
 
+  // Show the real HUD as soon as Electron has rendered it. During startup the
+  // status bar/renderer remains in INITIALIZING state until Kernel READY.
   win.once('ready-to-show', () => {
-    if (runtimeReady) win.show()
+    if (!win.isDestroyed()) win.show()
   })
   win.on('closed', () => {
     rendererReady = false
@@ -219,7 +210,6 @@ function createWindow () {
 
 function buildMenu () {
   const template = []
-
   if (isMac) template.push({ role: 'appMenu' })
 
   template.push({
@@ -250,7 +240,6 @@ function buildMenu () {
   })
 
   template.push({ role: 'windowMenu' })
-
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
@@ -261,6 +250,7 @@ if (!gotLock) {
   app.on('second-instance', () => {
     if (win) {
       if (win.isMinimized()) win.restore()
+      win.show()
       win.focus()
     }
   })
