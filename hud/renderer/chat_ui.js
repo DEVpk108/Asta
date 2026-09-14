@@ -6,6 +6,8 @@
   var input = document.getElementById('chatInput')
   var messages = document.getElementById('chatMessages')
   var empty = document.getElementById('chatEmpty')
+  var chatPanel = document.getElementById('chatPanel')
+  var fullscreenButton = document.getElementById('chatFullscreen')
 
   if (!form || !input || !messages) return
 
@@ -36,6 +38,40 @@
     messages.appendChild(item)
     messages.scrollTop = messages.scrollHeight
   }
+
+  function setFullscreen (enabled) {
+    if (!chatPanel) return
+
+    chatPanel.classList.toggle('chat-fullscreen', enabled)
+    document.body.classList.toggle('text-chat-fullscreen', enabled)
+
+    if (fullscreenButton) {
+      fullscreenButton.title = enabled ? 'Return to HUD view' : 'Expand conversation'
+      fullscreenButton.setAttribute('aria-label', enabled ? 'Return to HUD view' : 'Expand conversation')
+    }
+
+    window.requestAnimationFrame(function () {
+      window.dispatchEvent(new Event('resize'))
+      if (enabled) input.focus()
+    })
+  }
+
+  function toggleFullscreen () {
+    var enabled = chatPanel && chatPanel.classList.contains('chat-fullscreen')
+    setFullscreen(!enabled)
+  }
+
+  if (fullscreenButton) {
+    fullscreenButton.addEventListener('click', toggleFullscreen)
+  }
+
+  window.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && chatPanel && chatPanel.classList.contains('chat-fullscreen')) {
+      event.preventDefault()
+      setFullscreen(false)
+      input.focus()
+    }
+  })
 
   form.addEventListener('submit', function (event) {
     event.preventDefault()
