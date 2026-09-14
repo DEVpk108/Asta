@@ -5,6 +5,7 @@ from .transport import HUDTransport
 
 
 _UNSET = object()
+_WAKEWORD_CHAT_SUPPRESSED = {"yes?"}
 
 
 class HUDModule(Module):
@@ -287,10 +288,16 @@ class HUDModule(Module):
             )
 
     def on_assistant_sentence(self, text):
-        """Render the original assistant sentence in chat; TTS sanitizes separately."""
+        """Render assistant sentences, excluding the voice wake-word acknowledgment."""
         if not isinstance(text, str) or not text.strip():
             return
-        self.transport.publish_chat(role="assistant", text=text.strip())
+
+        value = text.strip()
+        if value.lower() in _WAKEWORD_CHAT_SUPPRESSED:
+            print(f"[HUD] Suppressed wake-word acknowledgment from chat: {value!r}", flush=True)
+            return
+
+        self.transport.publish_chat(role="assistant", text=value)
 
     def shutdown(self):
         self.event_bus.unsubscribe("kernel_ready", self.on_kernel_ready)
