@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('asta', {
   close: () => ipcRenderer.send('win:close'),
   toggleFullscreen: () => ipcRenderer.send('win:toggle-fullscreen'),
   sendTextMessage: (text) => ipcRenderer.send('hud:text-message', text),
+  selectChatSession: (sessionId) => ipcRenderer.send('hud:select-chat', sessionId),
+  startNewChat: () => ipcRenderer.send('hud:new-chat'),
   onCommand: (fn) => {
     ipcRenderer.on('asta:command', (_event, cmd) => {
       try { fn(cmd) } catch (e) { /* ignore */ }
