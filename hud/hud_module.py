@@ -33,12 +33,10 @@ class HUDModule(Module):
         )
         self.state = HUDState()
         self.transport = HUDTransport()
+        self._conversation_active = False
 
     def initialize(self):
-        self.event_bus.subscribe(
-            "assistant_response",
-            self.on_assistant_response,
-        )
+        self.event_bus.subscribe("assistant_response", self.on_assistant_response)
         self.event_bus.subscribe("user_message", self.on_user_message)
         self.event_bus.subscribe("conversation_mode_set", self.on_conversation_mode_set)
         self.event_bus.subscribe("speech_started", self.on_speech_started)
@@ -60,8 +58,6 @@ class HUDModule(Module):
             self._publish_state()
             self.transport.publish_audio_level(0.0)
         except OSError as exc:
-            # The HUD is optional infrastructure. A transport bind failure
-            # must not prevent the rest of A.S.T.A. from starting.
             print(
                 f"[HUD] Transport unavailable: {type(exc).__name__}: {exc}",
                 flush=True,
@@ -90,9 +86,7 @@ class HUDModule(Module):
         if intensity is not None:
             intensity = str(intensity).lower()
             if intensity not in self.VALID_INTENSITIES:
-                raise ValueError(
-                    f"Unsupported HUD intensity: {intensity}"
-                )
+                raise ValueError(f"Unsupported HUD intensity: {intensity}")
             self.state.intensity = intensity
 
         if status is not None:
@@ -108,9 +102,7 @@ class HUDModule(Module):
                 self.state.progress = progress
 
         if activity is not _UNSET:
-            self.state.activity = (
-                None if activity is None else str(activity)
-            )
+            self.state.activity = None if activity is None else str(activity)
 
         self._publish_state()
         return self.state
@@ -127,29 +119,15 @@ class HUDModule(Module):
     def reset_state(self):
         """Reset the HUD to its initial idle state."""
         self.state = HUDState()
+        self._conversation_active = False
         self._publish_state()
         self.transport.publish_audio_level(0.0)
         return self.state
 
-    def on_user_message(self, text):
-        """Enter thinking state as soon as the user command reaches the kernel.
-
-        HUD is registered before AIModule so this callback runs before model
-        inference. Synchronous EventBus dispatch therefore gives the renderer a
-        real THINKING transition instead of applying it after inference.
-        """
-        if self.state.mode in {"speaking", "approval", "executing"}:
-            return
-        self.set_state(
-            mode="thinking",
-            intensity="high",
-            status="THINKING",
-            progress=None,
-            activity="reasoning",
-        )
-
     def on_conversation_mode_set(self, enabled):
-        if enabled:
+        self._conversation_active = bool(enabled)
+
+        if self._conversation_active:
             self.set_state(
                 mode="listening",
                 intensity="medium",
@@ -166,6 +144,18 @@ class HUDModule(Module):
                 activity=None,
             )
 
+    def on_user_message(self, text):
+        """Enter thinking state as soon as the user command reaches the kernel."""
+        if self.state.mode in {"speaking", "approval", "executing"}:
+            return
+        self.set_state(
+            mode="thinking",
+            intensity="high",
+            status="THINKING",
+            progress=None,
+            activity="reasoning",
+        )
+
     def on_speech_started(self, *args, **kwargs):
         self.set_state(
             mode="speaking",
@@ -177,25 +167,41 @@ class HUDModule(Module):
         self.transport.publish_audio_level(0.0)
 
     def on_speech_finished(self, *args, **kwargs):
-        # A.S.T.A. is voice-first, so after an utterance completes the natural
-        # next presentation state is waiting for the user's next command.
-        self.set_state(
-            mode="listening",
-            intensity="medium",
-            status="LISTENING",
-            progress=None,
-            activity="command",
-        )
+        if self._conversation_active:
+            self.set_state(
+                mode="listening",
+                intensity="medium",
+                status="LISTENING",
+                progress=None,
+                activity="command",
+            )
+        else:
+            self.set_state(
+                mode="idle",
+                intensity="low",
+                status="IDLE",
+                progress=None,
+                activity=None,
+            )
         self.transport.publish_audio_level(0.0)
 
     def on_speech_interrupt(self, *args, **kwargs):
-        self.set_state(
-            mode="listening",
-            intensity="medium",
-            status="LISTENING",
-            progress=None,
-            activity="interrupt",
-        )
+        if self._conversation_active:
+            self.set_state(
+                mode="listening",
+                intensity="medium",
+                status="LISTENING",
+                progress=None,
+                activity="interrupt",
+            )
+        else:
+            self.set_state(
+                mode="idle",
+                intensity="low",
+                status="IDLE",
+                progress=None,
+                activity=None,
+            )
         self.transport.publish_audio_level(0.0)
 
     def on_speech_audio_level(self, level=0.0, *args, **kwargs):
@@ -236,7 +242,7 @@ class HUDModule(Module):
                 progress=None,
                 activity="tool",
             )
-        else:
+        elif self._conversation_active:
             self.set_state(
                 mode="listening",
                 intensity="medium",
@@ -244,19 +250,21 @@ class HUDModule(Module):
                 progress=None,
                 activity="approval_rejected",
             )
+        else:
+            self.set_state(
+                mode="idle",
+                intensity="low",
+                status="IDLE",
+                progress=None,
+                activity=None,
+            )
 
     def on_assistant_response(self, text):
-        print(
-            f"[HUD] {text}",
-            flush=True,
-        )
+        print(f"[HUD] {text}", flush=True)
         self.event_bus.emit("hud_rendered", text=text)
 
     def shutdown(self):
-        self.event_bus.unsubscribe(
-            "assistant_response",
-            self.on_assistant_response,
-        )
+        self.event_bus.unsubscribe("assistant_response", self.on_assistant_response)
         self.event_bus.unsubscribe("user_message", self.on_user_message)
         self.event_bus.unsubscribe("conversation_mode_set", self.on_conversation_mode_set)
         self.event_bus.unsubscribe("speech_started", self.on_speech_started)
