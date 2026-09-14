@@ -36,7 +36,7 @@ class HUDModule(Module):
         self._conversation_active = False
 
     def initialize(self):
-        self.event_bus.subscribe("assistant_response", self.on_assistant_response)
+        self.event_bus.subscribe("assistant_sentence", self.on_assistant_sentence)
         self.event_bus.subscribe("user_message", self.on_user_message)
         self.event_bus.subscribe("conversation_mode_set", self.on_conversation_mode_set)
         self.event_bus.subscribe("speech_started", self.on_speech_started)
@@ -162,7 +162,7 @@ class HUDModule(Module):
         self.event_bus.emit("user_message", text=text)
 
     def on_user_message(self, text):
-        """Enter thinking state and render the user message in the HUD chat."""
+        """Enter thinking state and render every input source in the HUD chat."""
         if isinstance(text, str) and text.strip():
             self.transport.publish_chat(role="user", text=text.strip())
 
@@ -279,13 +279,14 @@ class HUDModule(Module):
                 activity=None,
             )
 
-    def on_assistant_response(self, text):
-        print(f"[HUD] {text}", flush=True)
-        self.transport.publish_chat(role="assistant", text=text)
-        self.event_bus.emit("hud_rendered", text=text)
+    def on_assistant_sentence(self, text):
+        """Render the same assistant sentences used by TTS in the chat."""
+        if not isinstance(text, str) or not text.strip():
+            return
+        self.transport.publish_chat(role="assistant", text=text.strip())
 
     def shutdown(self):
-        self.event_bus.unsubscribe("assistant_response", self.on_assistant_response)
+        self.event_bus.unsubscribe("assistant_sentence", self.on_assistant_sentence)
         self.event_bus.unsubscribe("user_message", self.on_user_message)
         self.event_bus.unsubscribe("conversation_mode_set", self.on_conversation_mode_set)
         self.event_bus.unsubscribe("speech_started", self.on_speech_started)
