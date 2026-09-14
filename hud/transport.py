@@ -129,6 +129,10 @@ class HUDTransport:
                     data = client.recv(4096)
                 except socket.timeout:
                     continue
+                except OSError:
+                    # Expected during shutdown: HUDTransport.stop() closes
+                    # connected sockets to unblock recv().
+                    break
                 if not data:
                     break
                 # V1 is one-way. We keep the read side alive so the protocol
