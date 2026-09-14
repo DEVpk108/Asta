@@ -127,16 +127,16 @@
   }
 
   if (engine && engine.ok) {
-    engineLabel.textContent = 'ENGINE WEBGL2 \u00b7 BLOOM ' + (engine.hdr ? 'HDR' : 'ON')
+    engineLabel.textContent = 'ENGINE WEBGL2 · BLOOM ' + (engine.hdr ? 'HDR' : 'ON')
     particleCountEl.textContent = engine.count.toLocaleString()
   } else {
     glCanvas.style.display = 'none'
     fbCanvas.style.display = 'block'
     engine = window.AstaFallback2D ? window.AstaFallback2D.create(fbCanvas) : null
-    engineLabel.textContent = 'ENGINE CANVAS2D \u00b7 FALLBACK'
-      + (engineError ? ' \u00b7 ' + engineError.slice(0, 70) : '')
+    engineLabel.textContent = 'ENGINE CANVAS2D · FALLBACK'
+      + (engineError ? ' · ' + engineError.slice(0, 70) : '')
     engineLed.classList.add('warn')
-    particleCountEl.textContent = '\u2014'
+    particleCountEl.textContent = '—'
   }
 
   /* ---------- waveform bars ---------- */
@@ -420,6 +420,9 @@
   }
 
   window.addEventListener('keydown', function (e) {
+    var target = e.target
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+
     if (e.metaKey || e.ctrlKey || e.altKey) return
     var k = (e.key || '').toLowerCase()
     var map = { '1': 'idle', '2': 'listening', '3': 'thinking', '4': 'speaking' }
