@@ -4,6 +4,7 @@
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
+  width: 100%;
 }
 
 .chat-main {
@@ -12,11 +13,13 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  width: 0;
 }
 
 .chat-main .chat-messages {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
 }
 
 .chat-history-button {
@@ -154,16 +157,31 @@
   text-align: center;
 }
 
+.chat.chat-fullscreen {
+  position: absolute !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  margin: 0 !important;
+}
+
 .chat.chat-fullscreen .chat-workspace {
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
+  width: 100%;
   margin: 0;
   padding: 0;
 }
 
 .chat.chat-fullscreen .chat-recent {
   flex: 0 0 330px;
+  width: 330px;
   min-width: 330px;
   padding-top: 330px;
   box-sizing: border-box;
@@ -175,22 +193,36 @@
 
 .chat.chat-fullscreen .chat-main {
   flex: 1 1 auto;
+  width: 0;
   min-width: 0;
   min-height: 0;
 }
 
 .chat.chat-fullscreen .chat-messages {
-  width: auto;
+  width: 100%;
+  max-width: none;
   margin-left: 0;
   margin-right: 0;
   flex: 1 1 auto;
+  min-width: 0;
 }
 
 .chat.chat-fullscreen .chat-input {
-  width: auto;
+  width: 100%;
+  max-width: none;
   margin-left: 0;
   margin-right: 0;
   flex: 0 0 auto;
+  min-width: 0;
+}
+
+.chat.chat-fullscreen .chat-input input {
+  min-width: 0;
+}
+
+.chat.chat-fullscreen .chat-empty {
+  margin: auto;
+  padding: 0 24px;
 }
 
 .chat.chat-fullscreen .chat-header .chat-history-button {
@@ -207,6 +239,7 @@
 @media (max-width: 850px) {
   .chat.chat-fullscreen .chat-recent {
     flex-basis: 220px;
+    width: 220px;
     min-width: 220px;
     padding-top: 220px;
   }
@@ -215,6 +248,7 @@
 @media (max-width: 800px) {
   .chat.chat-fullscreen .chat-recent {
     flex-basis: 190px;
+    width: 190px;
     min-width: 190px;
     padding-top: 190px;
   }
@@ -223,6 +257,7 @@
 @media (max-width: 650px) {
   .chat.chat-fullscreen .chat-recent {
     flex-basis: 185px;
+    width: 185px;
     min-width: 185px;
     padding-top: 190px;
   }
