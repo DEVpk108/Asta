@@ -10,6 +10,20 @@
   var bridge = window.asta || null
   if (!bridge) return
 
+  /* The renderer's assembly animation starts immediately, but its built-in
+     "Ready" speech must not fire until Python reports that A.S.T.A. is
+     actually ready to listen. */
+  var nativeSpeak = null
+  var backendReady = false
+  if (window.speechSynthesis && typeof window.speechSynthesis.speak === 'function') {
+    nativeSpeak = window.speechSynthesis.speak.bind(window.speechSynthesis)
+    window.speechSynthesis.speak = function (utterance) {
+      var text = utterance && String(utterance.text || '').trim().toLowerCase()
+      if (!backendReady && text === 'ready') return
+      nativeSpeak(utterance)
+    }
+  }
+
   /* Start the visual runtime as soon as the HUD is loaded. Python/kernel
      readiness remains authoritative for canonical state, but the visual
      assembly should not wait for the AI stack to finish initializing. */
@@ -23,6 +37,13 @@
         var status = String((lifecycle && lifecycle.status) || '').toLowerCase()
         if (window.console) {
           console.log('[ASTA HUD] Runtime lifecycle:', status || 'unknown')
+        }
+
+        if (status === 'ready') {
+          backendReady = true
+          if (nativeSpeak && window.speechSynthesis) {
+            window.speechSynthesis.speak = nativeSpeak
+          }
         }
 
         if (status === 'ready' && window.AstaHUD && window.AstaHUD.beginRuntime) {
