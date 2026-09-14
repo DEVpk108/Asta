@@ -16,11 +16,26 @@ let hudReconnectTimer = null
 let hudClosing = false
 let hudBuffer = ''
 let rendererReady = false
+let runtimeReady = false
+let latestHudLifecycle = null
 let latestHudState = null
 let latestHudAudio = null
 
 function send (cmd) {
   if (win && !win.isDestroyed()) win.webContents.send('asta:command', cmd)
+}
+
+function sendHudLifecycle (lifecycle) {
+  latestHudLifecycle = lifecycle
+  if (!rendererReady || !win || win.isDestroyed()) return
+  win.webContents.send('asta:hud-lifecycle', lifecycle)
+
+  if (lifecycle && lifecycle.status === 'ready') {
+    runtimeReady = true
+    if (!win.isDestroyed() && !win.isVisible()) win.show()
+  } else if (lifecycle && lifecycle.status === 'starting') {
+    runtimeReady = false
+  }
 }
 
 function sendHudState (state) {
@@ -42,6 +57,10 @@ function sendHudChat (message) {
 
 function flushRendererTelemetry () {
   if (!rendererReady || !win || win.isDestroyed()) return
+
+  if (latestHudLifecycle) {
+    win.webContents.send('asta:hud-lifecycle', latestHudLifecycle)
+  }
 
   if (latestHudState) {
     win.webContents.send('asta:hud-state', latestHudState)
@@ -77,6 +96,12 @@ function sendTextToAsta (text) {
 
 function handleHudMessage (message) {
   if (!message) return
+
+  if (message.type === 'hud.lifecycle') {
+    sendHudLifecycle(message.lifecycle || {})
+    console.log(`[HUD] A.S.T.A. lifecycle: ${(message.lifecycle || {}).status || 'unknown'}`)
+    return
+  }
 
   if (message.type === 'hud.state') {
     const state = message.state || {}
@@ -178,7 +203,9 @@ function createWindow () {
     flushRendererTelemetry()
   })
 
-  win.once('ready-to-show', () => win.show())
+  win.once('ready-to-show', () => {
+    if (runtimeReady) win.show()
+  })
   win.on('closed', () => {
     rendererReady = false
     win = null
