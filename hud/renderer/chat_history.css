@@ -157,11 +157,16 @@
 .chat.chat-fullscreen .chat-workspace {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
 }
 
 .chat.chat-fullscreen .chat-recent {
-  flex-basis: 280px;
+  flex: 0 0 330px;
+  min-width: 330px;
   padding-top: 330px;
+  box-sizing: border-box;
 }
 
 .chat.chat-fullscreen .chat-show-history .chat-recent {
@@ -200,15 +205,27 @@
 }
 
 @media (max-width: 850px) {
-  .chat.chat-fullscreen .chat-recent { flex-basis: 220px; }
+  .chat.chat-fullscreen .chat-recent {
+    flex-basis: 220px;
+    min-width: 220px;
+    padding-top: 220px;
+  }
 }
 
 @media (max-width: 800px) {
-  .chat.chat-fullscreen .chat-recent { padding-top: 190px; }
+  .chat.chat-fullscreen .chat-recent {
+    flex-basis: 190px;
+    min-width: 190px;
+    padding-top: 190px;
+  }
 }
 
 @media (max-width: 650px) {
-  .chat.chat-fullscreen .chat-recent { flex-basis: 185px; }
+  .chat.chat-fullscreen .chat-recent {
+    flex-basis: 185px;
+    min-width: 185px;
+    padding-top: 190px;
+  }
   .chat.chat-fullscreen .chat-history-button span { display: none; }
   .chat.chat-fullscreen .chat-history-button { min-width: 30px; width: 30px; padding: 0; }
 }
