@@ -10,44 +10,23 @@
   var bridge = window.asta || null
   if (!bridge) return
 
-  /* Preserve the HUD's startup assembly animation on first launch. The
-     backend's initial state is still authoritative; we simply defer applying
-     the first state until the visual assembly has had time to complete. */
-  var startupState = null
-  var startupTimer = null
-  var startupComplete = false
-  var STARTUP_ASSEMBLE_MS = 5400
+  if (bridge.onHudLifecycle) {
+    bridge.onHudLifecycle(function (lifecycle) {
+      try {
+        var status = String((lifecycle && lifecycle.status) || '').toLowerCase()
+        if (window.console) {
+          console.log('[ASTA HUD] Runtime lifecycle:', status || 'unknown')
+        }
 
-  function applyState (state) {
-    state = state || {}
-
-    if (window.AstaHUD && window.AstaHUD.applyCanonicalState) {
-      window.AstaHUD.applyCanonicalState(state)
-    }
-
-    document.body.dataset.hudMode = String(state.mode || 'idle').toLowerCase()
-    document.body.dataset.hudActivity = state.activity || ''
-
-    if (state.progress !== null && state.progress !== undefined) {
-      document.body.dataset.hudProgress = String(state.progress)
-    } else {
-      delete document.body.dataset.hudProgress
-    }
-  }
-
-  function finishStartup () {
-    if (startupComplete) return
-    startupComplete = true
-    if (startupTimer) {
-      clearTimeout(startupTimer)
-      startupTimer = null
-    }
-
-    if (startupState) {
-      var state = startupState
-      startupState = null
-      applyState(state)
-    }
+        if (status === 'ready' && window.AstaHUD && window.AstaHUD.beginRuntime) {
+          window.AstaHUD.beginRuntime()
+        }
+      } catch (error) {
+        if (window.console) {
+          console.warn('[ASTA HUD] Invalid runtime lifecycle:', error)
+        }
+      }
+    })
   }
 
   if (bridge.onHudState) {
@@ -58,13 +37,17 @@
           console.log('[ASTA HUD] Renderer state:', state.mode || 'idle')
         }
 
-        if (!startupComplete) {
-          startupState = state
-          if (!startupTimer) {
-            startupTimer = setTimeout(finishStartup, STARTUP_ASSEMBLE_MS)
-          }
+        if (window.AstaHUD && window.AstaHUD.applyCanonicalState) {
+          window.AstaHUD.applyCanonicalState(state)
+        }
+
+        document.body.dataset.hudMode = String(state.mode || 'idle').toLowerCase()
+        document.body.dataset.hudActivity = state.activity || ''
+
+        if (state.progress !== null && state.progress !== undefined) {
+          document.body.dataset.hudProgress = String(state.progress)
         } else {
-          applyState(state)
+          delete document.body.dataset.hudProgress
         }
       } catch (error) {
         if (window.console) {
