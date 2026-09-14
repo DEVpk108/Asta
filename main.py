@@ -4,30 +4,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from core.kernel import Kernel
-from core.tools import (
-    AudioControlTool,
-    CloseApplicationTool,
-    LaunchApplicationTool,
-    OpenApplicationTool,
-    OpenScreenshotTool,
-    RunCommandTool,
-    ScreenshotTool,
-    StartProcessTool,
-    StopProcessTool,
-    ToolRuntimeModule,
-)
-
-from speech.speech_module import SpeechModule
-from speech.presentation_patch import apply_presentation_patch
-from hud.hud_module import HUDModule
-from ai.ai_module import AIModule
-from ai.runtime_patch import apply_ai_runtime_patch
-from ai.final_runtime_patch import apply_final_runtime_patch
-from input.text_input_module import TextInputModule
-from voice.voice_module import VoiceModule
-from vision.screenshot_backend import capture_screenshot
-
 
 _HUD_PROCESS = None
 
@@ -43,7 +19,7 @@ def _text_input_enabled():
 
 
 def _start_hud():
-    """Launch the Electron HUD as part of the A.S.T.A. runtime."""
+    """Launch the Electron HUD as early as possible during runtime boot."""
     global _HUD_PROCESS
 
     if os.getenv("ASTA_DISABLE_HUD", "0").strip().lower() in {
@@ -61,9 +37,6 @@ def _start_hud():
         print(f"[HUD] package.json not found: {package_json}", flush=True)
         return None
 
-    # Windows exposes npm as a .cmd shim. Passing npm.cmd directly to
-    # CreateProcess avoids WinError 193 that occurs when the wrong shim is
-    # selected by shutil.which() from a Python subprocess.
     npm = None
     if os.name == "nt":
         npm = shutil.which("npm.cmd")
@@ -82,10 +55,7 @@ def _start_hud():
             stderr=subprocess.DEVNULL,
             shell=False,
         )
-        print(
-            f"[HUD] Electron HUD launched (PID {_HUD_PROCESS.pid}).",
-            flush=True,
-        )
+        print(f"[HUD] Electron HUD launched (PID {_HUD_PROCESS.pid}).", flush=True)
         return _HUD_PROCESS
     except OSError as exc:
         _HUD_PROCESS = None
@@ -120,15 +90,44 @@ def _stop_hud():
 
 
 def main():
+    # Start the presentation shell before importing modules that load heavy
+    # local models (Whisper, wake-word, etc.). This keeps HUD boot independent
+    # from backend model initialization time.
+    _start_hud()
+
+    # Import the runtime stack only after the HUD process is alive.
+    from core.kernel import Kernel
+    from core.tools import (
+        AudioControlTool,
+        CloseApplicationTool,
+        LaunchApplicationTool,
+        OpenApplicationTool,
+        OpenScreenshotTool,
+        RunCommandTool,
+        ScreenshotTool,
+        StartProcessTool,
+        StopProcessTool,
+        ToolRuntimeModule,
+    )
+    from speech.speech_module import SpeechModule
+    from speech.presentation_patch import apply_presentation_patch
+    from hud.hud_module import HUDModule
+    from ai.ai_module import AIModule
+    from ai.runtime_patch import apply_ai_runtime_patch
+    from ai.final_runtime_patch import apply_final_runtime_patch
+    from input.text_input_module import TextInputModule
+    from voice.voice_module import VoiceModule
+    from vision.screenshot_backend import capture_screenshot
+
     # Apply small runtime compatibility patches before module instances are created.
     apply_ai_runtime_patch()
     apply_final_runtime_patch()
     apply_presentation_patch()
 
-    _start_hud()
-
     kernel = Kernel()
 
+    # Construct the backend after the HUD is already visible. Heavy local model
+    # loading can now happen in parallel with the user's visual boot animation.
     hud = HUDModule(kernel)
     speech = SpeechModule(kernel)
     ai = AIModule(kernel)
