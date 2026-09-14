@@ -13,11 +13,15 @@
   if (bridge.onHudState) {
     bridge.onHudState(function (state) {
       try {
+        state = state || {}
+        if (window.console) {
+          console.log('[ASTA HUD] Renderer state:', state.mode || 'idle')
+        }
+
         if (window.AstaHUD && window.AstaHUD.applyCanonicalState) {
           window.AstaHUD.applyCanonicalState(state)
         }
 
-        state = state || {}
         document.body.dataset.hudMode = String(state.mode || 'idle').toLowerCase()
         document.body.dataset.hudActivity = state.activity || ''
 
