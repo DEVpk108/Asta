@@ -1,6 +1,5 @@
 import ctypes
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -68,12 +67,6 @@ def release_single_instance_lock(handle) -> None:
         ctypes.windll.kernel32.CloseHandle(handle)
 
 
-def find_npm() -> str | None:
-    if os.name == "nt":
-        return shutil.which("npm.cmd") or shutil.which("npm")
-    return shutil.which("npm")
-
-
 def main() -> int:
     mutex = acquire_single_instance_lock()
     if mutex is False:
@@ -81,8 +74,6 @@ def main() -> int:
 
     root = project_root()
     main_py = root / "main.py"
-    hud_dir = root / "hud"
-    package_json = hud_dir / "package.json"
     python_exe = find_python(root)
 
     if not main_py.exists():
@@ -98,27 +89,14 @@ def main() -> int:
         )
         return 1
 
-    if not package_json.exists():
-        release_single_instance_lock(mutex)
-        show_error(f"A.S.T.A. HUD package was not found:\n\n{package_json}")
-        return 1
-
-    npm = find_npm()
-    if not npm:
-        release_single_instance_lock(mutex)
-        show_error("Node.js / npm was not found. A.S.T.A. requires npm for the HUD.")
-        return 1
-
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
-    env["ASTA_PRELAUNCHED_HUD"] = "1"
 
     python_process = None
 
     try:
-        # The launcher starts the Python runtime only. main.py owns Electron
-        # startup, which keeps process ownership simple and avoids duplicate
-        # runtimes during repeated launches.
+        # Keep process ownership simple: the launcher starts only Python.
+        # main.py remains the owner of the Electron HUD lifecycle.
         python_process = subprocess.Popen(
             [str(python_exe), str(main_py)],
             cwd=str(root),
