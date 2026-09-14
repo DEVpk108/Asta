@@ -29,6 +29,11 @@ contextBridge.exposeInMainWorld('asta', {
       try { fn(audio) } catch (e) { /* ignore */ }
     })
   },
+  onHudChatHistory: (fn) => {
+    ipcRenderer.on('asta:hud-chat-history', (_event, history) => {
+      try { fn(history) } catch (e) { /* ignore */ }
+    })
+  },
   onHudChat: (fn) => {
     ipcRenderer.on('asta:hud-chat', (_event, message) => {
       try { fn(message) } catch (e) { /* ignore */ }
