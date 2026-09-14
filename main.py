@@ -46,6 +46,15 @@ def _start_hud():
     """Launch the Electron HUD as part of the A.S.T.A. runtime."""
     global _HUD_PROCESS
 
+    if os.getenv("ASTA_PRELAUNCHED_HUD", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        print("[HUD] Using launcher-prestarted Electron HUD.", flush=True)
+        return None
+
     if os.getenv("ASTA_DISABLE_HUD", "0").strip().lower() in {
         "1",
         "true",
@@ -125,9 +134,10 @@ def main():
     apply_final_runtime_patch()
     apply_presentation_patch()
 
-    # The HUD is part of the A.S.T.A. application now. Launch it first so the
-    # Electron window can connect while the Kernel initializes. The HUD itself
-    # remains hidden until it receives the Kernel's READY lifecycle signal.
+    # When the packaged launcher starts Electron first, the HUD can begin
+    # loading while Python imports the voice / AI stack. The HUD remains hidden
+    # until the Kernel's READY lifecycle signal, so this only reduces perceived
+    # startup latency without changing runtime ordering.
     _start_hud()
 
     kernel = Kernel()
