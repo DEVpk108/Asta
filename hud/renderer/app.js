@@ -111,6 +111,7 @@
   var ASSEMBLE_MS = reduced ? 900 : 5200
   var assembleStart = performance.now()
   var assembled = false
+  var startupReady = false
   var progress = 0
 
   /* ---------- engine boot ---------- */
@@ -266,15 +267,19 @@
     } catch (e) { /* ignore */ }
   }
 
-  startDrone()
-  var unlock = function () {
-    if (audio.ctx && audio.ctx.state === 'suspended') audio.ctx.resume()
+  function beginRuntime () {
+    if (startupReady) return
+    startupReady = true
+    assembled = false
+    progress = 0
+    assembleStart = performance.now()
     if (!audio.muted && !audio.nodes.length) startDrone()
-    window.removeEventListener('pointerdown', unlock)
-    window.removeEventListener('keydown', unlock)
   }
-  window.addEventListener('pointerdown', unlock)
-  window.addEventListener('keydown', unlock)
+
+  window.AstaHUD = window.AstaHUD || {}
+  window.AstaHUD.beginRuntime = beginRuntime
+  window.AstaHUD.applyCanonicalState = applyCanonicalState
+  window.AstaHUD.setAudioLevel = setAudioLevel
 
   /* ---------- state handling ---------- */
   function updateCanonicalLabels () {
@@ -331,8 +336,14 @@
       activity: state.activity || null
     }
 
-    /* A backend state is authoritative. It must never be overwritten by the
-       startup demo assembly sequence after the real runtime has connected. */
+    /* Before runtime readiness, state is buffered without cancelling the
+       synchronized startup assembly. Once started, backend state is applied
+       normally and remains authoritative. */
+    if (!startupReady) {
+      updateCanonicalLabels()
+      return
+    }
+
     if (!assembled) {
       assembled = true
       progress = 1
@@ -346,11 +357,6 @@
     var value = Number(level)
     if (!isFinite(value)) value = 0
     audioTarget = Math.max(0, Math.min(1, value))
-  }
-
-  window.AstaHUD = {
-    applyCanonicalState: applyCanonicalState,
-    setAudioLevel: setAudioLevel
   }
 
   function renderBigStatus () {
@@ -377,10 +383,12 @@
   }
 
   function forceComplete () {
+    if (!startupReady) beginRuntime()
     if (!assembled) completeAssembly()
   }
 
   function reassemble () {
+    if (!startupReady) beginRuntime()
     assembled = false
     progress = 0
     assembleStart = performance.now()
@@ -458,7 +466,7 @@
     var dt = Math.min(0.05, (now - last) / 1000)
     last = now
 
-    if (!assembled) {
+    if (startupReady && !assembled) {
       progress = Math.min(1, (now - assembleStart) / ASSEMBLE_MS)
       if (progress >= 1) completeAssembly()
     }
