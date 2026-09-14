@@ -1,6 +1,7 @@
 from core.module import Module
 
 from .hud_state import HUDState
+from .transport import HUDTransport
 
 
 _UNSET = object()
@@ -31,6 +32,7 @@ class HUDModule(Module):
             kernel=kernel,
         )
         self.state = HUDState()
+        self.transport = HUDTransport()
 
     def initialize(self):
         self.event_bus.subscribe(
@@ -50,6 +52,17 @@ class HUDModule(Module):
             "tool_confirmation_response",
             self.on_tool_confirmation_response,
         )
+
+        try:
+            self.transport.start()
+            self._publish_state()
+        except OSError as exc:
+            # The HUD is optional infrastructure. A transport bind failure
+            # must not prevent the rest of A.S.T.A. from starting.
+            print(
+                f"[HUD] Transport unavailable: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
 
     def get_state(self):
         """Return the current HUD presentation state."""
@@ -96,11 +109,22 @@ class HUDModule(Module):
                 None if activity is None else str(activity)
             )
 
+        self._publish_state()
         return self.state
+
+    def _publish_state(self):
+        try:
+            self.transport.publish_state(self.state)
+        except OSError as exc:
+            print(
+                f"[HUD] State publish failed: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
 
     def reset_state(self):
         """Reset the HUD to its initial idle state."""
         self.state = HUDState()
+        self._publish_state()
         return self.state
 
     def on_user_message(self, text):
@@ -213,3 +237,4 @@ class HUDModule(Module):
             "tool_confirmation_response",
             self.on_tool_confirmation_response,
         )
+        self.transport.stop()
