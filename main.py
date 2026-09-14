@@ -19,8 +19,17 @@ def _text_input_enabled():
 
 
 def _start_hud():
-    """Launch the Electron HUD as early as possible during runtime boot."""
+    """Launch the Electron HUD unless the packaged launcher already did so."""
     global _HUD_PROCESS
+
+    if os.getenv("ASTA_PRELAUNCHED_HUD", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        print("[HUD] Using launcher-prestarted Electron HUD.", flush=True)
+        return None
 
     if os.getenv("ASTA_DISABLE_HUD", "0").strip().lower() in {
         "1",
@@ -53,6 +62,10 @@ def _start_hud():
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            creationflags=(
+                getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+            ),
             shell=False,
         )
         print(f"[HUD] Electron HUD launched (PID {_HUD_PROCESS.pid}).", flush=True)
@@ -67,7 +80,7 @@ def _start_hud():
 
 
 def _stop_hud():
-    """Stop the HUD child process when A.S.T.A. shuts down."""
+    """Stop the HUD and all npm/Electron descendants."""
     global _HUD_PROCESS
 
     process = _HUD_PROCESS
@@ -77,13 +90,23 @@ def _stop_hud():
 
     print("[HUD] Shutting down Electron HUD...", flush=True)
     try:
-        process.terminate()
-        process.wait(timeout=3)
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+            )
+        else:
+            process.terminate()
+            process.wait(timeout=3)
     except subprocess.TimeoutExpired:
-        process.kill()
         try:
+            process.kill()
             process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, OSError):
             pass
     except OSError:
         pass
