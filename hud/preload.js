@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('asta', {
   selectChatSession: (sessionId) => ipcRenderer.send('hud:select-chat', sessionId),
   deleteChatSession: (sessionId) => ipcRenderer.send('hud:delete-chat', sessionId),
   startNewChat: () => ipcRenderer.send('hud:new-chat'),
+  setConversationMode: (enabled) => ipcRenderer.send('hud:conversation-mode', !!enabled),
   onCommand: (fn) => {
     ipcRenderer.on('asta:command', (_event, cmd) => {
       try { fn(cmd) } catch (e) { /* ignore */ }
@@ -40,6 +41,11 @@ contextBridge.exposeInMainWorld('asta', {
   onHudChatSessions: (fn) => {
     ipcRenderer.on('asta:hud-chat-sessions', (_event, sessions) => {
       try { fn(sessions) } catch (e) { /* ignore */ }
+    })
+  },
+  onHudConversationMode: (fn) => {
+    ipcRenderer.on('asta:hud-conversation-mode', (_event, enabled) => {
+      try { fn(!!enabled) } catch (e) { /* ignore */ }
     })
   },
   onHudChat: (fn) => {
