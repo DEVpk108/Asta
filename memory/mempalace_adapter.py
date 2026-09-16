@@ -93,6 +93,22 @@ class MemPalaceAdapter:
             self.error = f"{type(exc).__name__}: {exc}"
             return False
 
+    def delete_session(self, session_id: str) -> bool:
+        """Remove all conversation memories belonging to one chat session."""
+        if not self.available or self._collection is None:
+            return False
+
+        value = str(session_id or "").strip()
+        if not value:
+            return False
+
+        try:
+            self._collection.delete(where={"session_id": value})
+            return True
+        except Exception as exc:
+            self.error = f"{type(exc).__name__}: {exc}"
+            return False
+
     def search(self, query: str, *, n_results: int = 5) -> list[dict]:
         """Return raw semantic memory hits for the A.S.T.A. runtime."""
         if not self.available or self._stack is None:
