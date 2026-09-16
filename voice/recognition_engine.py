@@ -1,6 +1,7 @@
 import os
 import re
 import time
+from collections import Counter
 
 from faster_whisper import WhisperModel
 import torch
@@ -197,11 +198,21 @@ class RecognitionEngine:
         )
 
         if self.debug and segment_stats:
-            stats_text = ", ".join(
+            formatted_stats = [
                 f"avg_logprob={avg:.2f} no_speech={no_speech:.2f} compression={compression:.2f}"
                 for avg, no_speech, compression in segment_stats
+            ]
+            counts = Counter(formatted_stats)
+            unique_stats = []
+            for stats in dict.fromkeys(formatted_stats):
+                count = counts[stats]
+                unique_stats.append(f"{stats} (x{count})" if count > 1 else stats)
+
+            print(
+                f"[STT] Segment confidence ({len(segment_stats)} segment(s)): "
+                + "; ".join(unique_stats),
+                flush=True,
             )
-            print(f"[STT] Segment confidence: {stats_text}", flush=True)
 
         if rejected_segments and not parts:
             print("[STT] All Whisper segments rejected as unreliable.", flush=True)

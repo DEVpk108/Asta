@@ -1,0 +1,241 @@
+/* ChatGPT-like local recent-conversation navigation inside A.S.T.A. */
+.chat-workspace {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+}
+
+.chat-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  width: 0;
+}
+
+.chat-main .chat-messages {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.chat-history-button {
+  margin-left: auto;
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid rgba(0, 229, 255, 0.18);
+  border-radius: 3px;
+  background: rgba(0, 229, 255, 0.03);
+  color: rgba(220, 242, 255, 0.55);
+  font: inherit;
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.chat-history-button:hover,
+.chat-history-button.active {
+  border-color: rgba(0, 229, 255, 0.46);
+  background: rgba(0, 229, 255, 0.09);
+  color: rgba(240, 250, 255, 0.96);
+}
+
+.chat.chat-show-history { width: min(540px, 44vw); }
+
+.chat-recent {
+  display: none;
+  flex: 0 0 190px;
+  flex-direction: column;
+  min-width: 190px;
+  min-height: 0;
+  border-right: 1px solid rgba(0, 229, 255, 0.10);
+  background: linear-gradient(180deg, rgba(0, 12, 18, 0.46), rgba(0, 5, 8, 0.30));
+  backdrop-filter: blur(5px);
+}
+
+.chat.chat-show-history .chat-recent { display: flex; }
+
+.chat-recent-header {
+  flex: 0 0 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 13px;
+  border-bottom: 1px solid rgba(0, 229, 255, 0.10);
+  color: rgba(220, 242, 255, 0.62);
+  font-size: 9px;
+  letter-spacing: 0.20em;
+}
+
+.chat-recent-header button {
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(0, 229, 255, 0.22);
+  border-radius: 4px;
+  background: rgba(0, 229, 255, 0.04);
+  color: rgba(230, 248, 255, 0.80);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chat-recent-header button:hover { border-color: rgba(0, 229, 255, 0.52); background: rgba(0, 229, 255, 0.11); }
+
+.chat-recent-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 7px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 229, 255, 0.16) transparent;
+}
+
+.chat-recent-list::-webkit-scrollbar { width: 5px; }
+.chat-recent-list::-webkit-scrollbar-track { background: transparent; }
+.chat-recent-list::-webkit-scrollbar-thumb { background: rgba(0, 229, 255, 0.16); border-radius: 999px; }
+
+.chat-recent-item {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 5px;
+  margin: 2px 0;
+  padding: 11px 52px 11px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: rgba(0, 7, 11, 0.16);
+  color: rgba(230, 246, 255, 0.80);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.chat-recent-item:hover { background: rgba(255, 255, 255, 0.055); border-color: rgba(0, 229, 255, 0.10); }
+.chat-recent-item.active { background: rgba(255, 255, 255, 0.085); border-color: rgba(0, 229, 255, 0.15); box-shadow: inset 2px 0 0 rgba(0, 229, 255, 0.60); }
+
+.chat-recent-select { min-width: 0 !important; max-width: 100% !important; box-sizing: border-box; overflow: hidden; }
+.chat-recent-title { display: block; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; line-height: 1.35; color: rgba(236, 247, 255, 0.92); }
+.chat-recent-meta { display: block; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 7px; letter-spacing: 0.13em; color: rgba(190, 220, 235, 0.32); }
+.chat-recent-delete { box-sizing: border-box; flex: 0 0 auto; pointer-events: auto; }
+.chat-recent-empty { flex: 0 0 auto; padding: 16px 12px; color: rgba(190, 220, 235, 0.28); font-size: 8px; letter-spacing: 0.12em; text-align: center; }
+
+.chat.chat-fullscreen {
+  position: absolute !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  margin: 0 !important;
+}
+
+.chat.chat-fullscreen .chat-workspace {
+  display: flex !important;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  margin: 0;
+  padding: 0 0 0 330px;
+}
+.chat.chat-fullscreen.chat-show-history .chat-workspace { padding-left: 0; }
+.chat.chat-fullscreen .chat-recent {
+  align-self: flex-start;
+  flex: 0 0 330px;
+  width: 330px;
+  min-width: 330px;
+  height: calc(100% - 330px);
+  margin-top: 330px;
+  padding-top: 0;
+  box-sizing: border-box;
+}
+.chat.chat-fullscreen.chat-show-history .chat-recent { display: flex !important; visibility: visible !important; opacity: 1 !important; }
+.chat.chat-fullscreen .chat-main { flex: 1 1 auto; width: 0; min-width: 0; min-height: 0; }
+.chat.chat-fullscreen .chat-messages { width: 100%; max-width: none; margin: 0; flex: 1 1 auto; min-width: 0; }
+.chat.chat-fullscreen .chat-input { width: 100%; max-width: none; margin: 0; flex: 0 0 auto; }
+.chat.chat-fullscreen .chat-input input { min-width: 0; }
+.chat.chat-fullscreen .chat-empty { margin: auto; padding: 0 24px; }
+.chat.chat-fullscreen .chat-header .chat-history-button { margin-left: auto; min-width: 70px; height: 30px; border-color: rgba(0, 229, 255, 0.25); }
+.chat.chat-fullscreen .chat-header .chat-expand-button { margin-left: 7px; }
+
+/* Conversation mode control. The circular waveform button is intentionally compact so it reads as a voice-mode toggle without competing with Send. */
+.chat-conversation-button {
+  flex: 0 0 46px;
+  width: 46px;
+  height: 42px;
+  padding: 0;
+  border: 1px solid rgba(0, 229, 255, 0.22);
+  border-radius: 999px;
+  background: rgba(0, 13, 19, 0.78);
+  color: rgba(220, 242, 255, 0.72);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.chat-conversation-button svg { width: 22px; height: 22px; display: block; }
+
+.chat-conversation-button:hover {
+  border-color: rgba(0, 229, 255, 0.55);
+  background: rgba(0, 229, 255, 0.10);
+  color: #fff;
+  box-shadow: 0 0 16px rgba(0, 229, 255, 0.16);
+}
+
+.chat-conversation-button:active { transform: scale(0.96); }
+
+.chat-conversation-button.active {
+  border-color: rgba(70, 160, 255, 0.70);
+  background: #2468c9;
+  color: #fff;
+  box-shadow: 0 0 18px rgba(36, 104, 201, 0.42), inset 0 0 10px rgba(255, 255, 255, 0.08);
+}
+
+.chat-conversation-button.active:hover {
+  border-color: rgba(120, 195, 255, 0.92);
+  background: #2b76dc;
+  box-shadow: 0 0 22px rgba(43, 118, 220, 0.52);
+}
+
+.chat-conversation-button:focus-visible { outline: 1px solid rgba(0, 229, 255, 0.65); outline-offset: 2px; }
+
+.chat.chat-fullscreen .chat-conversation-button { width: 50px; flex-basis: 50px; height: 44px; }
+
+@media (max-width: 1100px) { .chat.chat-show-history { width: min(500px, 48vw); } }
+@media (max-width: 1050px) {
+  .chat.chat-fullscreen .chat-workspace { padding-left: 270px; }
+  .chat.chat-fullscreen.chat-show-history .chat-workspace { padding-left: 0; }
+  .chat.chat-fullscreen .chat-recent { flex-basis: 270px; width: 270px; min-width: 270px; height: calc(100% - 270px); margin-top: 270px; }
+}
+@media (max-width: 900px) { .chat.chat-show-history { width: auto; } }
+@media (max-width: 850px) {
+  .chat.chat-fullscreen .chat-workspace { padding-left: 220px; }
+  .chat.chat-fullscreen.chat-show-history .chat-workspace { padding-left: 0; }
+  .chat.chat-fullscreen .chat-recent { flex-basis: 220px; width: 220px; min-width: 220px; height: calc(100% - 220px); margin-top: 220px; }
+}
+@media (max-width: 800px) {
+  .chat.chat-fullscreen .chat-workspace,
+  .chat.chat-fullscreen.chat-show-history .chat-workspace { padding-left: 0; }
+  .chat.chat-fullscreen .chat-recent { flex-basis: 190px; width: 190px; min-width: 190px; height: auto; margin-top: 0; }
+}
+@media (max-width: 650px) {
+  .chat.chat-fullscreen .chat-recent { flex-basis: 185px; width: 185px; min-width: 185px; }
+  .chat.chat-fullscreen .chat-history-button span { display: none; }
+  .chat.chat-fullscreen .chat-history-button { min-width: 30px; width: 30px; padding: 0; }
+  .chat-conversation-button { flex-basis: 42px; width: 42px; height: 40px; }
+}

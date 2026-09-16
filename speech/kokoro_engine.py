@@ -108,15 +108,34 @@ class KokoroEngine:
         )
         return audio
 
-    def play(self, audio, should_continue=None):
-        """Play audio in short chunks so callers can interrupt speech quickly."""
+    @staticmethod
+    def _audio_level(audio_chunk):
+        """Return a stable 0..1 envelope from an output audio chunk."""
+        samples = np.asarray(audio_chunk, dtype=np.float32).reshape(-1)
+        if samples.size == 0:
+            return 0.0
+
+        rms = float(np.sqrt(np.mean(np.square(samples))))
+        peak = float(np.max(np.abs(samples)))
+
+        # Kokoro output is already normalized audio. RMS gives the smooth body
+        # of the signal while peak catches consonants and transients. The
+        # renderer applies another smoothing stage before visual modulation.
+        return max(0.0, min(1.0, max(rms * 5.0, peak * 0.85)))
+
+    def play(self, audio, should_continue=None, on_level=None):
+        """Play audio in short chunks and optionally report its live envelope."""
         if audio is None:
+            if on_level is not None:
+                on_level(0.0)
             return True
 
         start = time.perf_counter()
         try:
             audio = np.asarray(audio, dtype=np.float32).reshape(-1)
             if audio.size == 0:
+                if on_level is not None:
+                    on_level(0.0)
                 return True
 
             chunk_samples = max(1, int(self.SAMPLE_RATE * 0.02))  # ~20 ms
@@ -128,10 +147,19 @@ class KokoroEngine:
             ) as stream:
                 for start_idx in range(0, audio.size, chunk_samples):
                     if should_continue is not None and not should_continue():
+                        if on_level is not None:
+                            on_level(0.0)
                         print("[Speech] Kokoro playback interrupted.", flush=True)
                         return False
+
                     end_idx = min(start_idx + chunk_samples, audio.size)
-                    stream.write(audio[start_idx:end_idx])
+                    chunk = audio[start_idx:end_idx]
+                    stream.write(chunk)
+                    if on_level is not None:
+                        on_level(self._audio_level(chunk))
+
+            if on_level is not None:
+                on_level(0.0)
 
             duration = audio.size / self.SAMPLE_RATE
             print(
@@ -141,6 +169,8 @@ class KokoroEngine:
             )
             return True
         except Exception as exc:
+            if on_level is not None:
+                on_level(0.0)
             print(
                 f"[Speech] Kokoro playback error: {type(exc).__name__}: {exc}",
                 flush=True,

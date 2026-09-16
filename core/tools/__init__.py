@@ -19,6 +19,7 @@ from .policy import (
 from .registry import ToolRegistry
 from .request_builder import ToolRequestBuilder
 from .selector import ToolSelector
+from .screenshot import OpenScreenshotTool
 from .system import OpenApplicationTool
 from .test_tool import EchoTool
 
@@ -27,5 +28,5 @@ __all__ = [
     "RiskLevel", "Tool", "ToolDispatcher", "ToolRuntimeModule", "ToolRegistry",
     "ToolRequestBuilder", "ToolSelector", "OpenApplicationTool", "LaunchApplicationTool",
     "StartProcessTool", "RunCommandTool", "StopProcessTool", "CloseApplicationTool",
-    "ScreenshotTool", "AudioControlTool", "EchoTool",
+    "ScreenshotTool", "OpenScreenshotTool", "AudioControlTool", "EchoTool",
 ]

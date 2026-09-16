@@ -1,0 +1,4 @@
+# A.S.T.A. long-term memory backend
+# MemPalace keeps memory local-first and exposes semantic retrieval plus a
+# layered memory stack that A.S.T.A. can use without changing its core.
+mempalace==3.10.0

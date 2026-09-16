@@ -2,6 +2,8 @@ from core.module import Module
 from core.contracts import IntentType, IntentResult, ToolResult
 from core.tools import ToolRequestBuilder
 
+from chat_history import ChatHistoryStore
+
 from .openai_engine import AIEngine
 
 
@@ -37,6 +39,12 @@ class AIModule(Module):
         "exit conversation mode",
     }
 
+    _CONVERSATION_MODE_LEADS = (
+        "okay ",
+        "ok ",
+        "please ",
+    )
+
     _PRESENTATION_PHRASES = (
         "present yourself",
         "introduce yourself",
@@ -49,6 +57,28 @@ class AIModule(Module):
         "explain yourself to the teacher",
     )
 
+    _CONTEXT_QUESTIONS = {
+        "what were we talking about",
+        "what were we talking about earlier",
+        "what were we discussing",
+        "what were we discussing earlier",
+        "what was i talking about",
+        "what was i talking about earlier",
+        "what did we just talk about",
+        "what did we talk about",
+        "what did we discuss",
+        "what did you just tell me",
+        "what did you tell me",
+        "remind me what we were talking about",
+        "remind me what we discussed",
+    }
+
+    _WAKEWORD_GREETINGS = {
+        "hello! how can i help?",
+        "hello how can i help",
+        "yes?",
+    }
+
     def __init__(self, kernel):
         super().__init__(
             name="AIModule",
@@ -58,10 +88,12 @@ class AIModule(Module):
 
         self.engine = AIEngine()
         self.tool_request_builder = ToolRequestBuilder(kernel.tool_registry)
+        self.chat_history = ChatHistoryStore()
 
     def initialize(self):
         print("[AI] Initializing...", flush=True)
         self._ground_engine_in_capabilities()
+        self.chat_history.initialize()
 
         warmup = getattr(self.engine, "warmup", None)
         if callable(warmup):
@@ -81,6 +113,7 @@ class AIModule(Module):
             "tool_confirmation_required",
             self.on_tool_confirmation_required,
         )
+        self.chat_history.close()
         print("[AI] Stopped", flush=True)
 
     def _ground_engine_in_capabilities(self):
@@ -165,6 +198,12 @@ class AIModule(Module):
             )
             return
 
+        context_response = self._context_response(text)
+        if context_response is not None:
+            print("[AI] Answering from recent chat context.", flush=True)
+            self._emit_assistant_text(context_response)
+            return
+
         result: IntentResult = self.kernel.intent_router.analyze(text)
         print(
             f"[AI] Intent: {result.intent.value} "
@@ -185,8 +224,57 @@ class AIModule(Module):
 
         self._generate_response(text)
 
+    def _context_response(self, text):
+        normalized = self._normalize_question(text)
+        if normalized not in self._CONTEXT_QUESTIONS:
+            return None
+
+        messages = self.chat_history.latest_active_context(limit=12)
+        if not messages:
+            return "We haven't talked about anything in this conversation yet."
+
+        substantive = [
+            message
+            for message in messages
+            if str(message.get("text") or "").strip().lower() not in self._WAKEWORD_GREETINGS
+        ]
+        if not substantive:
+            return "We haven't discussed a specific topic yet."
+
+        last_assistant = next(
+            (
+                message["text"].strip()
+                for message in reversed(substantive)
+                if message.get("role") == "assistant" and str(message.get("text") or "").strip()
+            ),
+            None,
+        )
+        last_user = next(
+            (
+                message["text"].strip()
+                for message in reversed(substantive)
+                if message.get("role") == "user" and str(message.get("text") or "").strip()
+            ),
+            None,
+        )
+
+        if last_assistant:
+            return f"We were talking about this: {last_assistant}"
+        if last_user:
+            return f"You were asking about: {last_user}"
+        return "We were just getting started in this conversation."
+
     def _handle_conversation_mode_command(self, text):
         normalized = self._normalize_question(text)
+
+        changed = True
+        while changed:
+            changed = False
+            for lead in self._CONVERSATION_MODE_LEADS:
+                if normalized.startswith(lead):
+                    normalized = normalized[len(lead):].strip()
+                    changed = True
+                    break
 
         if normalized in self._CONVERSATION_MODE_ON:
             self.event_bus.emit("conversation_mode_set", enabled=True)
@@ -349,7 +437,6 @@ class AIModule(Module):
         self.event_bus.emit("tool_request", request=request)
 
     def _handle_command_sequence(self, intent: IntentResult, commands):
-        """Build the first request and carry the remaining sequence in metadata."""
         first = commands[0]
         first_intent = IntentResult(
             intent=IntentType.COMMAND,
@@ -372,10 +459,7 @@ class AIModule(Module):
         request.metadata["sequence"] = [dict(command) for command in commands]
         request.metadata["sequence_index"] = 0
 
-        print(
-            f"[AI] Compound command: {len(commands)} step(s)",
-            flush=True,
-        )
+        print(f"[AI] Compound command: {len(commands)} step(s)", flush=True)
         print(
             f"[AI] Selected tool: {request.tool} "
             f"(request_id={request.request_id}, step=1/{len(commands)})",

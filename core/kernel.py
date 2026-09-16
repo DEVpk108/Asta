@@ -77,6 +77,11 @@ class Kernel:
         self._running = True
         self._stop_event.clear()
 
+        # All registered modules are initialized at this point. Emit one
+        # lifecycle event so presentation clients such as the HUD can start
+        # in sync with the actual A.S.T.A. runtime rather than their own boot.
+        self.event_bus.emit("kernel_ready")
+
         print("[Kernel] Running")
 
     def run(self):

@@ -38,6 +38,8 @@ class SpeechModule(Module):
         self._synthesis_inflight = 0
         self._presentation_mode_active = False
         self._interrupt_event = threading.Event()
+        self._last_audio_level_at = 0.0
+        self._audio_level_interval = 0.04  # ~25 HUD updates/sec
 
     def initialize(self):
         print("[Speech] Initializing...", flush=True)
@@ -57,6 +59,7 @@ class SpeechModule(Module):
         print("[Speech] Shutting down...", flush=True)
         self._running = False
         self._interrupt_event.set()
+        self._publish_audio_level(0.0, force=True)
         self.event_bus.unsubscribe("assistant_sentence", self.on_assistant_sentence)
         self.event_bus.unsubscribe("speech_interrupt", self.on_speech_interrupt)
 
@@ -67,6 +70,39 @@ class SpeechModule(Module):
 
         self._speech_thread = None
         print("[Speech] Stopped", flush=True)
+
+    @staticmethod
+    def _remove_emoji(text):
+        """Remove emoji/presentation characters from text before TTS.
+
+        The original text still flows through the normal assistant_sentence
+        event for the HUD/chat. Only the speech synthesis copy is sanitized.
+        """
+        if not text:
+            return ""
+
+        ranges = (
+            (0x1F1E6, 0x1F1FF),  # regional indicator symbols / flags
+            (0x1F300, 0x1F5FF),  # misc symbols and pictographs
+            (0x1F600, 0x1F64F),  # emoticons
+            (0x1F680, 0x1F6FF),  # transport and map symbols
+            (0x1F700, 0x1F77F),
+            (0x1F780, 0x1F7FF),
+            (0x1F800, 0x1F8FF),
+            (0x1F900, 0x1F9FF),  # supplemental symbols and pictographs
+            (0x1FA00, 0x1FAFF),  # extended symbols and pictographs
+            (0x2600, 0x26FF),    # misc symbols
+            (0x2700, 0x27BF),    # dingbats
+        )
+
+        def is_emoji_char(ch):
+            code = ord(ch)
+            if ch in {"\ufe0e", "\ufe0f", "\u200d", "\u20e3"}:
+                return True
+            return any(start <= code <= end for start, end in ranges)
+
+        cleaned = "".join(ch for ch in str(text) if not is_emoji_char(ch))
+        return " ".join(cleaned.split())
 
     def on_assistant_sentence(self, text):
         if not text:
@@ -83,6 +119,12 @@ class SpeechModule(Module):
         else:
             queued_text = text
 
+        # Keep chat/display text untouched, but prevent emoji/presentation
+        # glyphs from being sent into Kokoro.
+        queued_text = self._remove_emoji(queued_text)
+        if not queued_text:
+            return
+
         with self._state_lock:
             self._queued_text += 1
             was_inactive = not self._speech_active
@@ -91,6 +133,7 @@ class SpeechModule(Module):
         if was_inactive:
             # A new response is allowed to speak after a previous interrupt.
             self._interrupt_event.clear()
+            self._publish_audio_level(0.0, force=True)
             self.event_bus.emit("speech_started")
 
         self._queue.put(queued_text)
@@ -99,6 +142,7 @@ class SpeechModule(Module):
         """Cancel current speech and discard anything queued behind it."""
         print("[Speech] Interrupt requested.", flush=True)
         self._interrupt_event.set()
+        self._publish_audio_level(0.0, force=True)
 
         drained = 0
         while True:
@@ -121,6 +165,21 @@ class SpeechModule(Module):
             print(f"[Speech] Discarded {drained} queued speech item(s).", flush=True)
         if was_active:
             self.event_bus.emit("speech_finished")
+
+    def _publish_audio_level(self, level, *, force=False):
+        now = time.monotonic()
+        if not force and level > 0.0 and now - self._last_audio_level_at < self._audio_level_interval:
+            return
+
+        try:
+            value = max(0.0, min(1.0, float(level)))
+        except (TypeError, ValueError):
+            value = 0.0
+
+        if value > 0.0:
+            self._last_audio_level_at = now
+
+        self.event_bus.emit("speech_audio_level", level=value)
 
     def _get_coalesced_text(self, first_text):
         parts = [first_text]
@@ -187,15 +246,18 @@ class SpeechModule(Module):
                                 self._running
                                 and not self._interrupt_event.is_set()
                             ),
+                            on_level=self._publish_audio_level,
                         )
                         if not completed:
                             print("[Speech] Playback interrupted.", flush=True)
                 except Exception as exc:
+                    self._publish_audio_level(0.0, force=True)
                     print(
                         f"[Speech] Speech worker error: {type(exc).__name__}: {exc}",
                         flush=True,
                     )
                 finally:
+                    self._publish_audio_level(0.0, force=True)
                     with self._state_lock:
                         self._synthesis_inflight -= 1
                     self._queue.task_done()
@@ -215,5 +277,6 @@ class SpeechModule(Module):
             self._speech_active = False
             self._presentation_mode_active = False
 
+        self._publish_audio_level(0.0, force=True)
         self.event_bus.emit("speech_finished")
         return True

@@ -3,6 +3,7 @@
 venv/
 ENV/
 env/
+node_modules/
 
 # Large Datasets & Archives
 *.tar.gz
@@ -36,3 +37,8 @@ venv/
 
 # Runtime artifacts
 runtime/screenshots/
+data/*.db
+*.exe
+*.spec
+build/
+data/
