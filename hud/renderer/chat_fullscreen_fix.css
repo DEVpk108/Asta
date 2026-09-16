@@ -14,7 +14,7 @@
   cursor: default;
   pointer-events: auto;
   overflow: hidden;
-  z-index: 10;
+  z-index: 25;
   background: transparent;
   box-shadow: none;
 }
@@ -30,7 +30,8 @@
 
 .chat.chat-fullscreen .chat-header,
 .chat.chat-fullscreen .chat-messages,
-.chat.chat-fullscreen .chat-input {
+.chat.chat-fullscreen .chat-input,
+.chat.chat-fullscreen .chat-recent {
   position: relative;
   z-index: 2;
 }
