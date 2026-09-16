@@ -148,6 +148,9 @@ class HUDModule(Module):
         if message_type == "hud.chat_delete":
             session_id = str(message.get("session_id") or "").strip()
             if self.chat_history.delete_session(session_id):
+                memory = getattr(self.kernel, "memory", None)
+                if memory is not None:
+                    memory.delete_session(session_id)
                 print(f"[Chat] Deleted session {session_id}", flush=True)
                 self._publish_chat_context()
             return
