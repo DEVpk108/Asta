@@ -80,6 +80,13 @@ class MemoryModule(Module):
         self.kernel.memory_context = context
         self.event_bus.emit("memory_context_ready", query=query, context=context)
 
+    def delete_session(self, session_id: str) -> bool:
+        """Forget all long-term conversation memories for one deleted chat."""
+        deleted = self.backend.delete_session(session_id)
+        if deleted:
+            self.kernel.memory_context = ""
+        return deleted
+
     def recall(self, query: str, *, n_results: int = 5) -> str:
         return self.backend.context(query, n_results=n_results)
 
