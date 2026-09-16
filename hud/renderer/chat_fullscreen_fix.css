@@ -13,7 +13,9 @@
   cursor: default;
   pointer-events: auto;
   overflow: hidden;
-  z-index: auto;
+  /* Keep the conversation below the dedicated avatar layer. The workspace
+     reserves that layer's horizontal space, so controls never overlap it. */
+  z-index: 1;
   background: transparent;
   box-shadow: none;
 }
@@ -128,8 +130,8 @@
 .chat-expand-label { display: none; }
 
 body.text-chat-fullscreen .stage canvas,
-body.text-chat-fullscreen .stage #fallback { width: 330px; height: 330px; inset: 0 auto auto 0; z-index: 20; pointer-events: none; }
-body.text-chat-fullscreen .stage .meta { top: 18px; left: 20px; z-index: 21; pointer-events: none; text-shadow: 0 0 14px rgba(0, 229, 255, 0.24); }
+body.text-chat-fullscreen .stage #fallback { width: 330px; height: 330px; inset: 50px auto auto 0; z-index: 20; pointer-events: none; }
+body.text-chat-fullscreen .stage .meta { top: 68px; left: 20px; z-index: 21; pointer-events: none; text-shadow: 0 0 14px rgba(0, 229, 255, 0.24); }
 body.text-chat-fullscreen .stage .meta::after { content: "A.S.T.A. // ONLINE"; display: block; margin-top: 150px; color: rgba(0, 229, 255, 0.50); font-size: 8px; letter-spacing: 0.22em; }
 body.text-chat-fullscreen .stage .readout,
 body.text-chat-fullscreen .stage .waveform,
@@ -139,6 +141,8 @@ body.text-chat-fullscreen .stage .shortcuts { display: none; }
 @media (max-width: 1050px) {
   .chat.chat-fullscreen .chat-messages { width: calc(100% - 300px); margin-left: 270px; padding-left: 24px; padding-right: 18px; }
   .chat.chat-fullscreen .chat-input { width: calc(100% - 300px); margin-left: 270px; padding-left: 24px; padding-right: 18px; }
+  body.text-chat-fullscreen .stage canvas,
+  body.text-chat-fullscreen .stage #fallback { width: 270px; height: 270px; }
 }
 
 @media (max-width: 800px) {
@@ -147,6 +151,11 @@ body.text-chat-fullscreen .stage .shortcuts { display: none; }
   .chat.chat-fullscreen .chat-message { max-width: 88%; }
   .chat.chat-fullscreen .chat-message.user { padding-left: 40px; padding-right: 4px; }
   body.text-chat-fullscreen .stage canvas,
-  body.text-chat-fullscreen .stage #fallback { width: 190px; height: 190px; }
+  body.text-chat-fullscreen .stage #fallback { display: none; }
   body.text-chat-fullscreen .stage .meta { display: none; }
+}
+
+@media (max-width: 850px) and (min-width: 801px) {
+  body.text-chat-fullscreen .stage canvas,
+  body.text-chat-fullscreen .stage #fallback { width: 220px; height: 220px; }
 }

@@ -7,7 +7,6 @@
   var messages = document.getElementById('chatMessages')
   var empty = document.getElementById('chatEmpty')
   var chatPanel = document.getElementById('chatPanel')
-  var recentPanel = document.getElementById('chatRecent')
   var fullscreenButton = document.getElementById('chatFullscreen')
   var fullscreenLabel = fullscreenButton && fullscreenButton.querySelector('.chat-expand-label')
   var historyButton = document.getElementById('chatHistory')
@@ -177,19 +176,6 @@
   function setRecents (enabled) {
     recentVisible = !!enabled
     chatPanel.classList.toggle('chat-show-history', recentVisible)
-    if (recentPanel) {
-      recentPanel.style.display = recentVisible ? 'flex' : 'none'
-      if (recentVisible && chatPanel.classList.contains('chat-fullscreen')) {
-        recentPanel.style.flex = '0 0 330px'
-        recentPanel.style.width = '330px'
-        recentPanel.style.minWidth = '330px'
-      }
-      if (!recentVisible) {
-        recentPanel.style.flex = ''
-        recentPanel.style.width = ''
-        recentPanel.style.minWidth = ''
-      }
-    }
     if (historyButton) {
       historyButton.classList.toggle('active', recentVisible)
       historyButton.setAttribute('aria-pressed', recentVisible ? 'true' : 'false')
