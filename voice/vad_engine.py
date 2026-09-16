@@ -15,12 +15,12 @@ class VADEngine:
     def __init__(
         self,
         sample_rate=16000,
-        min_speech_duration=0.45,
-        threshold=0.65,
-        silence_ms=800,
-        speech_pad_ms=300,
-        min_rms=0.018,
-        min_peak=0.06,
+        min_speech_duration=0.30,
+        threshold=0.55,
+        silence_ms=1100,
+        speech_pad_ms=350,
+        min_rms=0.012,
+        min_peak=0.04,
         start_chunk_rms=0.005,
         pre_roll_ms=450,
     ):
