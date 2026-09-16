@@ -13,16 +13,18 @@
   cursor: default;
   pointer-events: auto;
   overflow: hidden;
-  z-index: 25;
+  z-index: auto;
   background: transparent;
   box-shadow: none;
 }
 
+/* Keep the fullscreen shell transparent so the avatar canvas can occupy the
+   left-side avatar zone. The actual chat controls are layered above it. */
 .chat.chat-fullscreen::before {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, rgba(0, 10, 16, 0.08), rgba(0, 0, 0, 0.025));
+  background: transparent;
   pointer-events: none;
   z-index: 0;
 }
@@ -32,7 +34,7 @@
 .chat.chat-fullscreen .chat-input,
 .chat.chat-fullscreen .chat-recent {
   position: relative;
-  z-index: 2;
+  z-index: 30;
 }
 
 .chat.chat-fullscreen .chat-recent {
