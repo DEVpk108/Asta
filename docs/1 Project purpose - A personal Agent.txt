@@ -1,0 +1,133 @@
+1: Project purpose :- A personal Agentic AI based Cognitive OS/ Assistant that can help in day to day tasks and as well as help in tasks like programing projects of diff types  like ECE and CS projects and many other projects, in other words it should be like JARVIS. 
+
+
+
+Architecture : 
+                ASTA OS
+
+         Cognitive Kernel
+                │
+        ┌───────┼────────┐
+        │       │        │
+     Memory   Planner  Scheduler
+        │       │        │
+        └───────┼────────┘
+                │
+         Assistant Engine
+                │
+      ┌─────────┼──────────┐
+      │         │          │
+   Speech     Vision     Tools
+      │         │          │
+      └─────────┼──────────┘
+                │
+        Event / Message Bus
+                │
+      ┌─────────┼──────────┐
+      │         │          │
+   HUD       Telemetry   Plugins
+
+
+
+
+
+
+
+current Architecture : 
+
+main.py
+        │
+        ▼
+    Kernel(done)
+        │
+        ▼
+   Event Bus(done)
+   ├──────────────────────────────┐
+   ▼                                        ▼
+AI Module(llm integration pending)     Speech Module(done)
+   │                                        │
+   ▼                                        ▼
+  ────────assistant_response────────────
+         │
+         ▼
+HUD Module(yet to make) 
+
+
+some other things that we thought:
+             ASTA
+
+        Planner Layer
+              │
+      Conversation Layer
+              │
+        Memory Manager
+              │
+        Tool Dispatcher
+              │
+ ┌────────┬────────┬────────┐
+ │        │        │        │
+Vision  Speech  Telemetry  File System
+ │        │        │        │
+ └────────┴────────┴────────┘
+              │
+          HUD Engine
+
+
+                     ASTA Kernel
+                         │
+        ┌────────────────┼────────────────┐
+        │                │                │
+   Conversation     Coding Engine     Vision Engine
+      Qwen 3          DeepSeek          Florence-2
+        │                │                │
+        └────────────────┼────────────────┘
+                         │
+                   Memory System
+                         │
+                    HUD Interface
+
+
+
+
+Version Roadmap
+A.S.T.A. v1.0 (Foundation)
+
+Goal:
+
+A stable, modular architecture.
+
+Features:
+
+AI conversation
+Speech
+HUD
+Face recognition
+Telemetry
+Plugin architecture
+Memory
+Logging
+A.S.T.A. v2.0 (Cognitive)
+
+Features:
+
+Long-term memory
+Task planning
+Self-improvement suggestions
+Autonomous tool selection
+Project awareness
+A.S.T.A. v3.0 (Operating System)
+
+Features:
+
+Window automation
+Desktop overlay
+Notifications
+Workflow automation
+Calendar
+Email
+Browser control
+A.S.T.A. v4.0
+
+Vision:
+
+A genuine AI operating environment.

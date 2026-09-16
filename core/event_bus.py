@@ -3,100 +3,145 @@
 A.S.T.A. Cognitive OS
 Event Bus
 ---------------------------------------------------------
-A lightweight publish/subscribe messaging system used by
-the A.S.T.A. Kernel to allow modules to communicate
-without direct dependencies.
+A lightweight synchronous publish/subscribe bus. Modules
+never import each other; they publish and subscribe to
+named events on the kernel's bus instead.
 =========================================================
 """
 
+import logging
+import threading
+
+
+logger = logging.getLogger(__name__)
+
+
+def _describe(callback):
+    """Return a readable name without ever raising."""
+    try:
+        name = getattr(callback, "__qualname__", None)
+    except Exception:
+        name = None
+
+    if not name:
+        try:
+            name = getattr(callback, "__name__", None)
+        except Exception:
+            name = None
+
+    try:
+        owner = getattr(callback, "__self__", None)
+    except Exception:
+        owner = None
+
+    if name and owner is not None:
+        try:
+            owner_name = type(owner).__name__
+        except Exception:
+            owner_name = "object"
+        # __qualname__ already carries the defining class, so keep only its
+        # final component; otherwise the class name is printed twice.
+        short = str(name).rsplit(".", 1)[-1]
+        return f"{owner_name}.{short}"
+
+    if name:
+        return str(name)
+
+    try:
+        callback_type = type(callback).__name__
+    except Exception:
+        callback_type = "callable"
+
+    try:
+        representation = repr(callback)
+    except Exception:
+        representation = f"<{callback_type}>"
+
+    return representation
+
 
 class EventBus:
-    """Simple synchronous publish/subscribe event bus."""
+    """Simple synchronous publish/subscribe event bus.
+
+    A.S.T.A. subscribes, unsubscribes and emits from several threads: the voice
+    listen loop, the barge-in worker, the speech worker, the HUD transport
+    accept/client threads and the main thread. The subscriber table is
+    therefore guarded by a re-entrant lock.
+
+    Callbacks run outside the lock, against a snapshot of the subscriber list,
+    so a subscriber may safely emit, subscribe or unsubscribe while it is
+    handling an event.
+    """
 
     def __init__(self):
-        # {event_name: [callback1, callback2, ...]}
+        # {event_type: [callback, ...]}
         self._subscribers = {}
+        self._lock = threading.RLock()
 
     # -----------------------------------------------------
-    # Subscription Management
+    # Subscription management
     # -----------------------------------------------------
 
-    def subscribe(self, event_type: str, callback):
-        """
-        Register a callback for an event.
+    def subscribe(self, event_type, callback):
+        """Register a callback for an event type. Duplicates are ignored."""
+        with self._lock:
+            callbacks = self._subscribers.setdefault(event_type, [])
+            if callback not in callbacks:
+                callbacks.append(callback)
 
-        Example:
-            event_bus.subscribe("assistant_response", on_response)
-        """
-        callbacks = self._subscribers.setdefault(event_type, [])
+    def unsubscribe(self, event_type, callback):
+        """Remove a callback and drop the event key once it is empty."""
+        with self._lock:
+            callbacks = self._subscribers.get(event_type)
+            if not callbacks:
+                return
 
-        # Prevent duplicate subscriptions
-        if callback not in callbacks:
-            callbacks.append(callback)
+            if callback in callbacks:
+                callbacks.remove(callback)
 
-    def unsubscribe(self, event_type: str, callback):
-        """
-        Remove a callback from an event.
-        """
-        callbacks = self._subscribers.get(event_type)
-
-        if not callbacks:
-            return
-
-        if callback in callbacks:
-            callbacks.remove(callback)
-
-        # Remove empty event lists
-        if not callbacks:
-            del self._subscribers[event_type]
+            if not callbacks:
+                del self._subscribers[event_type]
 
     # -----------------------------------------------------
-    # Event Dispatch
+    # Event dispatch
     # -----------------------------------------------------
 
-    def emit(self, event_type: str, *args, **kwargs):
+    def emit(self, event_type, *args, **kwargs):
+        """Deliver an event to every current subscriber.
+
+        One failing subscriber must not stop the others, so the error is logged
+        with its traceback and dispatch continues.
         """
-        Emit an event to all subscribers.
+        with self._lock:
+            callbacks = list(self._subscribers.get(event_type, ()))
 
-        Example:
-            event_bus.emit(
-                "assistant_response",
-                text="Hello"
-            )
-        """
-
-        callbacks = self._subscribers.get(event_type, [])
-
-        # Iterate over a copy in case subscribers modify
-        # the list while events are being processed.
-        for callback in callbacks[:]:
+        for callback in callbacks:
             try:
                 callback(*args, **kwargs)
-
-            except Exception as e:
-                # For now keep it simple.
-                # Later this will be routed to ASTA Logger.
-                print(
-                    f"[EventBus] Error in '{event_type}' "
-                    f"subscriber '{callback.__name__}': {e}"
+            except Exception:
+                logger.exception(
+                    "[EventBus] Error in '%s' subscriber '%s'",
+                    event_type,
+                    _describe(callback),
                 )
 
     # -----------------------------------------------------
-    # Utility Methods
+    # Utilities
     # -----------------------------------------------------
 
     def clear(self):
-        """Remove all subscribers."""
-        self._subscribers.clear()
+        """Remove every subscription."""
+        with self._lock:
+            self._subscribers.clear()
 
-    def has_subscribers(self, event_type: str) -> bool:
-        """Return True if the event has subscribers."""
-        return event_type in self._subscribers
+    def has_subscribers(self, event_type):
+        with self._lock:
+            return bool(self._subscribers.get(event_type))
 
-    def subscriber_count(self, event_type: str) -> int:
-        """Return the number of subscribers for an event."""
-        return len(self._subscribers.get(event_type, []))
+    def subscriber_count(self, event_type):
+        with self._lock:
+            return len(self._subscribers.get(event_type, ()))
 
     def registered_events(self):
-        """Return a list of all registered event names."""
-        return list(self._subscribers.keys())
+        with self._lock:
+            return list(self._subscribers.keys())
