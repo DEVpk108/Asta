@@ -58,6 +58,25 @@ class WakeWordEngine:
             "requires confirmation"
         )
 
+    @staticmethod
+    def _listener_should_continue(should_continue):
+        """Stop wake-word capture when the caller switches into conversation mode.
+
+        VoiceModule can change conversation mode while wait_for_wakeword() is
+        already consuming microphone frames. The existing callback still
+        represents runtime listenability, so inspect its bound owner for the
+        active conversation flag rather than introducing another event channel
+        into the wake-word engine.
+        """
+        if not should_continue():
+            return False
+
+        owner = getattr(should_continue, "__self__", None)
+        if owner is not None and getattr(owner, "_conversation_active", False):
+            return False
+
+        return True
+
     def wait_for_wakeword(self, microphone, should_continue=None):
         """Wait for a confirmed wake word until the caller asks the listener to pause."""
         print("[WakeWord] Listening for: " + ", ".join(self.wakewords))
@@ -70,7 +89,7 @@ class WakeWordEngine:
         candidate_hits = 0
 
         while True:
-            if not should_continue():
+            if not self._listener_should_continue(should_continue):
                 return None
 
             chunk = microphone.get_chunk().flatten()
@@ -122,7 +141,7 @@ class WakeWordEngine:
             if candidate_hits < self.confirmation_frames:
                 continue
 
-            if not should_continue():
+            if not self._listener_should_continue(should_continue):
                 return None
 
             self.last_detected_word = detected_word
