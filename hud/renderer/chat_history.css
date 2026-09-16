@@ -120,6 +120,8 @@
   text-align: left;
   font: inherit;
   cursor: pointer;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .chat-recent-item:hover {
@@ -133,7 +135,17 @@
   box-shadow: inset 2px 0 0 rgba(0, 229, 255, 0.60);
 }
 
+.chat-recent-select {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
 .chat-recent-title {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -143,9 +155,20 @@
 }
 
 .chat-recent-meta {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: 7px;
   letter-spacing: 0.13em;
   color: rgba(190, 220, 235, 0.32);
+}
+
+.chat-recent-delete {
+  box-sizing: border-box;
+  flex: 0 0 auto;
 }
 
 .chat-recent-empty {
