@@ -38,3 +38,7 @@ venv/
 # Runtime artifacts
 runtime/screenshots/
 data/*.db
+*.exe
+*.spec
+build/
+data/
