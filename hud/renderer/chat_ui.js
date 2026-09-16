@@ -86,11 +86,30 @@
     for (var i = 0; i < sessions.length; i += 1) {
       var session = sessions[i]
       if (!session || !session.id) continue
-      var button = document.createElement('button')
-      button.type = 'button'
-      button.className = 'chat-recent-item' + (session.id === currentSessionId ? ' active' : '')
-      button.dataset.sessionId = session.id
-      button.title = session.preview || session.title || 'Conversation'
+
+      var item = document.createElement('div')
+      item.className = 'chat-recent-item' + (session.id === currentSessionId ? ' active' : '')
+      item.dataset.sessionId = session.id
+      item.title = session.preview || session.title || 'Conversation'
+      item.style.position = 'relative'
+      item.style.paddingRight = '48px'
+
+      var selectButton = document.createElement('button')
+      selectButton.type = 'button'
+      selectButton.className = 'chat-recent-select'
+      selectButton.style.display = 'flex'
+      selectButton.style.flexDirection = 'column'
+      selectButton.style.width = '100%'
+      selectButton.style.gap = '5px'
+      selectButton.style.padding = '0'
+      selectButton.style.margin = '0'
+      selectButton.style.border = '0'
+      selectButton.style.background = 'transparent'
+      selectButton.style.color = 'inherit'
+      selectButton.style.textAlign = 'left'
+      selectButton.style.font = 'inherit'
+      selectButton.style.cursor = 'pointer'
+
       var title = document.createElement('span')
       title.className = 'chat-recent-title'
       title.textContent = session.title || 'New conversation'
@@ -98,13 +117,59 @@
       meta.className = 'chat-recent-meta'
       var count = Number(session.message_count || 0)
       meta.textContent = count ? count + (count === 1 ? ' MESSAGE' : ' MESSAGES') : 'NEW'
-      button.appendChild(title)
-      button.appendChild(meta)
-      button.addEventListener('click', function () {
-        var id = this.dataset.sessionId
+      selectButton.appendChild(title)
+      selectButton.appendChild(meta)
+      selectButton.addEventListener('click', function () {
+        var id = this.closest('.chat-recent-item') && this.closest('.chat-recent-item').dataset.sessionId
         if (bridge && bridge.selectChatSession && id) bridge.selectChatSession(id)
       })
-      recentList.appendChild(button)
+
+      var deleteButton = document.createElement('button')
+      deleteButton.type = 'button'
+      deleteButton.className = 'chat-recent-delete'
+      deleteButton.textContent = 'DEL'
+      deleteButton.title = 'Delete conversation'
+      deleteButton.setAttribute('aria-label', 'Delete conversation')
+      deleteButton.style.position = 'absolute'
+      deleteButton.style.top = '50%'
+      deleteButton.style.right = '8px'
+      deleteButton.style.transform = 'translateY(-50%)'
+      deleteButton.style.width = '30px'
+      deleteButton.style.height = '24px'
+      deleteButton.style.padding = '0'
+      deleteButton.style.border = '1px solid rgba(255, 92, 92, 0.18)'
+      deleteButton.style.borderRadius = '4px'
+      deleteButton.style.background = 'rgba(255, 92, 92, 0.03)'
+      deleteButton.style.color = 'rgba(255, 170, 170, 0.62)'
+      deleteButton.style.font = 'inherit'
+      deleteButton.style.fontSize = '7px'
+      deleteButton.style.letterSpacing = '0.08em'
+      deleteButton.style.cursor = 'pointer'
+      deleteButton.addEventListener('mouseenter', function () {
+        this.style.borderColor = 'rgba(255, 92, 92, 0.45)'
+        this.style.background = 'rgba(255, 92, 92, 0.10)'
+        this.style.color = 'rgba(255, 220, 220, 0.96)'
+      })
+      deleteButton.addEventListener('mouseleave', function () {
+        this.style.borderColor = 'rgba(255, 92, 92, 0.18)'
+        this.style.background = 'rgba(255, 92, 92, 0.03)'
+        this.style.color = 'rgba(255, 170, 170, 0.62)'
+      })
+      deleteButton.addEventListener('click', function (event) {
+        event.preventDefault()
+        event.stopPropagation()
+        var id = this.closest('.chat-recent-item') && this.closest('.chat-recent-item').dataset.sessionId
+        if (!id || !bridge || !bridge.deleteChatSession) return
+        var target = this.closest('.chat-recent-item')
+        var titleText = target ? target.querySelector('.chat-recent-title') : null
+        var label = titleText && titleText.textContent ? titleText.textContent : 'this conversation'
+        if (!window.confirm('Delete "' + label + '"?\n\nThis permanently removes its local chat history.')) return
+        bridge.deleteChatSession(id)
+      })
+
+      item.appendChild(selectButton)
+      item.appendChild(deleteButton)
+      recentList.appendChild(item)
     }
   }
 
