@@ -97,6 +97,43 @@ class ChatHistoryStore:
         self.session_id = value
         return True
 
+    def delete_session(self, session_id: str) -> bool:
+        """Permanently remove one chat session and its messages.
+
+        Deleting the active session immediately creates a fresh session so the
+        runtime always has a valid conversation target.
+        """
+        value = str(session_id or "").strip()
+        if not value or self._connection is None:
+            return False
+
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT 1 FROM sessions WHERE id = ?",
+                (value,),
+            ).fetchone()
+            if row is None:
+                return False
+
+            self._connection.execute(
+                "DELETE FROM messages WHERE session_id = ?",
+                (value,),
+            )
+            self._connection.execute(
+                "DELETE FROM sessions WHERE id = ?",
+                (value,),
+            )
+
+            if self.session_id == value:
+                self.session_id = uuid.uuid4().hex
+                self._connection.execute(
+                    "INSERT INTO sessions (id, started_at) VALUES (?, ?)",
+                    (self.session_id, self._now()),
+                )
+
+            self._connection.commit()
+        return True
+
     def append(self, role: str, text: str) -> None:
         value = str(text or "").strip()
         if not value or self._connection is None:
