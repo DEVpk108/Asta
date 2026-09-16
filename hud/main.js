@@ -59,6 +59,11 @@ function sendHudChatSessions (sessions) {
   win.webContents.send('asta:hud-chat-sessions', sessions)
 }
 
+function sendHudConversationMode (enabled) {
+  if (!rendererReady || !win || win.isDestroyed()) return
+  win.webContents.send('asta:hud-conversation-mode', !!enabled)
+}
+
 function sendHudChat (message) {
   if (!rendererReady || !win || win.isDestroyed()) return
   win.webContents.send('asta:hud-chat', message)
@@ -109,6 +114,10 @@ function startNewChat () {
   return writeHudMessage({ type: 'hud.chat_new', version: 1 })
 }
 
+function setConversationMode (enabled) {
+  return writeHudMessage({ type: 'hud.conversation_mode', version: 1, enabled: !!enabled })
+}
+
 function sendShutdownToAsta () {
   if (shutdownSent) return false
   shutdownSent = true
@@ -139,6 +148,10 @@ function handleHudMessage (message) {
   }
   if (message.type === 'hud.chat_sessions') {
     sendHudChatSessions(Array.isArray(message.sessions) ? message.sessions : [])
+    return
+  }
+  if (message.type === 'hud.conversation_mode') {
+    sendHudConversationMode(message.enabled)
     return
   }
   if (message.type === 'hud.chat') sendHudChat(message.chat || {})
@@ -287,3 +300,4 @@ ipcMain.on('hud:text-message', (_event, text) => { sendTextToAsta(text) })
 ipcMain.on('hud:select-chat', (_event, sessionId) => { selectChatSession(sessionId) })
 ipcMain.on('hud:delete-chat', (_event, sessionId) => { deleteChatSession(sessionId) })
 ipcMain.on('hud:new-chat', () => { startNewChat() })
+ipcMain.on('hud:conversation-mode', (_event, enabled) => { setConversationMode(enabled) })
