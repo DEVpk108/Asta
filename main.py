@@ -138,6 +138,8 @@ def main():
     from ai.ai_module import AIModule
     from ai.runtime_patch import apply_ai_runtime_patch
     from ai.final_runtime_patch import apply_final_runtime_patch
+    from memory.memory_module import MemoryModule
+    from memory.runtime_patch import apply_memory_runtime_patch
     from input.text_input_module import TextInputModule
     from voice.voice_module import VoiceModule
     from vision.screenshot_backend import capture_screenshot
@@ -145,6 +147,7 @@ def main():
     # Apply small runtime compatibility patches before module instances are created.
     apply_ai_runtime_patch()
     apply_final_runtime_patch()
+    apply_memory_runtime_patch()
     apply_presentation_patch()
 
     kernel = Kernel()
@@ -152,6 +155,7 @@ def main():
     # Construct the backend after the HUD is already visible. Heavy local model
     # loading can now happen in parallel with the user's visual boot animation.
     hud = HUDModule(kernel)
+    memory = MemoryModule(kernel)
     speech = SpeechModule(kernel)
     ai = AIModule(kernel)
     voice = VoiceModule(kernel)
@@ -175,9 +179,11 @@ def main():
 
     print("===== ASTA KERNEL =====")
 
-    # HUD subscribes before AIModule so synchronous user_message dispatch
-    # reaches THINKING before model inference begins.
+    # HUD subscribes before MemoryModule and AIModule so THINKING is presented
+    # first, then memory can recall prior context before the AI handles the
+    # same user message.
     kernel.register_module(hud)
+    kernel.register_module(memory)
     kernel.register_module(ai)
     kernel.register_module(speech)
     kernel.register_module(voice)
