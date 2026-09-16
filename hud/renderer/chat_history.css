@@ -45,20 +45,23 @@
   color: rgba(240, 250, 255, 0.96);
 }
 
+/* Opening recents expands the normal HUD chat so both columns remain readable. */
+.chat.chat-show-history {
+  width: min(540px, 44vw);
+}
+
 .chat-recent {
   display: none;
-  flex: 0 0 240px;
+  flex: 0 0 190px;
   flex-direction: column;
-  min-width: 0;
+  min-width: 190px;
   min-height: 0;
   border-right: 1px solid rgba(0, 229, 255, 0.10);
   background: linear-gradient(180deg, rgba(0, 12, 18, 0.82), rgba(0, 5, 8, 0.66));
   backdrop-filter: blur(8px);
 }
 
-.chat.chat-show-history .chat-recent {
-  display: flex;
-}
+.chat.chat-show-history .chat-recent { display: flex; }
 
 .chat-recent-header {
   flex: 0 0 48px;
@@ -112,7 +115,7 @@
   width: 100%;
   gap: 5px;
   margin: 2px 0;
-  padding: 11px 10px;
+  padding: 11px 52px 11px 10px;
   border: 1px solid transparent;
   border-radius: 9px;
   background: transparent;
@@ -122,6 +125,7 @@
   cursor: pointer;
   min-width: 0;
   box-sizing: border-box;
+  overflow: hidden;
 }
 
 .chat-recent-item:hover {
@@ -169,6 +173,7 @@
 .chat-recent-delete {
   box-sizing: border-box;
   flex: 0 0 auto;
+  pointer-events: auto;
 }
 
 .chat-recent-empty {
@@ -206,84 +211,38 @@
   flex: 0 0 330px;
   width: 330px;
   min-width: 330px;
-  padding-top: 330px;
+  padding-top: 0;
   box-sizing: border-box;
 }
 
-.chat.chat-fullscreen .chat-show-history .chat-recent {
-  display: flex;
+.chat.chat-fullscreen .chat-show-history .chat-recent { display: flex; }
+.chat.chat-fullscreen .chat-main { flex: 1 1 auto; width: 0; min-width: 0; min-height: 0; }
+.chat.chat-fullscreen .chat-messages { width: 100%; max-width: none; margin: 0; flex: 1 1 auto; min-width: 0; }
+.chat.chat-fullscreen .chat-input { width: 100%; max-width: none; margin: 0; flex: 0 0 auto; }
+.chat.chat-fullscreen .chat-input input { min-width: 0; }
+.chat.chat-fullscreen .chat-empty { margin: auto; padding: 0 24px; }
+.chat.chat-fullscreen .chat-header .chat-history-button { margin-left: auto; min-width: 70px; height: 30px; border-color: rgba(0, 229, 255, 0.25); }
+.chat.chat-fullscreen .chat-header .chat-expand-button { margin-left: 7px; }
+
+@media (max-width: 1100px) {
+  .chat.chat-show-history { width: min(500px, 48vw); }
 }
 
-.chat.chat-fullscreen .chat-main {
-  flex: 1 1 auto;
-  width: 0;
-  min-width: 0;
-  min-height: 0;
-}
-
-.chat.chat-fullscreen .chat-messages {
-  width: 100%;
-  max-width: none;
-  margin-left: 0;
-  margin-right: 0;
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.chat.chat-fullscreen .chat-input {
-  width: 100%;
-  max-width: none;
-  margin-left: 0;
-  margin-right: 0;
-  flex: 0 0 auto;
-  min-width: 0;
-}
-
-.chat.chat-fullscreen .chat-input input {
-  min-width: 0;
-}
-
-.chat.chat-fullscreen .chat-empty {
-  margin: auto;
-  padding: 0 24px;
-}
-
-.chat.chat-fullscreen .chat-header .chat-history-button {
-  margin-left: auto;
-  min-width: 70px;
-  height: 30px;
-  border-color: rgba(0, 229, 255, 0.25);
-}
-
-.chat.chat-fullscreen .chat-header .chat-expand-button {
-  margin-left: 7px;
+@media (max-width: 900px) {
+  .chat.chat-show-history { width: auto; }
+  .chat.chat-show-history .chat-recent { flex-basis: 190px; min-width: 190px; }
 }
 
 @media (max-width: 850px) {
-  .chat.chat-fullscreen .chat-recent {
-    flex-basis: 220px;
-    width: 220px;
-    min-width: 220px;
-    padding-top: 220px;
-  }
+  .chat.chat-fullscreen .chat-recent { flex-basis: 220px; width: 220px; min-width: 220px; }
 }
 
 @media (max-width: 800px) {
-  .chat.chat-fullscreen .chat-recent {
-    flex-basis: 190px;
-    width: 190px;
-    min-width: 190px;
-    padding-top: 190px;
-  }
+  .chat.chat-fullscreen .chat-recent { flex-basis: 190px; width: 190px; min-width: 190px; }
 }
 
 @media (max-width: 650px) {
-  .chat.chat-fullscreen .chat-recent {
-    flex-basis: 185px;
-    width: 185px;
-    min-width: 185px;
-    padding-top: 190px;
-  }
+  .chat.chat-fullscreen .chat-recent { flex-basis: 185px; width: 185px; min-width: 185px; }
   .chat.chat-fullscreen .chat-history-button span { display: none; }
   .chat.chat-fullscreen .chat-history-button { min-width: 30px; width: 30px; padding: 0; }
 }
