@@ -1,44 +1,72 @@
-# Python Virtual Environment
+# ---------------------------------------------------------------------------
+# A.S.T.A.
+#
+# Rule of thumb: ignore what a machine generates or what must stay secret.
+# Never ignore source, configuration or dependency manifests.
+# ---------------------------------------------------------------------------
+
+# Python bytecode and packaging output
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+*.spec
+
+# Virtual environments
 .venv/
 venv/
 ENV/
 env/
+
+# Node (Electron HUD)
 node_modules/
 
-# Large Datasets & Archives
-*.tar.gz
-*.zip
-*.onnx
-ai/wakeword/generated/negative_sources/
+# Secrets and local credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
 
-# Python Cache & C-Extensions
-__pycache__/
-*.py[cod]
+# Compiled extensions and platform binaries
 *.dll
 *.so
 *.dylib
-*.wav
+*.exe
 
-# Ignore Virtual Environment
-.venv/
-venv/
-
-# Ignore Tarballs, Zip Archives & ONNX Models
-*.tar.gz
-*.zip
-
-# Ignore DLLs and heavy binaries
-*.dll
-*.so
-*txt
-*npy
-*.npy*.tflite
+# Model weights and datasets
+*.onnx
 *.tflite
+*.npy
+*.pt
+*.pth
+*.bin
+*.ckpt
+*.safetensors
+ai/wakeword/generated/negative_sources/
+
+# Archives
+*.zip
+*.tar.gz
+*.7z
+
+# Audio samples
+*.wav
 
 # Runtime artifacts
 runtime/screenshots/
-data/*.db
-*.exe
-*.spec
-build/
 data/
+*.db
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

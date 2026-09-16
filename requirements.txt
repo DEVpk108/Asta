@@ -1,0 +1,53 @@
+# ---------------------------------------------------------------------------
+# A.S.T.A. base runtime dependencies
+#
+#   python -m pip install -r requirements.txt
+#   python -m pip install -r requirements-kokoro.txt   # also required, see below
+#
+# This list is derived from the third-party imports of the modules that
+# main.py actually loads (core, hud, memory, ai, speech, voice, tools).
+# Everything else A.S.T.A. uses is Python standard library.
+#
+# Optional extras stay in separate files so a minimal install stays small:
+#   requirements-kokoro.txt        local Kokoro TTS. speech/speech_module.py
+#                                  imports KokoroEngine at import time, so
+#                                  `python main.py` needs it installed.
+#   requirements-mempalace.txt     long-term memory backend (optional, lazy)
+#   voice/requirements-indic.txt   IndicConformer STT backend (optional)
+# ---------------------------------------------------------------------------
+
+# Audio capture and playback
+# voice/microphone_engine.py, speech/kokoro_engine.py
+sounddevice
+numpy
+
+# Wake word detection
+# voice/wakeword_engine.py and ai/wakeword_engine.py build the model with
+# inference_framework="onnx", so the ONNX runtime is required.
+openwakeword
+onnxruntime
+
+# Voice activity detection
+# voice/vad_engine.py. torch is also used by the STT and TTS engines; Kokoro
+# needs torch >= 2.5 and CUDA wheels must be installed separately.
+silero-vad
+torch
+
+# Speech to text
+# voice/recognition_engine.py
+faster-whisper
+
+# LM Studio HTTP client
+# ai/openai_engine.py
+requests
+
+# ---------------------------------------------------------------------------
+# Situational. Install only if you use that path:
+#
+#   Pillow                           screenshot capture on macOS/Linux.
+#                                    Windows uses Win32 GDI directly.
+#   boto3, keyboard                  speech/polly_engine.py, an alternative
+#                                    cloud TTS backend main.py does not load.
+#   opencv-python, face_recognition  vision/face_recognition.py, a standalone
+#                                    experiment not wired into the kernel.
+# ---------------------------------------------------------------------------
