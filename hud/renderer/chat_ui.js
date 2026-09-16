@@ -13,11 +13,13 @@
   var recentList = document.getElementById('chatRecentList')
   var recentEmpty = document.getElementById('chatRecentEmpty')
   var newChatButton = document.getElementById('chatNew')
+  var conversationButton = document.getElementById('chatConversation')
 
   if (!form || !input || !messages || !chatPanel) return
 
   var currentSessionId = null
   var recentVisible = false
+  var conversationMode = false
 
   function removeEmpty () {
     if (empty && empty.parentNode) empty.parentNode.removeChild(empty)
@@ -173,6 +175,20 @@
     }
   }
 
+  function setConversationMode (enabled) {
+    conversationMode = !!enabled
+    if (!conversationButton) return
+    conversationButton.classList.toggle('active', conversationMode)
+    conversationButton.setAttribute('aria-pressed', conversationMode ? 'true' : 'false')
+    conversationButton.title = conversationMode ? 'Disable conversation mode' : 'Enable conversation mode'
+    conversationButton.setAttribute('aria-label', conversationMode ? 'Disable conversation mode' : 'Enable conversation mode')
+  }
+
+  function toggleConversationMode () {
+    setConversationMode(!conversationMode)
+    if (bridge && bridge.setConversationMode) bridge.setConversationMode(conversationMode)
+  }
+
   function setRecents (enabled) {
     recentVisible = !!enabled
     chatPanel.classList.toggle('chat-show-history', recentVisible)
@@ -212,6 +228,12 @@
     if (bridge && bridge.startNewChat) bridge.startNewChat()
   })
 
+  if (conversationButton) conversationButton.addEventListener('click', function (event) {
+    event.preventDefault()
+    event.stopPropagation()
+    toggleConversationMode()
+  })
+
   if (fullscreenButton) fullscreenButton.addEventListener('click', function (event) {
     event.preventDefault()
     event.stopPropagation()
@@ -248,6 +270,12 @@
     })
   }
 
+  if (bridge && bridge.onHudConversationMode) {
+    bridge.onHudConversationMode(function (enabled) {
+      try { setConversationMode(enabled) } catch (error) { console.warn('[ASTA HUD] Invalid conversation mode:', error) }
+    })
+  }
+
   if (bridge && bridge.onHudChat) {
     bridge.onHudChat(function (message) {
       try {
@@ -257,5 +285,6 @@
     })
   }
 
+  setConversationMode(false)
   setRecents(false)
 })()
