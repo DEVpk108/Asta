@@ -145,6 +145,13 @@ class HUDModule(Module):
                 self.transport.publish_chat_sessions(sessions)
             return
 
+        if message_type == "hud.chat_delete":
+            session_id = str(message.get("session_id") or "").strip()
+            if self.chat_history.delete_session(session_id):
+                print(f"[Chat] Deleted session {session_id}", flush=True)
+                self._publish_chat_context()
+            return
+
         if message_type == "hud.chat_new":
             session_id = self.chat_history.new_session()
             print(f"[Chat] New session {session_id}", flush=True)
