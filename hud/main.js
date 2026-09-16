@@ -99,6 +99,12 @@ function selectChatSession (sessionId) {
   return writeHudMessage({ type: 'hud.chat_select', version: 1, session_id: value })
 }
 
+function deleteChatSession (sessionId) {
+  const value = String(sessionId || '').trim()
+  if (!value) return false
+  return writeHudMessage({ type: 'hud.chat_delete', version: 1, session_id: value })
+}
+
 function startNewChat () {
   return writeHudMessage({ type: 'hud.chat_new', version: 1 })
 }
@@ -279,4 +285,5 @@ ipcMain.on('win:close', () => { if (win) win.close() })
 ipcMain.on('win:toggle-fullscreen', () => { if (win) win.setFullScreen(!win.isFullScreen()) })
 ipcMain.on('hud:text-message', (_event, text) => { sendTextToAsta(text) })
 ipcMain.on('hud:select-chat', (_event, sessionId) => { selectChatSession(sessionId) })
+ipcMain.on('hud:delete-chat', (_event, sessionId) => { deleteChatSession(sessionId) })
 ipcMain.on('hud:new-chat', () => { startNewChat() })
