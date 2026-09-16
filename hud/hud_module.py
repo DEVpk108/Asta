@@ -163,6 +163,12 @@ class HUDModule(Module):
             self.transport.publish_chat_sessions(sessions)
             return
 
+        if message_type == "hud.conversation_mode":
+            enabled = bool(message.get("enabled"))
+            print(f"[HUD] Conversation mode requested: {'ON' if enabled else 'OFF'}", flush=True)
+            self.event_bus.emit("conversation_mode_set", enabled=enabled)
+            return
+
         if not self._runtime_ready:
             print("[HUD] Ignoring text input while A.S.T.A. is still booting.", flush=True)
             return
