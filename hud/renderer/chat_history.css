@@ -199,6 +199,7 @@
 }
 
 .chat.chat-fullscreen .chat-workspace {
+  display: flex !important;
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
@@ -215,7 +216,11 @@
   box-sizing: border-box;
 }
 
-.chat.chat-fullscreen.chat-show-history .chat-recent { display: flex; }
+.chat.chat-fullscreen.chat-show-history .chat-recent {
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
 .chat.chat-fullscreen .chat-main { flex: 1 1 auto; width: 0; min-width: 0; min-height: 0; }
 .chat.chat-fullscreen .chat-messages { width: 100%; max-width: none; margin: 0; flex: 1 1 auto; min-width: 0; }
 .chat.chat-fullscreen .chat-input { width: 100%; max-width: none; margin: 0; flex: 0 0 auto; }
