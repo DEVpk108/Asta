@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
 CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
 MUTEX_ERROR_ALREADY_EXISTS = 183
 
@@ -161,7 +162,7 @@ def main() -> int:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+            creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
             close_fds=True,
             shell=False,
         )
