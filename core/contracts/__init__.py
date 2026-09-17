@@ -24,6 +24,8 @@ from .tools import (
     ToolResult,
 )
 
+from .workspace import WorkspaceState
+
 
 __all__ = [
     "AgentTask",
@@ -37,4 +39,5 @@ __all__ = [
     "ToolDefinition",
     "ToolRequest",
     "ToolResult",
+    "WorkspaceState",
 ]
