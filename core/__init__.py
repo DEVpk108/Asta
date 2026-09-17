@@ -17,9 +17,11 @@ Contains the core infrastructure of A.S.T.A., including:
 from .event_bus import EventBus
 from .kernel import Kernel
 from .module import Module
+from .task_manager import TaskManager
 
 __all__ = [
     "EventBus",
     "Kernel",
     "Module",
+    "TaskManager",
 ]
