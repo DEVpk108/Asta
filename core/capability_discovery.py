@@ -39,9 +39,10 @@ class CapabilityDiscovery:
         self._emit("capability_provider_registered", provider=key)
 
     def unregister_provider(self, name: str) -> bool:
-        removed = self._providers.pop(str(name).strip(), None) is not None
+        key = str(name).strip()
+        removed = self._providers.pop(key, None) is not None
         if removed:
-            self._emit("capability_provider_unregistered", provider=str(name).strip())
+            self._emit("capability_provider_unregistered", provider=key)
         return removed
 
     def providers(self) -> tuple[str, ...]:
@@ -73,8 +74,7 @@ class CapabilityDiscovery:
                 descriptors.append(
                     CapabilityDescriptor.from_tool_definition(definition)
                 )
-
-        elif not query_value:
+        else:
             descriptors.extend(
                 CapabilityDescriptor.from_tool_definition(definition)
                 for definition in self.registry.definitions()
