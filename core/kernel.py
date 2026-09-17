@@ -3,6 +3,7 @@ import threading
 from .event_bus import EventBus
 from .intent_router import IntentRouter
 from .task_manager import TaskManager
+from .workspace_manager import WorkspaceManager
 from .tools import (
     ApprovalManager,
     AuthorityPolicy,
@@ -18,6 +19,7 @@ class Kernel:
         self.event_bus = EventBus()
         self.intent_router = IntentRouter()
         self.task_manager = TaskManager(event_bus=self.event_bus)
+        self.workspace_manager = WorkspaceManager(event_bus=self.event_bus)
 
         self.tool_registry = ToolRegistry()
         self.approval_manager = ApprovalManager()
@@ -51,6 +53,15 @@ class Kernel:
     @property
     def current_task(self):
         return self.task_manager.current()
+
+    # ---------------------------------------------------------
+    # Workspace management
+    # ---------------------------------------------------------
+
+    @property
+    def workspace(self):
+        """Return a detached workspace snapshot for convenience."""
+        return self.workspace_manager.snapshot()
 
     # ---------------------------------------------------------
     # Module management
