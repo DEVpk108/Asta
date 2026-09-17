@@ -13,6 +13,11 @@ from .model import (
     ModelResponse,
 )
 
+from .task import (
+    AgentTask,
+    TaskStatus,
+)
+
 from .tools import (
     ToolDefinition,
     ToolRequest,
@@ -21,12 +26,14 @@ from .tools import (
 
 
 __all__ = [
+    "AgentTask",
     "IntentResult",
     "IntentType",
     "MemoryQuery",
     "MemoryRecord",
     "ModelRequest",
     "ModelResponse",
+    "TaskStatus",
     "ToolDefinition",
     "ToolRequest",
     "ToolResult",
