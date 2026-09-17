@@ -80,8 +80,8 @@ class ContextBuilder:
 
     The builder is deliberately LLM-agnostic. It reads state from the kernel,
     selects only command-relevant capabilities, and produces a structured
-    snapshot that can later grow to include workspace, skills, MCP, and other
-    context providers.
+    snapshot that can later grow to include skills, MCP, and other context
+    providers.
     """
 
     def __init__(self, kernel):
@@ -118,6 +118,15 @@ class ContextBuilder:
             return task.to_dict() if task is not None else None
 
     def _workspace_snapshot(self) -> dict[str, Any]:
+        manager = getattr(self.kernel, "workspace_manager", None)
+        if manager is not None:
+            try:
+                return manager.snapshot()
+            except (AttributeError, TypeError):
+                pass
+
+        # Keep the original hook as a compatibility fallback for callers that
+        # populated workspace_context before WorkspaceManager existed.
         value = getattr(self.kernel, "workspace_context", None)
         if isinstance(value, dict):
             return dict(value)
