@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .contracts import IntentResult, IntentType
-from .tools.selector import ToolSelector
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,14 +78,14 @@ class ContextBuilder:
     """Assemble the smallest useful runtime context for one model turn.
 
     The builder is deliberately LLM-agnostic. It reads state from the kernel,
-    selects only command-relevant capabilities, and produces a structured
+    discovers only command-relevant capabilities, and produces a structured
     snapshot that can later grow to include skills, MCP, and other context
     providers.
     """
 
     def __init__(self, kernel):
         self.kernel = kernel
-        self.selector = ToolSelector(kernel.tool_registry)
+        self.discovery = getattr(kernel, "capability_discovery", None)
 
     def build(self, user_text: str, intent: IntentResult | None = None) -> ContextSnapshot:
         normalized = str(user_text).strip()
@@ -139,14 +138,28 @@ class ContextBuilder:
         if intent is None or intent.intent is not IntentType.COMMAND:
             return ()
 
-        definitions = []
-        commands = intent.entities.get("commands")
+        if self.discovery is not None:
+            intents = self._command_intents(intent)
+            descriptors = self.discovery.discover_commands(
+                intents,
+                limit_per_intent=3,
+            )
+            return tuple(descriptor.to_dict() for descriptor in descriptors)
 
-        if isinstance(commands, list) and commands:
-            for command in commands:
-                if not isinstance(command, dict):
-                    continue
-                step_intent = IntentResult(
+        return ()
+
+    @staticmethod
+    def _command_intents(intent: IntentResult) -> list[IntentResult]:
+        commands = intent.entities.get("commands")
+        if not isinstance(commands, list) or not commands:
+            return [intent]
+
+        results: list[IntentResult] = []
+        for command in commands:
+            if not isinstance(command, dict):
+                continue
+            results.append(
+                IntentResult(
                     intent=IntentType.COMMAND,
                     confidence=intent.confidence,
                     normalized_text=intent.normalized_text,
@@ -154,25 +167,5 @@ class ContextBuilder:
                     requires_tools=True,
                     classifier=intent.classifier,
                 )
-                self._append_selected(definitions, step_intent)
-        else:
-            self._append_selected(definitions, intent)
-
-        return tuple(definitions)
-
-    def _append_selected(
-        self,
-        definitions: list[dict[str, Any]],
-        intent: IntentResult,
-    ) -> None:
-        try:
-            definition = self.selector.select(intent)
-        except ValueError:
-            return
-
-        item = {
-            "name": definition.name,
-            "description": definition.description,
-        }
-        if item not in definitions:
-            definitions.append(item)
+            )
+        return results
