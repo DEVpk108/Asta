@@ -1,3 +1,5 @@
+from .capability import CapabilityDescriptor
+
 from .intent import (
     IntentResult,
     IntentType,
@@ -29,6 +31,7 @@ from .workspace import WorkspaceState
 
 __all__ = [
     "AgentTask",
+    "CapabilityDescriptor",
     "IntentResult",
     "IntentType",
     "MemoryQuery",
