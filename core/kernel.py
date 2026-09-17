@@ -1,5 +1,6 @@
 import threading
 
+from .capability_discovery import CapabilityDiscovery
 from .event_bus import EventBus
 from .intent_router import IntentRouter
 from .task_manager import TaskManager
@@ -22,6 +23,10 @@ class Kernel:
         self.workspace_manager = WorkspaceManager(event_bus=self.event_bus)
 
         self.tool_registry = ToolRegistry()
+        self.capability_discovery = CapabilityDiscovery(
+            self.tool_registry,
+            event_bus=self.event_bus,
+        )
         self.approval_manager = ApprovalManager()
 
         policy = (
