@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .contracts import IntentType, ToolRequest, ToolResult
+from .contracts import IntentType, TaskStatus, ToolRequest, ToolResult
 from .module import Module
 
 
@@ -74,7 +74,11 @@ class TaskRuntimeModule(Module):
             return
 
         task = self.kernel.task_manager.current()
-        if task is None:
+        if task is None or task.status in {
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        }:
             return
 
         task_step = self._request_step(request)
@@ -88,7 +92,11 @@ class TaskRuntimeModule(Module):
 
         task_id = result.metadata.get("task_id")
         task = self.kernel.task_manager.get(task_id) if task_id else self.kernel.task_manager.current()
-        if task is None:
+        if task is None or task.status in {
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        }:
             return
 
         evidence: dict[str, Any] = {
@@ -131,7 +139,11 @@ class TaskRuntimeModule(Module):
 
         task_id = pending.request.metadata.get("task_id")
         task = self.kernel.task_manager.get(task_id) if task_id else None
-        if task is None:
+        if task is None or task.status in {
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        }:
             return
 
         if not approved:
