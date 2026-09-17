@@ -2,17 +2,12 @@ from core.contracts import IntentResult, IntentType, ToolDefinition
 
 
 class ToolSelector:
-    """Select the best registered tool for a structured command intent.
-
-    IntentRouter owns language understanding. ToolSelector owns capability
-    discovery and deterministic selection. ToolDispatcher owns execution and
-    AuthorityPolicy owns authorization.
-    """
+    """Rank registered executable capabilities for a structured command intent."""
 
     def __init__(self, registry):
         self.registry = registry
 
-    def select(self, intent: IntentResult) -> ToolDefinition:
+    def rank(self, intent: IntentResult) -> tuple[tuple[int, str, ToolDefinition], ...]:
         if intent.intent != IntentType.COMMAND:
             raise ValueError(
                 "Only command intents can select executable tools."
@@ -31,16 +26,19 @@ class ToolSelector:
             if score > 0:
                 candidates.append((score, definition.name, definition))
 
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        return tuple(candidates)
+
+    def select(self, intent: IntentResult) -> ToolDefinition:
+        candidates = self.rank(intent)
         if not candidates:
+            action = self._normalize_action(intent.entities.get("action"))
             available = ", ".join(self.registry.list()) or "none"
             raise ValueError(
                 f"No registered tool supports command action '{action}'. "
                 f"Available tools: {available}"
             )
 
-        # Highest capability score wins. Name is a deterministic final
-        # tie-breaker so selection never depends on dictionary ordering.
-        candidates.sort(key=lambda item: (-item[0], item[1]))
         return candidates[0][2]
 
     @staticmethod
@@ -79,24 +77,18 @@ class ToolSelector:
         if not isinstance(required, (list, tuple, set, frozenset)):
             required = ()
 
-        # Prefer capabilities whose schemas actually consume the entities
-        # produced by the intent layer.
         for key, value in entities.items():
             if key == "action" or not value:
                 continue
             if key in properties:
                 score += 5
 
-        # A tool that requires an entity missing from the intent is not a
-        # viable candidate, even if it advertises the requested action.
         if any(
             key != "action" and key not in entities
             for key in required
         ):
             return 0
 
-        # Exact action declarations are preferred over aliases; required
-        # inputs are a useful secondary signal when multiple tools overlap.
         score += 2 * sum(
             1
             for key in required
