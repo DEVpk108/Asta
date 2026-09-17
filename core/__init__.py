@@ -9,17 +9,21 @@ Contains the core infrastructure of A.S.T.A., including:
 - Kernel
 - Module System
 - Task Manager
+- Context Builder
 - Plugin Manager
 
 =========================================================
 """
 
+from .context_builder import ContextBuilder, ContextSnapshot
 from .event_bus import EventBus
 from .kernel import Kernel
 from .module import Module
 from .task_manager import TaskManager
 
 __all__ = [
+    "ContextBuilder",
+    "ContextSnapshot",
     "EventBus",
     "Kernel",
     "Module",
