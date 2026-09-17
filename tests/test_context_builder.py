@@ -57,3 +57,32 @@ def test_context_builder_does_not_inject_tool_catalog_for_normal_chat():
 
     assert snapshot.capabilities == ()
     assert "AVAILABLE CAPABILITIES FOR THIS TURN:" not in snapshot.to_prompt()
+
+
+def test_context_builder_uses_workspace_manager_state():
+    kernel = Kernel()
+    kernel.workspace_manager.update_project(
+        name="A.S.T.A.",
+        path="C:/Asta",
+        repository="https://github.com/DEVpk108/Asta.git",
+        branch="feat/asta-hud",
+    )
+    kernel.workspace_manager.set_active_files(["core/context_builder.py"])
+
+    snapshot = ContextBuilder(kernel).build(
+        "what am I working on?",
+        IntentResult(
+            intent=IntentType.CONVERSATION,
+            confidence=0.98,
+            normalized_text="what am I working on?",
+        ),
+    )
+
+    assert snapshot.workspace["project_name"] == "A.S.T.A."
+    assert snapshot.workspace["branch"] == "feat/asta-hud"
+    assert snapshot.workspace["active_files"] == ["core/context_builder.py"]
+
+    prompt = snapshot.to_prompt()
+    assert "WORKSPACE STATE:" in prompt
+    assert "project_name: A.S.T.A." in prompt
+    assert "branch: feat/asta-hud" in prompt
