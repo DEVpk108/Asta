@@ -65,6 +65,7 @@ class WorkspaceRuntimeModule(Module):
                 "machine": platform.machine(),
                 "processor": platform.processor(),
             }
+        )
 
     @staticmethod
     def _workspace_root() -> Path:
@@ -122,8 +123,11 @@ class WorkspaceRuntimeModule(Module):
         if parsed.scheme and parsed.netloc:
             hostname = parsed.hostname or parsed.netloc
             netloc = hostname
-            if parsed.port:
-                netloc = f"{hostname}:{parsed.port}"
+            try:
+                if parsed.port:
+                    netloc = f"{hostname}:{parsed.port}"
+            except ValueError:
+                return value
             return urlunsplit(
                 (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
             )
