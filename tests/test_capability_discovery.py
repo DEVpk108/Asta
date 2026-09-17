@@ -25,6 +25,16 @@ def test_capability_discovery_ranks_native_capabilities_for_command():
     assert capabilities[0].loaded is True
 
 
+def test_capability_discovery_supports_native_queries():
+    kernel = Kernel()
+    kernel.register_tool(OpenApplicationTool())
+
+    capabilities = kernel.capability_discovery.discover(query="open")
+
+    assert capabilities
+    assert capabilities[0].name == "system.open_application"
+
+
 def test_capability_discovery_supports_provider_extensions():
     kernel = Kernel()
 
