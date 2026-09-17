@@ -4,7 +4,7 @@ from core.contracts import IntentResult, IntentType
 from core.tools import OpenApplicationTool
 
 
-def test_context_builder_includes_active_task_memory_and_selected_capability():
+def test_context_builder_includes_active_task_memory_and_discovered_capability():
     kernel = Kernel()
     kernel.register_tool(OpenApplicationTool())
     kernel.memory_context = "The user is working on local-first A.S.T.A."
@@ -28,12 +28,13 @@ def test_context_builder_includes_active_task_memory_and_selected_capability():
     assert snapshot.task["id"] == task.id
     assert snapshot.task["status"] == "active"
     assert snapshot.memory == "The user is working on local-first A.S.T.A."
-    assert snapshot.capabilities == (
-        {
-            "name": "system.open_application",
-            "description": "Open a local application, file, URL, or known application alias.",
-        },
+    assert snapshot.capabilities
+    assert snapshot.capabilities[0]["name"] == "system.open_application"
+    assert snapshot.capabilities[0]["description"] == (
+        "Open a local application, file, URL, or known application alias."
     )
+    assert snapshot.capabilities[0]["provider"] == "native"
+    assert snapshot.capabilities[0]["loaded"] is True
 
     prompt = snapshot.to_prompt()
     assert "ACTIVE TASK:" in prompt
