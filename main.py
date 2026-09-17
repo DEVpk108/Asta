@@ -121,6 +121,7 @@ def main():
     # Import the runtime stack only after the HUD process is alive.
     from core.kernel import Kernel
     from core.task_runtime import TaskRuntimeModule
+    from core.workspace_runtime import WorkspaceRuntimeModule
     from core.tools import (
         AudioControlTool,
         CloseApplicationTool,
@@ -159,6 +160,7 @@ def main():
     # loading can now happen in parallel with the user's visual boot animation.
     hud = HUDModule(kernel)
     memory = MemoryModule(kernel)
+    workspace_runtime = WorkspaceRuntimeModule(kernel)
     task_runtime = TaskRuntimeModule(kernel)
     speech = SpeechModule(kernel)
     ai = AIModule(kernel)
@@ -183,10 +185,11 @@ def main():
 
     print("===== ASTA KERNEL =====")
 
-    # TaskRuntime is registered before AIModule and ToolRuntimeModule so task
-    # state exists before a command becomes a tool request and tool execution.
+    # WorkspaceRuntime populates project/repository/environment context before
+    # AIModule can assemble a reasoning prompt for the first user turn.
     kernel.register_module(hud)
     kernel.register_module(memory)
+    kernel.register_module(workspace_runtime)
     kernel.register_module(task_runtime)
     kernel.register_module(ai)
     kernel.register_module(speech)
