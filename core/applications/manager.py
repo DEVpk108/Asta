@@ -160,7 +160,19 @@ class ApplicationManager:
                 f"No running application matched '{query}'."
             )
 
-        top = _score_running_process(query, matches[0])
+        comparison_names = [query]
+        try:
+            comparison_names.append(self.resolve(query).name)
+        except ApplicationResolutionError:
+            pass
+
+        top = max(
+            (
+                _score_running_process(candidate, matches[0])
+                for candidate in comparison_names
+            ),
+            default=0.0,
+        )
         if top < 0.60:
             raise ApplicationResolutionError(
                 f"No running application matched '{query}' confidently."
