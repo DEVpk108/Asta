@@ -63,7 +63,7 @@ def test_execute_reports_original_and_resolved_targets(monkeypatch):
         def resolve(self, target):
             return ApplicationRecord(
                 name=target,
-                launch_target="shell:AppsFolder\Demo.App",
+                launch_target=r"shell:AppsFolder\Demo.App",
                 provider="windows.start_apps",
             )
 
