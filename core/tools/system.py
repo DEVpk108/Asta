@@ -79,7 +79,7 @@ class OpenApplicationTool(Tool):
             return ToolResult(
                 success=False,
                 tool=self.definition.name,
-                error=f"Application '{target}' could not be found on this system.",
+                error=f"Application '{target}' not found on this system.",
                 duration_seconds=time.perf_counter() - start,
             )
         except Exception as exc:
@@ -113,6 +113,8 @@ class OpenApplicationTool(Tool):
             alias = WINDOWS_APPLICATION_ALIASES.get(normalized)
             if alias:
                 if alias.endswith(":"):
+                    return alias
+                if normalized in {"calculator", "calc"}:
                     return alias
                 executable = cls._resolve_windows_executable(alias)
                 if executable:
