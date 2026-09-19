@@ -27,6 +27,14 @@ class ApplicationRecord:
         return normalize_application_name(self.name)
 
 
+@dataclass(frozen=True, slots=True)
+class RunningProcessRecord:
+    pid: int
+    name: str
+    executable_path: str | None = None
+    window_title: str | None = None
+
+
 class ApplicationResolutionError(RuntimeError):
     pass
 
@@ -105,6 +113,107 @@ class ApplicationManager:
                 )
 
         return matches[0]
+
+    def discover_running_processes(self, query=None, *, limit=8):
+        """Discover currently running Windows processes and optionally rank them by query."""
+        if os.name != "nt":
+            return ()
+
+        processes = self._discover_windows_processes()
+        if not query or not str(query).strip():
+            return tuple(processes[: max(1, int(limit))])
+
+        query = str(query).strip()
+        comparison_names = [query]
+        try:
+            comparison_names.append(self.resolve(query).name)
+        except ApplicationResolutionError:
+            pass
+
+        ranked = []
+        for process in processes:
+            fields = (
+                process.name or "",
+                process.executable_path or "",
+                process.window_title or "",
+            )
+            score = max(
+                _score(candidate, field)
+                for candidate in comparison_names
+                for field in fields
+                if field
+            )
+            if score:
+                ranked.append((score, process))
+
+        ranked.sort(key=lambda item: (-item[0], item[1].pid))
+        return tuple(process for _, process in ranked[: max(1, int(limit))])
+
+    def resolve_running_process(self, query: str) -> RunningProcessRecord:
+        query = str(query).strip()
+        if not query:
+            raise ApplicationResolutionError("Application name cannot be empty.")
+
+        matches = self.discover_running_processes(query, limit=6)
+        if not matches:
+            raise ApplicationResolutionError(
+                f"No running application matched '{query}'."
+            )
+
+        top = _score_running_process(query, matches[0])
+        if top < 0.60:
+            raise ApplicationResolutionError(
+                f"No running application matched '{query}' confidently."
+            )
+
+        return matches[0]
+
+    def _discover_windows_processes(self):
+        output = self._powershell_runner(
+            "Get-Process | ForEach-Object { "
+            "$path = $null; "
+            "try { $path = $_.Path } catch {} "
+            "[pscustomobject]@{ "
+            "ProcessId = [int]$_.Id; "
+            "Name = [string]$_.ProcessName; "
+            "Path = [string]$path; "
+            "WindowTitle = [string]$_.MainWindowTitle "
+            "} "
+            "} | ConvertTo-Json -Compress"
+        )
+        if not output.strip():
+            return []
+
+        payload = json.loads(output)
+        entries = payload if isinstance(payload, list) else [payload]
+        records = []
+
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            try:
+                pid = int(item.get("ProcessId"))
+            except (TypeError, ValueError):
+                continue
+            if pid <= 0:
+                continue
+
+            name = str(item.get("Name") or "").strip()
+            path = str(item.get("Path") or "").strip() or None
+            window_title = str(item.get("WindowTitle") or "").strip() or None
+            if not name:
+                continue
+
+            records.append(
+                RunningProcessRecord(
+                    pid=pid,
+                    name=name,
+                    executable_path=path,
+                    window_title=window_title,
+                )
+            )
+        return records
+
 
     @property
     def last_error(self):
@@ -258,6 +367,15 @@ def _abbreviation_match(query_tokens, candidate_tokens):
             return False
 
     return True
+
+
+def _score_running_process(query: str, process: RunningProcessRecord) -> float:
+    fields = (
+        process.name or "",
+        process.executable_path or "",
+        process.window_title or "",
+    )
+    return max((_score(query, field) for field in fields if field), default=0.0)
 
 
 def _dedupe(records):
