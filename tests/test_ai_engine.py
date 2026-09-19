@@ -162,13 +162,9 @@ def test_conversation_history_is_sent_on_subsequent_requests(monkeypatch):
     assert engine.generate_response("follow up") == "Second reply."
 
     assert len(calls) == 2
-    assert calls[1]["messages"][-3:] == [
+    assert calls[1]["messages"][-2:] == [
         {"role": "assistant", "content": "First reply."},
         {"role": "user", "content": "follow up"},
-        {"role": "assistant", "content": "First reply."},
-    ] or calls[1]["messages"][-2:] == [
-        {"role": "user", "content": "follow up"},
-        {"role": "assistant", "content": "First reply."},
     ]
 
 
