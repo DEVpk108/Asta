@@ -189,6 +189,8 @@ def _score(query: str, candidate: str) -> float:
         return 0.92
     if _ordered_token_prefix_match(qt, ct):
         return 0.91
+    if _abbreviation_match(qt, ct):
+        return 0.90
     compact_q = "".join(qt)
     compact_c = "".join(ct)
     if compact_q in compact_c:
@@ -206,6 +208,40 @@ def _ordered_token_prefix_match(query_tokens, candidate_tokens):
                 break
         else:
             return False
+    return True
+
+
+def _abbreviation_match(query_tokens, candidate_tokens):
+    """Match a query token against the initials of consecutive candidate tokens."""
+    if not query_tokens or not candidate_tokens:
+        return False
+
+    candidate_positions = 0
+    for query_token in query_tokens:
+        matched = False
+
+        while candidate_positions < len(candidate_tokens):
+            candidate_token = candidate_tokens[candidate_positions]
+            candidate_positions += 1
+
+            if candidate_token.startswith(query_token):
+                matched = True
+                break
+
+            initials = candidate_token[0]
+            lookahead = candidate_positions
+            while lookahead < len(candidate_tokens) and len(initials) < len(query_token):
+                initials += candidate_tokens[lookahead][0]
+                lookahead += 1
+
+            if initials == query_token:
+                candidate_positions = lookahead
+                matched = True
+                break
+
+        if not matched:
+            return False
+
     return True
 
 
