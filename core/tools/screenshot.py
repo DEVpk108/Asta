@@ -50,7 +50,10 @@ class OpenScreenshotTool(Tool):
         if not files:
             return None
 
-        return max(files, key=lambda path: path.stat().st_mtime_ns)
+        return max(
+            files,
+            key=lambda path: (path.stat().st_mtime_ns, path.name),
+        )
 
     def _open_path(self, path: Path) -> None:
         if self._opener is not None:
