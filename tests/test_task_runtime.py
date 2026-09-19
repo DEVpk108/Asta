@@ -58,7 +58,7 @@ def _shutdown(tasks, ai, tools):
 def test_command_creates_and_completes_agent_task():
     kernel, tasks, ai, tools = _build_runtime()
     try:
-        ai.on_user_message("open calculator")
+        kernel.event_bus.emit("user_message", "open calculator")
 
         task = kernel.task_manager.list()[0]
         assert task.status is TaskStatus.COMPLETED
@@ -77,7 +77,10 @@ def test_command_creates_and_completes_agent_task():
 def test_compound_command_keeps_one_task_across_multiple_tools():
     kernel, tasks, ai, tools = _build_runtime()
     try:
-        ai.on_user_message("open calculator and then close calculator")
+        kernel.event_bus.emit(
+            "user_message",
+            "open calculator and then close calculator",
+        )
 
         task = kernel.task_manager.list()[0]
         assert task.status is TaskStatus.COMPLETED
