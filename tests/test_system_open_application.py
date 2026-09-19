@@ -94,7 +94,7 @@ def test_unknown_windows_application_returns_failure(monkeypatch):
     )
 
     assert result.success is False
-    assert "not found" in result.error.lower()
+    assert "no installed application" in result.error.lower()
 
 
 class FakeManager:
