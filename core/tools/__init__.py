@@ -1,5 +1,6 @@
 from .approval import ApprovalManager, PendingApproval
 from .authority import AuthorityManager, AuthorityMode, AuthorityRule
+from .authority_store import AuthorityStore
 from .base import Tool
 from .builtin import (
     AudioControlTool,
@@ -26,7 +27,7 @@ from .test_tool import EchoTool
 
 __all__ = [
     "ApprovalManager", "PendingApproval",
-    "AuthorityManager", "AuthorityMode", "AuthorityRule",
+    "AuthorityManager", "AuthorityMode", "AuthorityRule", "AuthorityStore",
     "AuthorizationResult", "AuthorityPolicy", "RiskLevel",
     "Tool", "ToolDispatcher", "ToolRuntimeModule", "ToolRegistry",
     "ToolRequestBuilder", "ToolSelector", "OpenApplicationTool", "LaunchApplicationTool",
