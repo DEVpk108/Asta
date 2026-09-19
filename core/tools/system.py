@@ -51,6 +51,13 @@ class OpenApplicationTool(Tool):
         try:
             resolved_target = self.resolve_target(target)
             self._open(resolved_target)
+        except ApplicationResolutionError as exc:
+            return ToolResult(
+                success=False,
+                tool=self.definition.name,
+                error=str(exc),
+                duration_seconds=time.perf_counter() - start,
+            )
         except FileNotFoundError:
             return ToolResult(
                 success=False,
@@ -87,10 +94,7 @@ class OpenApplicationTool(Tool):
             if executable:
                 return executable
 
-            try:
-                return self.application_manager.resolve(target).launch_target
-            except ApplicationResolutionError as exc:
-                raise FileNotFoundError(str(exc)) from exc
+            return self.application_manager.resolve(target).launch_target
 
         executable = shutil.which(target)
         if executable:
