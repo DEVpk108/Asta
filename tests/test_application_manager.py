@@ -6,11 +6,22 @@ import core.applications.manager as manager_module
 from core.applications import ApplicationManager, ApplicationRecord, ApplicationResolutionError
 
 
+def _empty_start_menu(monkeypatch):
+    monkeypatch.setattr(
+        manager_module.ApplicationManager,
+        "_discover_start_menu",
+        lambda self: [],
+    )
+
+
 def test_normalize_application_name():
     assert manager_module.normalize_application_name(" Visual-Studio_Code ") == "visual studio code"
 
 
-def test_start_apps_discovers_whatsapp_and_file_explorer():
+def test_start_apps_discovers_whatsapp_and_file_explorer(monkeypatch):
+    monkeypatch.setattr(manager_module.os, "name", "nt")
+    _empty_start_menu(monkeypatch)
+
     payload = json.dumps(
         [
             {"Name": "WhatsApp", "AppID": "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App"},
@@ -31,7 +42,10 @@ def test_start_apps_discovers_whatsapp_and_file_explorer():
     assert explorer.name == "File Explorer"
 
 
-def test_start_apps_accepts_single_json_object():
+def test_start_apps_accepts_single_json_object(monkeypatch):
+    monkeypatch.setattr(manager_module.os, "name", "nt")
+    _empty_start_menu(monkeypatch)
+
     payload = json.dumps({"Name": "Notepad", "AppID": "Notepad.App"})
     manager = ApplicationManager(powershell_runner=lambda _: payload)
 
@@ -50,7 +64,7 @@ def test_discovery_falls_back_to_start_menu(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         manager_module.ApplicationManager,
-        "_discover_start_menu_entries",
+        "_discover_start_menu",
         lambda self: [
             ApplicationRecord(
                 name="My Editor",
@@ -66,7 +80,10 @@ def test_discovery_falls_back_to_start_menu(monkeypatch, tmp_path):
     assert manager.last_error == "RuntimeError: PowerShell unavailable"
 
 
-def test_discovery_supports_fuzzy_queries():
+def test_discovery_supports_fuzzy_queries(monkeypatch):
+    monkeypatch.setattr(manager_module.os, "name", "nt")
+    _empty_start_menu(monkeypatch)
+
     payload = json.dumps(
         [
             {"Name": "Visual Studio Code", "AppID": "VSCode"},
@@ -79,7 +96,10 @@ def test_discovery_supports_fuzzy_queries():
     assert manager.resolve("chrome").name == "Google Chrome"
 
 
-def test_unknown_application_is_not_resolved():
+def test_unknown_application_is_not_resolved(monkeypatch):
+    monkeypatch.setattr(manager_module.os, "name", "nt")
+    _empty_start_menu(monkeypatch)
+
     manager = ApplicationManager(powershell_runner=lambda _: "[]")
 
     with pytest.raises(ApplicationResolutionError, match="No installed application"):
