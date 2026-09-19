@@ -40,6 +40,12 @@ def _extract_interrupt_tail(text):
     if not normalized:
         return False, ""
 
+    if normalized in {"okay, okay, stop", "okay okay stop", "ok, ok, stop", "ok ok stop"}:
+        return True, ""
+
+    if re.match(r"^(?:(?:okay|ok|please)\s*,?\s*)+stop$", normalized):
+        return True, ""
+
     for phrase in INTERRUPT_PHRASES:
         if normalized == phrase:
             return True, ""
