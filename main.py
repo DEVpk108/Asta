@@ -122,6 +122,7 @@ def main():
     from core.kernel import Kernel
     from core.task_runtime import TaskRuntimeModule
     from core.workspace_runtime import WorkspaceRuntimeModule
+    from core.skills import register_builtin_skills
     from core.tools import (
         AudioControlTool,
         CloseApplicationTool,
@@ -155,6 +156,7 @@ def main():
     apply_presentation_patch()
 
     kernel = Kernel()
+    register_builtin_skills(kernel.skill_manager)
 
     # Construct the backend after the HUD is already visible. Heavy local model
     # loading can now happen in parallel with the user's visual boot animation.
