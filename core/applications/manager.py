@@ -83,6 +83,8 @@ class ApplicationManager:
             raise ApplicationResolutionError("Application name cannot be empty.")
 
         matches = self.discover(query, limit=6, refresh=refresh)
+        if not matches and not refresh:
+            matches = self.discover(query, limit=6, refresh=True)
         if not matches:
             raise ApplicationResolutionError(
                 f"No installed application matched '{query}'."
@@ -185,11 +187,26 @@ def _score(query: str, candidate: str) -> float:
     ct = c.split()
     if all(token in ct for token in qt):
         return 0.92
+    if _ordered_token_prefix_match(qt, ct):
+        return 0.91
     compact_q = "".join(qt)
     compact_c = "".join(ct)
     if compact_q in compact_c:
         return 0.88
     return SequenceMatcher(None, compact_q, compact_c, autojunk=False).ratio() * 0.84
+
+
+def _ordered_token_prefix_match(query_tokens, candidate_tokens):
+    position = 0
+    for query_token in query_tokens:
+        while position < len(candidate_tokens):
+            candidate_token = candidate_tokens[position]
+            position += 1
+            if candidate_token.startswith(query_token):
+                break
+        else:
+            return False
+    return True
 
 
 def _dedupe(records):
