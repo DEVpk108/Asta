@@ -15,6 +15,8 @@ from .model import (
     ModelResponse,
 )
 
+from .skill import SkillDescriptor
+
 from .task import (
     AgentTask,
     TaskStatus,
@@ -38,6 +40,7 @@ __all__ = [
     "MemoryRecord",
     "ModelRequest",
     "ModelResponse",
+    "SkillDescriptor",
     "TaskStatus",
     "ToolDefinition",
     "ToolRequest",
