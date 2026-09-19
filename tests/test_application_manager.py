@@ -116,3 +116,4 @@ def test_discovery_supports_abbreviated_tokens(monkeypatch):
     manager = ApplicationManager(powershell_runner=lambda _: payload)
 
     assert manager.resolve("vs code").name == "Visual Studio Code"
+    assert manager.resolve("vscode").name == "Visual Studio Code"
