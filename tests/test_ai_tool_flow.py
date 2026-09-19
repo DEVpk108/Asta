@@ -1,4 +1,5 @@
 from core import Kernel
+from core.applications import ApplicationRecord
 from core.contracts import ToolResult
 from core.tools import OpenApplicationTool, ToolRuntimeModule
 
@@ -28,7 +29,20 @@ def test_command_intent_reaches_runtime_without_approval_for_everyday_open(monke
         lambda result: results.append(result),
     )
 
+    class FakeManager:
+        def resolve(self, target):
+            assert target == "calculator"
+            return ApplicationRecord(
+                name="Calculator",
+                launch_target=r"shell:AppsFolder\Calculator.App",
+                provider="windows.start_apps",
+                app_id="Calculator.App",
+            )
+
     class FakeOpenTool(OpenApplicationTool):
+        def __init__(self):
+            super().__init__(FakeManager())
+
         @staticmethod
         def _open(target):
             return None
@@ -48,7 +62,7 @@ def test_command_intent_reaches_runtime_without_approval_for_everyday_open(monke
     assert result.success is True
     assert result.tool == "system.open_application"
     assert result.output["target"] == "calculator"
-    assert result.output["resolved_target"] == "calc.exe"
+    assert result.output["resolved_target"] == r"shell:AppsFolder\Calculator.App"
 
     ai.shutdown()
     runtime.shutdown()
