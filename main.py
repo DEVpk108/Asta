@@ -172,7 +172,7 @@ def main():
 
     # Register capabilities before the runtime starts.
     for tool in (
-        OpenApplicationTool(),
+        OpenApplicationTool(kernel.application_manager),
         LaunchApplicationTool(),
         StartProcessTool(),
         RunCommandTool(),
