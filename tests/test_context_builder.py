@@ -1,6 +1,7 @@
 from core import Kernel
 from core.context_builder import ContextBuilder
 from core.contracts import IntentResult, IntentType
+from core.skills import register_builtin_skills
 from core.tools import OpenApplicationTool
 
 
@@ -87,3 +88,29 @@ def test_context_builder_uses_workspace_manager_state():
     assert "WORKSPACE STATE:" in prompt
     assert "project_name: A.S.T.A." in prompt
     assert "branch: feat/asta-hud" in prompt
+
+
+def test_context_builder_includes_relevant_skill_in_reasoning_context():
+    kernel = Kernel()
+    register_builtin_skills(kernel.skill_manager)
+
+    intent = IntentResult(
+        intent=IntentType.COMMAND,
+        confidence=0.98,
+        normalized_text="debug the python error",
+        entities={"action": "debug", "target": "python error"},
+        requires_tools=False,
+    )
+
+    snapshot = ContextBuilder(kernel).build(
+        "debug the python error",
+        intent,
+    )
+
+    assert snapshot.skills
+    assert snapshot.skills[0]["name"] == "software_debugging"
+    assert snapshot.skills[0]["instructions"]
+
+    prompt = snapshot.to_prompt()
+    assert "RELEVANT SKILLS FOR THIS TURN:" in prompt
+    assert "software_debugging" in prompt
