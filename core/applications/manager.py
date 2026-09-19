@@ -212,7 +212,7 @@ def _ordered_token_prefix_match(query_tokens, candidate_tokens):
 
 
 def _abbreviation_match(query_tokens, candidate_tokens):
-    """Match a query token against the initials of consecutive candidate tokens."""
+    """Match abbreviated query tokens against candidate token prefixes/initials."""
     if not query_tokens or not candidate_tokens:
         return False
 
@@ -222,22 +222,43 @@ def _abbreviation_match(query_tokens, candidate_tokens):
 
         while candidate_positions < len(candidate_tokens):
             candidate_token = candidate_tokens[candidate_positions]
-            candidate_positions += 1
 
             if candidate_token.startswith(query_token):
+                candidate_positions += 1
                 matched = True
                 break
 
-            initials = candidate_token[0]
+            initials = "".join(token[0] for token in candidate_tokens[candidate_positions:])
+            if query_token.startswith(initials) and query_token[len(initials):]:
+                # Avoid treating a longer query as a match unless the remaining
+                # characters form the prefix of the next candidate token sequence.
+                pass
+
+            # Try compact forms such as "vscode":
+            # "v" from "visual" + "s" from "studio" + "code" from "code".
+            remaining = query_token
             lookahead = candidate_positions
-            while lookahead < len(candidate_tokens) and len(initials) < len(query_token):
-                initials += candidate_tokens[lookahead][0]
+            while lookahead < len(candidate_tokens) and remaining:
+                token = candidate_tokens[lookahead]
+
+                if token.startswith(remaining):
+                    remaining = ""
+                    lookahead += 1
+                    break
+
+                prefix = token[0]
+                if not remaining.startswith(prefix):
+                    break
+
+                remaining = remaining[1:]
                 lookahead += 1
 
-            if initials == query_token:
+            if not remaining:
                 candidate_positions = lookahead
                 matched = True
                 break
+
+            candidate_positions += 1
 
         if not matched:
             return False
