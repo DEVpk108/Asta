@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from core import Kernel
 from core.contracts import ToolDefinition, ToolRequest
 from core.tools import (
@@ -22,10 +20,10 @@ def definition(name="test_tool", risk="low", requires_confirmation=False):
     )
 
 
-def test_default_policy_remains_the_fallback():
+def test_default_policy_remains_the_fallback(tmp_path):
     manager = AuthorityManager(
         policy=AuthorityPolicy(maximum_automatic_risk=RiskLevel.MEDIUM),
-        storage_path=":memory-do-not-use",
+        storage_path=tmp_path / "authority.json",
     )
 
     authorization = manager.authorize(definition(risk="medium"))
