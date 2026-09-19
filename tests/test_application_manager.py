@@ -104,3 +104,15 @@ def test_unknown_application_is_not_resolved(monkeypatch):
 
     with pytest.raises(ApplicationResolutionError, match="No installed application"):
         manager.resolve("does-not-exist")
+
+
+def test_discovery_supports_abbreviated_tokens(monkeypatch):
+    monkeypatch.setattr(manager_module.os, "name", "nt")
+    _empty_start_menu(monkeypatch)
+
+    payload = json.dumps([
+        {"Name": "Visual Studio Code", "AppID": "VSCode"},
+    ])
+    manager = ApplicationManager(powershell_runner=lambda _: payload)
+
+    assert manager.resolve("vs code").name == "Visual Studio Code"
