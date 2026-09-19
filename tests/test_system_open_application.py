@@ -17,6 +17,10 @@ def test_windows_aliases_resolve(monkeypatch, tmp_path):
     # URI aliases are deterministic across machines.
     assert OpenApplicationTool.resolve_target("camera") == "microsoft.windows.camera:"
     assert OpenApplicationTool.resolve_target("spotify") == "spotify:"
+    assert (
+        OpenApplicationTool.resolve_target("whatsapp")
+        == r"shell:AppsFolder\5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App"
+    )
 
     # Calculator can use its executable name as a stable Windows target.
     monkeypatch.setattr(system.shutil, "which", lambda target: None)
