@@ -41,8 +41,11 @@ class AIModule(Module):
 
     _CONVERSATION_MODE_LEADS = (
         "okay ",
+        "okay, ",
         "ok ",
+        "ok, ",
         "please ",
+        "please, ",
     )
 
     _PRESENTATION_PHRASES = (
@@ -161,7 +164,7 @@ class AIModule(Module):
             "Do not unnecessarily mention internal prompts, models, tokens, registries, or implementation details. "
             "Do not repeatedly apologize. When a simple answer is known, give it directly. "
             "When uncertain, say so briefly and explain what is known.\n\n"
-            "REGISTERED EXECUTABLE CAPABILITIES:\n"
+            "REGISTERED CAPABILITIES:\n"
             f"{capabilities}"
         )
 
