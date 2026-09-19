@@ -29,13 +29,16 @@ WINDOWS_APPLICATION_ALIASES = {
 
 
 class OpenApplicationTool(Tool):
-    """Open a local application, file, URL, or known friendly app alias.
+    """Open a local application, file, URL, or discovered application.
 
     The tool intentionally avoids shell execution. On Windows it first tries
     a known URI/executable alias, then common installation locations and PATH,
     then the native Windows opener for paths/URIs. POSIX platforms use their
     native opener before falling back to PATH resolution.
     """
+
+    def __init__(self, application_manager=None):
+        self.application_manager = application_manager or ApplicationManager()
 
     @property
     def definition(self) -> ToolDefinition:
