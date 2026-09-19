@@ -13,14 +13,18 @@ from core.tools.base import Tool
 
 # Friendly application names that cannot reliably be launched by passing the
 # spoken name directly to Windows. These aliases resolve either to an explicit
-# URI handler or to an application executable discovered in common install
-# locations.
+# URI handler, a Windows AppsFolder launcher, or an application executable
+# discovered in common install locations.
 WINDOWS_APPLICATION_ALIASES = {
     "calculator": "calc.exe",
     "calc": "calc.exe",
     "camera": "microsoft.windows.camera:",
     "windows camera": "microsoft.windows.camera:",
     "spotify": "spotify:",
+    # WhatsApp is commonly installed as a packaged Windows app, so it does
+    # not necessarily expose a whatsapp.exe on PATH. Launch it through its
+    # Windows AppsFolder AppUserModelID instead.
+    "whatsapp": r"shell:AppsFolder\5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App",
 }
 
 
@@ -112,7 +116,10 @@ class OpenApplicationTool(Tool):
         if os.name == "nt":
             alias = WINDOWS_APPLICATION_ALIASES.get(normalized)
             if alias:
-                if alias.endswith(":"):
+                # Windows URI handlers and AppsFolder shell targets are
+                # already launch-ready and should not be passed through PATH
+                # or filesystem resolution.
+                if alias.endswith(":") or alias.lower().startswith("shell:"):
                     return alias
                 if normalized in {"calculator", "calc"}:
                     return alias
