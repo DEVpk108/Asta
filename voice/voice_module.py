@@ -156,7 +156,10 @@ class VoiceModule(Module):
             self._last_transcript = ""
             self._last_transcript_at = 0.0
             self._awaiting_confirmation = False
-            self.microphone.clear_buffer()
+            microphone = getattr(self, "microphone", None)
+            clear_buffer = getattr(microphone, "clear_buffer", None)
+            if callable(clear_buffer):
+                clear_buffer()
             print("[Voice] Conversation mode: OFF", flush=True)
 
     def _start_conversation(self):
@@ -253,6 +256,19 @@ class VoiceModule(Module):
 
         if normalized == "stop":
             return True, ""
+
+        # Whisper may insert acknowledgements before the stop word, e.g.
+        # "okay, okay, stop" or "okay please stop". Treat recent conversational
+        # filler before a bare stop as an interruption while preserving the tail.
+        tokens = normalized.split()
+        if "stop" in tokens:
+            stop_index = tokens.index("stop")
+            before = tokens[:stop_index]
+            after = tokens[stop_index + 1:]
+            if not after or after[0] in {"speaking", "talking", "presenting", "presentation"}:
+                recent = before[-4:]
+                if any(token in {"okay", "ok", "please", "asta", "wait", "hold"} for token in recent):
+                    return True, " ".join(after).strip(" ,.-")
 
         if normalized.startswith("stop "):
             remainder = normalized[5:].strip()
