@@ -201,8 +201,12 @@ class SpeechModule(Module):
                 break
 
             parts.append(next_text)
-            with self._state_lock:
-                self._queued_text = max(0, self._queued_text - 1)
+            state_lock = getattr(self, "_state_lock", None)
+            if state_lock is None:
+                self._queued_text = max(0, getattr(self, "_queued_text", 0) - 1)
+            else:
+                with state_lock:
+                    self._queued_text = max(0, self._queued_text - 1)
             self._queue.task_done()
 
         return " ".join(part.strip() for part in parts if part and part.strip())
