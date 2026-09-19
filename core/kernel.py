@@ -3,6 +3,7 @@ import threading
 from .capability_discovery import CapabilityDiscovery
 from .event_bus import EventBus
 from .intent_router import IntentRouter
+from .skill_manager import SkillManager
 from .task_manager import TaskManager
 from .workspace_manager import WorkspaceManager
 from .tools import (
@@ -27,6 +28,7 @@ class Kernel:
         self.intent_router = IntentRouter()
         self.task_manager = TaskManager(event_bus=self.event_bus)
         self.workspace_manager = WorkspaceManager(event_bus=self.event_bus)
+        self.skill_manager = SkillManager(event_bus=self.event_bus)
 
         self.tool_registry = ToolRegistry()
         self.capability_discovery = CapabilityDiscovery(
