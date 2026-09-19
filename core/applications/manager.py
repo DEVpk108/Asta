@@ -228,12 +228,6 @@ def _abbreviation_match(query_tokens, candidate_tokens):
                 matched = True
                 break
 
-            initials = "".join(token[0] for token in candidate_tokens[candidate_positions:])
-            if query_token.startswith(initials) and query_token[len(initials):]:
-                # Avoid treating a longer query as a match unless the remaining
-                # characters form the prefix of the next candidate token sequence.
-                pass
-
             # Try compact forms such as "vscode":
             # "v" from "visual" + "s" from "studio" + "code" from "code".
             remaining = query_token
