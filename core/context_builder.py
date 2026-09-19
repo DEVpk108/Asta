@@ -52,10 +52,14 @@ class ContextSnapshot:
 
         if self.capabilities:
             capability_lines = ["AVAILABLE CAPABILITIES FOR THIS TURN:"]
-            capability_lines.extend(
-                f"- {item['name']}: {item['description']}"
-                for item in self.capabilities
-            )
+            for item in self.capabilities:
+                capability_lines.append(
+                    f"- {item['name']}: {item['description']} "
+                    f"[provider={item.get('provider', 'native')}, "
+                    f"risk={item.get('risk_level', 'unknown')}, "
+                    f"confirmation={item.get('requires_confirmation', False)}, "
+                    f"loaded={item.get('loaded', True)}]"
+                )
             sections.append("\n".join(capability_lines))
 
         sections.append(f"USER REQUEST:\n{self.user_text.strip()}")
@@ -124,8 +128,6 @@ class ContextBuilder:
             except (AttributeError, TypeError):
                 pass
 
-        # Keep the original hook as a compatibility fallback for callers that
-        # populated workspace_context before WorkspaceManager existed.
         value = getattr(self.kernel, "workspace_context", None)
         if isinstance(value, dict):
             return dict(value)
