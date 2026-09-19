@@ -17,7 +17,12 @@ from .tools import (
 class Kernel:
     """Central runtime for A.S.T.A. infrastructure."""
 
-    def __init__(self, *, maximum_automatic_risk=None):
+    def __init__(
+        self,
+        *,
+        maximum_automatic_risk=None,
+        authority_path=None,
+    ):
         self.event_bus = EventBus()
         self.intent_router = IntentRouter()
         self.task_manager = TaskManager(event_bus=self.event_bus)
@@ -40,6 +45,7 @@ class Kernel:
         self.authority_manager = AuthorityManager(
             policy=policy,
             event_bus=self.event_bus,
+            storage_path=authority_path,
         )
 
         self.tool_dispatcher = ToolDispatcher(
@@ -125,7 +131,7 @@ class Kernel:
                 self._stop_event.wait(0.5)
 
         except KeyboardInterrupt:
-            print("\\n[Kernel] Keyboard interrupt")
+            print("\n[Kernel] Keyboard interrupt")
 
         finally:
             self.shutdown()
