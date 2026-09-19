@@ -15,6 +15,7 @@ class ContextSnapshot:
     memory: str = ""
     workspace: dict[str, Any] = field(default_factory=dict)
     capabilities: tuple[dict[str, Any], ...] = ()
+    skills: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -23,6 +24,7 @@ class ContextSnapshot:
             "memory": self.memory,
             "workspace": dict(self.workspace),
             "capabilities": [dict(item) for item in self.capabilities],
+            "skills": [dict(item) for item in self.skills],
         }
 
     def to_prompt(self) -> str:
@@ -49,6 +51,15 @@ class ContextSnapshot:
 
         if self.workspace:
             sections.append(self._format_mapping("WORKSPACE STATE", self.workspace))
+
+        if self.skills:
+            skill_lines = ["RELEVANT SKILLS FOR THIS TURN:"]
+            for skill in self.skills:
+                skill_lines.append(
+                    f"- {skill['name']}: {skill['description']}\n"
+                    f"  Instructions: {skill['instructions']}"
+                )
+            sections.append("\n".join(skill_lines))
 
         if self.capabilities:
             capability_lines = ["AVAILABLE CAPABILITIES FOR THIS TURN:"]
@@ -82,20 +93,21 @@ class ContextBuilder:
     """Assemble the smallest useful runtime context for one model turn.
 
     The builder is deliberately LLM-agnostic. It reads state from the kernel,
-    discovers only command-relevant capabilities, and produces a structured
-    snapshot that can later grow to include skills, MCP, and other context
-    providers.
+    discovers relevant skills/capabilities, and produces a structured snapshot
+    that can later grow to include MCP and other context providers.
     """
 
     def __init__(self, kernel):
         self.kernel = kernel
         self.discovery = getattr(kernel, "capability_discovery", None)
+        self.skill_manager = getattr(kernel, "skill_manager", None)
 
     def build(self, user_text: str, intent: IntentResult | None = None) -> ContextSnapshot:
         normalized = str(user_text).strip()
         task = self._task_snapshot()
         memory = str(getattr(self.kernel, "memory_context", "") or "").strip()
         workspace = self._workspace_snapshot()
+        skills = self._skills_for(intent, normalized)
         capabilities = self._capabilities_for(intent)
 
         return ContextSnapshot(
@@ -104,6 +116,7 @@ class ContextBuilder:
             memory=memory,
             workspace=workspace,
             capabilities=capabilities,
+            skills=skills,
         )
 
     def build_prompt(self, user_text: str, intent: IntentResult | None = None) -> str:
@@ -132,6 +145,34 @@ class ContextBuilder:
         if isinstance(value, dict):
             return dict(value)
         return {}
+
+    def _skills_for(
+        self,
+        intent: IntentResult | None,
+        user_text: str,
+    ) -> tuple[dict[str, Any], ...]:
+        if self.skill_manager is None:
+            return ()
+
+        try:
+            skills = self.skill_manager.discover(
+                intent,
+                query=user_text,
+                limit=3,
+            )
+        except Exception:
+            return ()
+
+        return tuple(
+            {
+                "name": skill.name,
+                "description": skill.description,
+                "instructions": skill.instructions,
+                "provider": skill.provider,
+                "priority": skill.priority,
+            }
+            for skill in skills
+        )
 
     def _capabilities_for(
         self,
