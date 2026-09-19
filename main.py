@@ -177,7 +177,7 @@ def main():
         StartProcessTool(),
         RunCommandTool(),
         StopProcessTool(),
-        CloseApplicationTool(),
+        CloseApplicationTool(kernel.application_manager),
         ScreenshotTool(capture=capture_screenshot),
         OpenScreenshotTool(),
         AudioControlTool("mute"),
