@@ -1,5 +1,6 @@
 import threading
 
+from .applications import ApplicationManager
 from .capability_discovery import CapabilityDiscovery
 from .event_bus import EventBus
 from .intent_router import IntentRouter
@@ -28,6 +29,7 @@ class Kernel:
         self.intent_router = IntentRouter()
         self.task_manager = TaskManager(event_bus=self.event_bus)
         self.workspace_manager = WorkspaceManager(event_bus=self.event_bus)
+        self.application_manager = ApplicationManager()
         self.skill_manager = SkillManager(event_bus=self.event_bus)
 
         self.tool_registry = ToolRegistry()
@@ -60,39 +62,21 @@ class Kernel:
         self._running = False
         self._stop_event = threading.Event()
 
-    # ---------------------------------------------------------
-    # Task management
-    # ---------------------------------------------------------
-
     def create_task(self, goal, **kwargs):
-        """Create and activate a runtime task through the central kernel."""
         return self.task_manager.create(goal, **kwargs)
 
     @property
     def current_task(self):
         return self.task_manager.current()
 
-    # ---------------------------------------------------------
-    # Workspace management
-    # ---------------------------------------------------------
-
     @property
     def workspace(self):
-        """Return a detached workspace snapshot for convenience."""
         return self.workspace_manager.snapshot()
-
-    # ---------------------------------------------------------
-    # Module management
-    # ---------------------------------------------------------
 
     def register_module(self, module):
         if module not in self.modules:
             self.modules.append(module)
             print(f"[Kernel] Registered {module.name}")
-
-    # ---------------------------------------------------------
-    # Tool management
-    # ---------------------------------------------------------
 
     def register_tool(self, tool):
         self.tool_registry.register(tool)
@@ -100,15 +84,9 @@ class Kernel:
 
     def unregister_tool(self, name: str) -> bool:
         removed = self.tool_registry.unregister(name)
-
         if removed:
             print(f"[Kernel] Unregistered tool {name}")
-
         return removed
-
-    # ---------------------------------------------------------
-    # Lifecycle
-    # ---------------------------------------------------------
 
     def start(self):
         print("[Kernel] Starting...")
@@ -119,9 +97,7 @@ class Kernel:
 
         self._running = True
         self._stop_event.clear()
-
         self.event_bus.emit("kernel_ready")
-
         print("[Kernel] Running")
 
     def run(self):
