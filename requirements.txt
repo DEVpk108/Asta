@@ -37,8 +37,8 @@ torch
 # voice/recognition_engine.py
 faster-whisper
 
-# LM Studio HTTP client
-# ai/openai_engine.py
+# Local LLM HTTP client
+# ai/llama_cpp_engine.py
 requests
 
 # ---------------------------------------------------------------------------
