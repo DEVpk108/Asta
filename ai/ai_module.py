@@ -4,7 +4,7 @@ from core.tools import ToolRequestBuilder
 
 from chat_history import ChatHistoryStore
 
-from .openai_engine import AIEngine
+from .llm_provider import create_llm_provider
 
 
 class AIModule(Module):
@@ -89,7 +89,7 @@ class AIModule(Module):
             kernel=kernel,
         )
 
-        self.engine = AIEngine()
+        self.engine = create_llm_provider()
         self.tool_request_builder = ToolRequestBuilder(kernel.tool_registry)
         self.chat_history = ChatHistoryStore()
 
