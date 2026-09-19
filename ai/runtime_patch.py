@@ -67,6 +67,12 @@ def _is_screenshot_capture_request(text):
     if not normalized:
         return False
 
+    # A natural-language request that asks for a response and then a screenshot
+    # must go through the response-first path below, not the deterministic
+    # screenshot-only shortcut.
+    if _extract_post_response_screenshot(normalized):
+        return False
+
     # Do not turn negative requests such as "don't take a screenshot" into actions.
     if re.search(r"\b(?:don't|do not|dont|never)\b", normalized):
         return False
