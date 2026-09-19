@@ -7,6 +7,7 @@ from .task_manager import TaskManager
 from .workspace_manager import WorkspaceManager
 from .tools import (
     ApprovalManager,
+    AuthorityManager,
     AuthorityPolicy,
     ToolDispatcher,
     ToolRegistry,
@@ -36,10 +37,14 @@ class Kernel:
                 maximum_automatic_risk=maximum_automatic_risk
             )
         )
+        self.authority_manager = AuthorityManager(
+            policy=policy,
+            event_bus=self.event_bus,
+        )
 
         self.tool_dispatcher = ToolDispatcher(
             registry=self.tool_registry,
-            policy=policy,
+            authority=self.authority_manager,
         )
 
         self.modules = []
@@ -107,9 +112,6 @@ class Kernel:
         self._running = True
         self._stop_event.clear()
 
-        # All registered modules are initialized at this point. Emit one
-        # lifecycle event so presentation clients such as the HUD can start
-        # in sync with the actual A.S.T.A. runtime rather than their own boot.
         self.event_bus.emit("kernel_ready")
 
         print("[Kernel] Running")
@@ -123,7 +125,7 @@ class Kernel:
                 self._stop_event.wait(0.5)
 
         except KeyboardInterrupt:
-            print("\n[Kernel] Keyboard interrupt")
+            print("\\n[Kernel] Keyboard interrupt")
 
         finally:
             self.shutdown()
