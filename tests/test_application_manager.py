@@ -117,3 +117,57 @@ def test_discovery_supports_abbreviated_tokens(monkeypatch):
 
     assert manager.resolve("vs code").name == "Visual Studio Code"
     assert manager.resolve("vscode").name == "Visual Studio Code"
+
+
+def test_running_process_discovery_matches_application_path(monkeypatch):
+    monkeypatch.setattr(manager_module.os, "name", "nt")
+    start_apps = json.dumps(
+        {"Name": "Free Download Manager", "AppID": "FreeDownloadManager.App"}
+    )
+    running_process = json.dumps(
+        {
+            "ProcessId": 4242,
+            "Name": "fdm",
+            "Path": r"C:\Program Files\Free Download Manager\fdm.exe",
+            "WindowTitle": "Free Download Manager",
+        }
+    )
+
+    def runner(command):
+        if "Get-StartApps" in command:
+            return start_apps
+        return running_process
+
+    manager = ApplicationManager(powershell_runner=runner)
+    process = manager.resolve_running_process("free download manager")
+
+    assert process.pid == 4242
+    assert process.name == "fdm"
+    assert process.executable_path.endswith(r"Free Download Manager\fdm.exe")
+
+
+def test_running_process_discovery_accepts_compact_application_name(monkeypatch):
+    monkeypatch.setattr(manager_module.os, "name", "nt")
+    start_apps = json.dumps(
+        {"Name": "Visual Studio Code", "AppID": "VSCode"}
+    )
+    running_process = json.dumps(
+        {
+            "ProcessId": 3131,
+            "Name": "Code",
+            "Path": r"C:\Program Files\Microsoft VS Code\Code.exe",
+            "WindowTitle": "project - Visual Studio Code",
+        }
+    )
+
+    def runner(command):
+        if "Get-StartApps" in command:
+            return start_apps
+        return running_process
+
+    manager = ApplicationManager(powershell_runner=runner)
+
+    process = manager.resolve_running_process("vscode")
+
+    assert process.pid == 3131
+    assert process.name == "Code"
