@@ -139,6 +139,26 @@ class SkillManager:
         intent: IntentResult | None,
         query: str,
     ) -> bool:
+        # Prefer an explicit command action over the free-form query. The
+        # query is often a natural-language sentence such as
+        # "debug the python error", while a skill declares compact triggers
+        # such as "debug".
+        if intent is not None and intent.intent is IntentType.COMMAND:
+            action = str(intent.entities.get("action") or "").strip().lower()
+            if action:
+                triggers = {
+                    str(trigger).strip().lower()
+                    for trigger in skill.triggers
+                    if str(trigger).strip()
+                }
+                actions = {
+                    str(value).strip().lower()
+                    for value in (skill.metadata.get("actions") or ())
+                    if str(value).strip()
+                }
+                if action in triggers or action in actions:
+                    return True
+
         if query:
             haystack = " ".join(
                 [
@@ -157,17 +177,6 @@ class SkillManager:
 
         if intent is None:
             return False
-
-        if intent.intent is IntentType.COMMAND:
-            action = str(intent.entities.get("action") or "").strip().lower()
-            if action:
-                return action in {
-                    str(trigger).strip().lower()
-                    for trigger in skill.triggers
-                } or action in {
-                    str(value).strip().lower()
-                    for value in (skill.metadata.get("actions") or ())
-                }
 
         normalized = str(intent.normalized_text or "").strip().lower()
         if not normalized:
