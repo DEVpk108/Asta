@@ -1,7 +1,7 @@
 import sounddevice as sd
 
 
-from . import config
+from ...dataset_tools import config
 
 
 class AudioPlayer:

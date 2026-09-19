@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import config
+from ...dataset_tools import config
 
 
 class MetadataManager:
