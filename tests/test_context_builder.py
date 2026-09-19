@@ -32,7 +32,7 @@ def test_context_builder_includes_active_task_memory_and_discovered_capability()
     assert snapshot.capabilities
     assert snapshot.capabilities[0]["name"] == "system.open_application"
     assert snapshot.capabilities[0]["description"] == (
-        "Open a local application, file, URL, or known application alias."
+        "Open a local application, file, URL, or discovered application."
     )
     assert snapshot.capabilities[0]["provider"] == "native"
     assert snapshot.capabilities[0]["loaded"] is True
