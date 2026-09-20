@@ -61,6 +61,36 @@ def test_context_builder_does_not_inject_tool_catalog_for_normal_chat():
     assert "AVAILABLE CAPABILITIES FOR THIS TURN:" not in snapshot.to_prompt()
 
 
+def test_context_builder_omits_unrelated_runtime_state_for_normal_chat():
+    kernel = Kernel()
+    kernel.memory_context = "Long project memory that should not be injected into a generic fact question."
+    kernel.workspace_manager.update_project(
+        name="A.S.T.A.",
+        path="C:/Asta",
+        repository="https://github.com/DEVpk108/Asta.git",
+        branch="feat/asta-hud",
+    )
+    kernel.create_task(
+        "refactor the LLM runtime",
+        pending_steps=["measure latency"],
+    )
+
+    snapshot = ContextBuilder(kernel).build(
+        "What is photosynthesis?",
+        IntentResult(
+            intent=IntentType.CONVERSATION,
+            confidence=0.98,
+            normalized_text="what is photosynthesis",
+        ),
+    )
+
+    assert snapshot.task is None
+    assert snapshot.memory == ""
+    assert snapshot.workspace == {}
+    assert snapshot.skills == ()
+    assert snapshot.capabilities == ()
+
+
 def test_context_builder_uses_workspace_manager_state():
     kernel = Kernel()
     kernel.workspace_manager.update_project(
