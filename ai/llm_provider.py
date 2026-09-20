@@ -21,6 +21,7 @@ class LLMProvider(Protocol):
         self,
         text: str,
         on_sentence: Callable[[str], None] | None = None,
+        context: str | None = None,
     ) -> str:
         ...
 
