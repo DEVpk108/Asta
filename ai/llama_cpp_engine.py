@@ -260,6 +260,8 @@ Your goal is not merely to produce an answer. Help the user understand the probl
         sentence_buffer = ""
         final_result = None
         final_id = None
+        server_usage = {}
+        server_timings = {}
 
         with self.session.post(
             self.chat_url,
@@ -320,6 +322,10 @@ Your goal is not merely to produce an answer. Help the user understand the probl
                         if on_sentence and self._is_speech_worthy(sentence):
                             on_sentence(sentence)
 
+                if data.get("usage"):
+                    server_usage = data["usage"]
+                if data.get("timings"):
+                    server_timings = data["timings"]
                 if data.get("usage") or data.get("timings"):
                     final_result = data
 
@@ -330,14 +336,30 @@ Your goal is not merely to produce an answer. Help the user understand the probl
         if remaining and on_sentence and self._is_speech_worthy(remaining):
             on_sentence(remaining)
 
-        usage = final_result.get("usage") or {}
-        timings = final_result.get("timings") or {}
-        input_tokens = int(usage.get("prompt_tokens") or timings.get("prompt_n") or 0)
-        output_tokens = int(
-            usage.get("completion_tokens") or timings.get("predicted_n") or 0
+        usage = server_usage or final_result.get("usage") or {}
+        timings = server_timings or final_result.get("timings") or {}
+
+        prompt_n = int(timings.get("prompt_n") or 0)
+        cache_n = int(timings.get("cache_n") or 0)
+        predicted_n = int(
+            timings.get("predicted_n")
+            or usage.get("completion_tokens")
+            or 0
         )
-        tokens_per_second = float(timings.get("predicted_per_second") or 0.0)
-        ttft = (
+        prompt_ms = float(timings.get("prompt_ms") or 0.0)
+        predicted_ms = float(timings.get("predicted_ms") or 0.0)
+        prompt_tps = float(
+            timings.get("prompt_per_second")
+            or (prompt_n / (prompt_ms / 1000.0) if prompt_n and prompt_ms else 0.0)
+        )
+        predicted_tps = float(
+            timings.get("predicted_per_second")
+            or (predicted_n / (predicted_ms / 1000.0) if predicted_n and predicted_ms else 0.0)
+        )
+        context_tokens = prompt_n + cache_n + predicted_n
+        input_tokens = int(usage.get("prompt_tokens") or (prompt_n + cache_n))
+        output_tokens = int(usage.get("completion_tokens") or predicted_n)
+        client_first_content = (
             first_delta_time - request_start
             if first_delta_time is not None
             else None
@@ -350,8 +372,19 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "reasoning_tokens": 0,
-            "tokens_per_second": tokens_per_second,
-            "ttft": ttft,
+            "tokens_per_second": predicted_tps,
+            "ttft": client_first_content,
+            "client_first_content_seconds": client_first_content,
+            "prompt_tokens": prompt_n,
+            "cached_tokens": cache_n,
+            "predicted_tokens": predicted_n,
+            "context_tokens": context_tokens,
+            "prompt_ms": prompt_ms,
+            "prompt_tokens_per_second": prompt_tps,
+            "predicted_ms": predicted_ms,
+            "predicted_tokens_per_second": predicted_tps,
+            "server_timings": dict(timings),
+            "server_usage": dict(usage),
             "model_load_time": None,
             "request_time": time.perf_counter() - request_start,
             "response_open_time": (
@@ -418,16 +451,29 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             return ""
 
         print(f"[AI] Request: {attempt['request_time']:.2f}s", flush=True)
-        print(f"[AI] Input tokens: {attempt['input_tokens']}", flush=True)
-        print(f"[AI] Output tokens: {attempt['output_tokens']}", flush=True)
         print(
-            f"[AI] llama.cpp speed: "
-            f"{attempt['tokens_per_second']:.2f} tok/s",
+            f"[AI] Context: prompt={attempt['prompt_tokens']} "
+            f"cached={attempt['cached_tokens']} "
+            f"generated={attempt['predicted_tokens']} "
+            f"total={attempt['context_tokens']}",
             flush=True,
         )
-        if attempt["ttft"] is not None:
+        print(
+            f"[AI] Server prompt: {attempt['prompt_ms'] / 1000.0:.3f}s "
+            f"({attempt['prompt_tokens_per_second']:.2f} tok/s)",
+            flush=True,
+        )
+        print(
+            f"[AI] Server generation: {attempt['predicted_ms'] / 1000.0:.3f}s "
+            f"({attempt['predicted_tokens_per_second']:.2f} tok/s)",
+            flush=True,
+        )
+        print(f"[AI] Input tokens: {attempt['input_tokens']}", flush=True)
+        print(f"[AI] Output tokens: {attempt['output_tokens']}", flush=True)
+        if attempt["client_first_content_seconds"] is not None:
             print(
-                f"[AI] Client TTFT: {attempt['ttft']:.3f}s",
+                f"[AI] Client first content: "
+                f"{attempt['client_first_content_seconds']:.3f}s",
                 flush=True,
             )
         if attempt["response_open_time"] is not None:
