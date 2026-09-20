@@ -19,7 +19,7 @@ class RecordingEngine:
     def warmup(self):
         return True
 
-    def generate_response(self, text, on_sentence=None):
+    def generate_response(self, text, on_sentence=None, context=None):
         self.calls.append(text)
         if on_sentence:
             on_sentence("Here is a joke.")
