@@ -235,12 +235,13 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             if sentence:
                 return buffer, sentence
 
-    def _request(self, text, on_sentence, max_output_tokens):
+    def _request(self, text, on_sentence, max_output_tokens, context=None):
         if self.model is None:
             self._discover_model()
 
         messages = list(self._messages)
-        messages.append({"role": "user", "content": text})
+        current_turn = context.strip() if isinstance(context, str) and context.strip() else text
+        messages.append({"role": "user", "content": current_turn})
 
         payload = {
             "model": self.model,
@@ -407,7 +408,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
         )
         return result
 
-    def generate_response(self, text, on_sentence=None):
+    def generate_response(self, text, on_sentence=None, context=None):
         if not text:
             return ""
 
@@ -417,6 +418,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
                 text,
                 on_sentence,
                 self.max_output_tokens,
+                context=context,
             )
             if (
                 attempt["exhausted_reasoning"]
@@ -433,6 +435,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
                     text,
                     on_sentence,
                     self.reasoning_retry_tokens,
+                    context=context,
                 )
         except requests.RequestException as exc:
             print(
@@ -452,9 +455,10 @@ Your goal is not merely to produce an answer. Help the user understand the probl
 
         print(f"[AI] Request: {attempt['request_time']:.2f}s", flush=True)
         print(
-            f"[AI] Context: prompt={attempt['prompt_tokens']} "
-            f"cached={attempt['cached_tokens']} "
-            f"generated={attempt['predicted_tokens']} "
+            f"[AI] Context: cached_input={attempt['cached_tokens']} "
+            f"new_input={attempt['prompt_tokens']} "
+            f"total_input={attempt['input_tokens']} "
+            f"output={attempt['output_tokens']} "
             f"total={attempt['context_tokens']}",
             flush=True,
         )
