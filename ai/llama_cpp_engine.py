@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 from urllib.parse import urlparse
 
@@ -220,16 +221,50 @@ Your goal is not merely to produce an answer. Help the user understand the probl
     def _is_speech_worthy(text):
         return bool(text and any(char.isalnum() for char in text))
 
-    @staticmethod
-    def _emit_sentence_chunks(buffer):
+    _NON_TERMINAL_ABBREVIATIONS = {
+        "a.m", "p.m", "dr", "mr", "mrs", "ms", "prof", "sr", "jr",
+        "st", "vs", "etc", "e.g", "i.e", "no", "fig", "approx",
+    }
+
+    @classmethod
+    def _is_sentence_boundary(cls, buffer, punctuation_index):
+        if punctuation_index >= len(buffer):
+            return False
+
+        punctuation = buffer[punctuation_index]
+        if punctuation not in ".!?":
+            return False
+
+        next_index = punctuation_index + 1
+        if next_index < len(buffer) and not buffer[next_index].isspace():
+            return False
+
+        prefix = buffer[:punctuation_index + 1]
+        match = re.search(r"([^\s]+)$", prefix)
+        token = match.group(1) if match else ""
+        bare_token = token.rstrip(".").lower()
+
+        if punctuation == ".":
+            if bare_token in cls._NON_TERMINAL_ABBREVIATIONS:
+                return False
+            # Avoid splitting acronyms such as A.S.T.A. or U.S. mid-stream.
+            if re.fullmatch(r"(?:[A-Za-z]\.){2,}[A-Za-z]?\.?", token):
+                return False
+
+        return True
+
+    @classmethod
+    def _emit_sentence_chunks(cls, buffer):
         while True:
             sentence_end = None
-            for punctuation in (".", "!", "?"):
-                index = buffer.find(punctuation)
-                if index != -1 and (sentence_end is None or index < sentence_end):
-                    sentence_end = index
+            for match in re.finditer(r"[.!?](?=\s|$)", buffer):
+                if cls._is_sentence_boundary(buffer, match.start()):
+                    sentence_end = match.start()
+                    break
+
             if sentence_end is None:
                 return buffer, None
+
             sentence = buffer[:sentence_end + 1].strip()
             buffer = buffer[sentence_end + 1:]
             if sentence:
