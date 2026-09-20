@@ -303,11 +303,6 @@ Your goal is not merely to produce an answer. Help the user understand the probl
                 if content:
                     if first_delta_time is None:
                         first_delta_time = now
-                        print(
-                            f"[AI] Client TTFT: "
-                            f"{first_delta_time - request_start:.3f}s",
-                            flush=True,
-                        )
 
                     full_text += content
                     sentence_buffer += content
@@ -340,7 +335,12 @@ Your goal is not merely to produce an answer. Help the user understand the probl
         timings = server_timings or final_result.get("timings") or {}
 
         prompt_n = int(timings.get("prompt_n") or 0)
-        cache_n = int(timings.get("cache_n") or 0)
+        usage_details = usage.get("prompt_tokens_details") or {}
+        cache_n = int(
+            timings.get("cache_n")
+            or usage_details.get("cached_tokens")
+            or 0
+        )
         predicted_n = int(
             timings.get("predicted_n")
             or usage.get("completion_tokens")
@@ -395,7 +395,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
                 if first_event_time is not None
                 else None
             ),
-            "request_to_first_delta": ttft,
+            "request_to_first_delta": client_first_content,
             "exhausted_reasoning": (
                 not full_text.strip() and output_tokens >= max_output_tokens
             ),
