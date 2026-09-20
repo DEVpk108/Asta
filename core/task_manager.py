@@ -4,6 +4,7 @@ import threading
 from uuid import uuid4
 from typing import Any, Iterable
 
+from .contracts.plan import Plan
 from .contracts.task import AgentTask, TaskStatus
 
 
@@ -31,6 +32,7 @@ class TaskManager:
         *,
         constraints: Iterable[str] | None = None,
         pending_steps: Iterable[str] | None = None,
+        plan: Plan | None = None,
         metadata: dict[str, Any] | None = None,
         activate: bool = True,
     ) -> AgentTask:
@@ -43,6 +45,7 @@ class TaskManager:
             goal=value,
             constraints=[str(item).strip() for item in (constraints or ()) if str(item).strip()],
             pending_steps=[str(item).strip() for item in (pending_steps or ()) if str(item).strip()],
+            plan=plan,
             metadata=dict(metadata or {}),
         )
 
