@@ -96,9 +96,13 @@ def test_sse_stream_uses_openai_chat_completion_shape(monkeypatch):
                 "total_tokens": 6,
             },
             "timings": {
+                "cache_n": 6,
                 "prompt_n": 4,
+                "prompt_ms": 8.0,
+                "prompt_per_second": 500.0,
                 "predicted_n": 2,
-                "predicted_per_second": 42.0,
+                "predicted_ms": 40.0,
+                "predicted_per_second": 50.0,
             },
         },
         "[DONE]",
@@ -115,6 +119,54 @@ def test_sse_stream_uses_openai_chat_completion_shape(monkeypatch):
 
     assert result == "Hello ASTA!"
     assert spoken == ["Hello ASTA!"]
+
+def test_server_timings_are_reported_separately_from_client_first_content(monkeypatch):
+    events = [
+        {
+            "id": "telemetry-response",
+            "choices": [{"delta": {"content": "Hello."}, "finish_reason": None}],
+        },
+        {
+            "id": "telemetry-response",
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "total_tokens": 12,
+            },
+            "timings": {
+                "cache_n": 12,
+                "prompt_n": 10,
+                "prompt_ms": 25.0,
+                "prompt_per_second": 400.0,
+                "predicted_n": 2,
+                "predicted_ms": 35.0,
+                "predicted_per_second": 57.142857,
+            },
+        },
+        "[DONE]",
+    ]
+
+    monkeypatch.setattr(
+        "ai.llama_cpp_engine.requests.Session.post",
+        lambda _session, *args, **kwargs: FakeResponse(events),
+    )
+
+    engine = LlamaCppEngine(model="asta-local")
+    attempt = engine._request("hello", None, 256)
+
+    assert attempt["prompt_tokens"] == 10
+    assert attempt["cached_tokens"] == 12
+    assert attempt["predicted_tokens"] == 2
+    assert attempt["context_tokens"] == 24
+    assert attempt["prompt_ms"] == 25.0
+    assert attempt["prompt_tokens_per_second"] == 400.0
+    assert attempt["predicted_ms"] == 35.0
+    assert round(attempt["predicted_tokens_per_second"], 3) == 57.143
+    assert attempt["server_timings"]["cache_n"] == 12
+    assert attempt["server_usage"]["cached_tokens"] if "cached_tokens" in attempt["server_usage"] else True
+    assert attempt["client_first_content_seconds"] is not None
+
 
 
 def test_conversation_history_is_sent_on_subsequent_requests(monkeypatch):
