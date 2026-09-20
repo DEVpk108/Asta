@@ -10,6 +10,13 @@ from .memory import (
     MemoryRecord,
 )
 
+from .plan import (
+    Plan,
+    PlanStatus,
+    PlanStep,
+    PlanStepStatus,
+)
+
 from .model import (
     ModelRequest,
     ModelResponse,
@@ -38,6 +45,10 @@ __all__ = [
     "IntentType",
     "MemoryQuery",
     "MemoryRecord",
+    "Plan",
+    "PlanStatus",
+    "PlanStep",
+    "PlanStepStatus",
     "ModelRequest",
     "ModelResponse",
     "SkillDescriptor",
