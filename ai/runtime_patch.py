@@ -266,9 +266,13 @@ def apply_ai_runtime_patch():
             return "Opened the latest screenshot."
         return original_format_tool_success(result)
 
-    def patched_generate_response(self, text):
-        """Emit a completed response once so abbreviations do not become TTS fragments."""
-        response = self.engine.generate_response(text, on_sentence=None)
+    def patched_generate_response(self, text, runtime_context=None):
+        """Emit one completed response while preserving ephemeral turn context."""
+        response = self.engine.generate_response(
+            text,
+            on_sentence=None,
+            context=runtime_context,
+        )
         if not response:
             print("[AI] No response generated.", flush=True)
             return
