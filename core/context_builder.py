@@ -90,6 +90,21 @@ class ContextSnapshot:
 
 
 class ContextBuilder:
+    _MEMORY_CUES = (
+        "remember", "do you remember", "what did we discuss",
+        "what were we talking about", "earlier", "previously",
+        "my preference", "my preferences", "my project", "you know about me",
+    )
+    _TASK_CUES = (
+        "task", "current step", "next step", "pending", "todo", "to-do",
+        "continue", "what should i do next", "what remains", "status",
+    )
+    _WORKSPACE_CUES = (
+        "what am i working on", "what are we working on", "workspace",
+        "branch", "repository", "repo", "file", "folder", "codebase",
+        "project", "working on asta", "working on a.s.t.a.",
+    )
+
     """Assemble the smallest useful runtime context for one model turn.
 
     The builder is deliberately LLM-agnostic. It reads state from the kernel,
@@ -104,11 +119,26 @@ class ContextBuilder:
 
     def build(self, user_text: str, intent: IntentResult | None = None) -> ContextSnapshot:
         normalized = str(user_text).strip()
-        task = self._task_snapshot()
-        memory = str(getattr(self.kernel, "memory_context", "") or "").strip()
-        workspace = self._workspace_snapshot()
-        skills = self._skills_for(intent, normalized)
+        lowered = " ".join(normalized.lower().split())
+
         capabilities = self._capabilities_for(intent)
+        skills = self._skills_for(intent, normalized)
+
+        include_task = self._needs_task_context(lowered, intent)
+        include_memory = self._needs_memory_context(lowered, intent)
+        include_workspace = self._needs_workspace_context(
+            lowered,
+            intent,
+            skills,
+        )
+
+        task = self._task_snapshot() if include_task else None
+        memory = (
+            str(getattr(self.kernel, "memory_context", "") or "").strip()
+            if include_memory
+            else ""
+        )
+        workspace = self._workspace_snapshot() if include_workspace else {}
 
         return ContextSnapshot(
             user_text=normalized,
@@ -117,6 +147,31 @@ class ContextBuilder:
             workspace=workspace,
             capabilities=capabilities,
             skills=skills,
+        )
+
+    def _needs_memory_context(self, text: str, intent: IntentResult | None) -> bool:
+        if intent and intent.intent is IntentType.COMMAND:
+            return True
+        return any(cue in text for cue in self._MEMORY_CUES)
+
+    def _needs_task_context(self, text: str, intent: IntentResult | None) -> bool:
+        if intent and intent.intent is IntentType.COMMAND:
+            return True
+        return any(cue in text for cue in self._TASK_CUES)
+
+    def _needs_workspace_context(
+        self,
+        text: str,
+        intent: IntentResult | None,
+        skills: tuple[dict[str, Any], ...],
+    ) -> bool:
+        if intent and intent.intent is IntentType.COMMAND:
+            return True
+        if any(cue in text for cue in self._WORKSPACE_CUES):
+            return True
+        return bool(skills) and any(
+            cue in text
+            for cue in ("asta", "my code", "my project", "this code", "this project")
         )
 
     def build_prompt(self, user_text: str, intent: IntentResult | None = None) -> str:
