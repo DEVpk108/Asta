@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import IntentType, TaskStatus, ToolRequest, ToolResult
+from .planner import PlanningError
 from .module import Module
 
 
@@ -48,15 +49,21 @@ class TaskRuntimeModule(Module):
         if intent.intent is not IntentType.COMMAND:
             return
 
-        commands = intent.entities.get("commands")
-        if isinstance(commands, list) and commands:
-            pending_steps = [self._describe_command(command) for command in commands]
-        else:
-            pending_steps = [self._describe_command(intent.entities)]
+        try:
+            plan = self.kernel.planner.plan(
+                text,
+                intent=intent,
+            )
+        except PlanningError as exc:
+            print(f"[Tasks] Planning failed: {exc}", flush=True)
+            return
+
+        pending_steps = [step.description for step in plan.steps]
 
         task = self.kernel.task_manager.create(
             intent.normalized_text,
             pending_steps=pending_steps,
+            plan=plan,
             metadata={
                 "intent_type": intent.intent.value,
                 "confidence": intent.confidence,
