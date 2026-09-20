@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from .plan import Plan
+
 
 class TaskStatus(str, Enum):
     """Lifecycle states for an A.S.T.A. agent task."""
@@ -34,6 +36,7 @@ class AgentTask:
     completed_steps: list[str] = field(default_factory=list)
     pending_steps: list[str] = field(default_factory=list)
     current_step: str | None = None
+    plan: Plan | None = None
 
     evidence: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -133,6 +136,7 @@ class AgentTask:
             "completed_steps": list(self.completed_steps),
             "pending_steps": list(self.pending_steps),
             "current_step": self.current_step,
+            "plan": self.plan.to_dict() if self.plan is not None else None,
             "evidence": [dict(item) for item in self.evidence],
             "metadata": dict(self.metadata),
             "result": self.result,
