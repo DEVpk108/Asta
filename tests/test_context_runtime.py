@@ -8,8 +8,8 @@ class RecordingEngine:
     def __init__(self):
         self.calls = []
 
-    def generate_response(self, text, on_sentence=None):
-        self.calls.append(text)
+    def generate_response(self, text, on_sentence=None, context=None):
+        self.calls.append((text, context))
         return "context-aware response"
 
 
@@ -38,12 +38,14 @@ def test_context_runtime_patch_enriches_model_input():
         ai._generate_response("open calculator")
 
         assert len(engine.calls) == 1
-        prompt = engine.calls[0]
-        assert "A.S.T.A. RUNTIME CONTEXT" in prompt
-        assert "debug calculator launch" in prompt
-        assert "The user is building A.S.T.A. locally." in prompt
-        assert "system.open_application" in prompt
-        assert "USER REQUEST:\nopen calculator" in prompt
+        assert engine.calls[0][0] == "open calculator"
+        runtime_context = engine.calls[0][1]
+        assert runtime_context is not None
+        assert "A.S.T.A. RUNTIME CONTEXT" in runtime_context
+        assert "debug calculator launch" in runtime_context
+        assert "The user is building A.S.T.A. locally." in runtime_context
+        assert "system.open_application" in runtime_context
+        assert "USER REQUEST:\nopen calculator" in runtime_context
     finally:
         AIModule._generate_response = original_generate_response
         if original_patch_flag is None:
