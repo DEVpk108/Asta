@@ -128,6 +128,12 @@ def test_sentence_streaming_does_not_split_acronyms_or_common_abbreviations():
     assert remaining == ""
 
     remaining, sentence = LlamaCppEngine._emit_sentence_chunks(
+        "A.S.T.A. is ready. What should we build next? "
+    )
+    assert sentence == "A.S.T.A. is ready."
+    assert remaining == " What should we build next? "
+
+    remaining, sentence = LlamaCppEngine._emit_sentence_chunks(
         "Use e.g. NumPy for arrays. "
     )
     assert sentence == "Use e.g. NumPy for arrays."
