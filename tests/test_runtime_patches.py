@@ -43,6 +43,27 @@ def test_creator_identity_patch_covers_natural_variants():
     assert not _is_creator_identity_question("Who are you?")
 
 
+def test_runtime_patch_streams_sentence_event_before_completed_response():
+    from ai.ai_module import AIModule
+
+    apply_ai_runtime_patch()
+
+    kernel = Kernel()
+    ai = AIModule(kernel)
+    engine = RecordingEngine()
+    ai.engine = engine
+
+    streamed = []
+    completed = []
+    kernel.event_bus.subscribe("assistant_sentence", lambda text: streamed.append(text))
+    kernel.event_bus.subscribe("assistant_response", lambda text: completed.append(text))
+
+    ai._generate_response("Tell me a joke")
+
+    assert streamed == ["Here is a joke."]
+    assert completed == ["Here is a joke."]
+
+
 def test_mixed_request_generates_response_then_executes_screenshot():
     from ai.ai_module import AIModule
 
