@@ -273,6 +273,8 @@ Your goal is not merely to produce an answer. Help the user understand the probl
 
             sentence = buffer[:sentence_end + 1].strip()
             buffer = buffer[sentence_end + 1:]
+            if not buffer.strip():
+                buffer = ""
             if sentence:
                 return buffer, sentence
 
