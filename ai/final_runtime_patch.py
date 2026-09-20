@@ -25,7 +25,7 @@ def apply_final_runtime_patch():
 
     original = AIModule.on_user_message
 
-    def patched(self, text):
+    def patched(self, text, runtime_context=None):
         if isinstance(text, str):
             normalized = " ".join(text.strip().split()).rstrip(" .!?;:")
             match = _MIXED_SCREENSHOT_PATTERN.match(normalized)
@@ -86,7 +86,7 @@ def apply_final_runtime_patch():
                             schedule_screenshot()
 
                         self.event_bus.subscribe("hud_rendered", on_hud_rendered)
-                        self._generate_response(prompt)
+                        self._generate_response(prompt, runtime_context=None)
 
                         # Safety fallback for runtimes where the HUD isn't subscribed
                         # or doesn't emit hud_rendered.
@@ -97,7 +97,7 @@ def apply_final_runtime_patch():
 
                         return
 
-        return original(self, text)
+        return original(self, text, runtime_context=runtime_context)
 
     AIModule.on_user_message = patched
     AIModule._asta_final_runtime_patch_applied = True
