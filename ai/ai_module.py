@@ -528,12 +528,16 @@ class AIModule(Module):
             return f"I couldn't complete that action: {result.error}"
         return "I couldn't complete that action."
 
-    def _generate_response(self, text):
+    def _generate_response(self, text, runtime_context=None):
         def on_sentence(sentence):
             if sentence:
                 self.event_bus.emit("assistant_sentence", text=sentence)
 
-        response = self.engine.generate_response(text, on_sentence=on_sentence)
+        response = self.engine.generate_response(
+            text,
+            on_sentence=on_sentence,
+            context=runtime_context,
+        )
         if not response:
             print("[AI] No response generated.", flush=True)
             return
