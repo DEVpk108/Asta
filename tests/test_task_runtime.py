@@ -90,3 +90,18 @@ def test_compound_command_keeps_one_task_across_multiple_tools():
         assert all(item["success"] for item in task.evidence)
     finally:
         _shutdown(tasks, ai, tools)
+
+
+def test_command_task_is_created_from_a_plan():
+    kernel, tasks, ai, tools = _build_runtime()
+    try:
+        kernel.event_bus.emit("user_message", "open calculator")
+
+        task = kernel.task_manager.list()[0]
+        assert task.plan is not None
+        assert task.plan.status.value == "ready"
+        assert len(task.plan.steps) == 1
+        assert task.plan.steps[0].description == "open calculator"
+        assert task.plan.steps[0].metadata["tool"] == "test.capability"
+    finally:
+        _shutdown(tasks, ai, tools)
