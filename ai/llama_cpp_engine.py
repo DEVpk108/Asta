@@ -247,9 +247,15 @@ Your goal is not merely to produce an answer. Help the user understand the probl
         if punctuation == ".":
             if bare_token in cls._NON_TERMINAL_ABBREVIATIONS:
                 return False
-            # Avoid splitting acronyms such as A.S.T.A. or U.S. mid-stream.
+            # Avoid splitting acronyms such as A.S.T.A. or U.S. when the
+            # following word continues the same sentence. If the next word is
+            # capitalized, treat the acronym period as a real sentence boundary.
             if re.fullmatch(r"(?:[A-Za-z]\.){2,}[A-Za-z]?\.?", token):
-                return False
+                remainder = buffer[punctuation_index + 1:]
+                next_nonspace = re.search(r"\S", remainder)
+                if next_nonspace is None:
+                    return True
+                return not next_nonspace.group(0).islower()
 
         return True
 
