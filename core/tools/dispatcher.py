@@ -6,25 +6,28 @@ from core.contracts import (
     ToolResult,
 )
 
-from core.tools.policy import (
-    AuthorityPolicy,
-)
-
-from core.tools.registry import (
-    ToolRegistry,
-)
+from core.tools.authority import AuthorityManager
+from core.tools.registry import ToolRegistry
 
 
 class ToolDispatcher:
-    """Execute ToolRequests through registered tools and policy."""
+    """Execute ToolRequests through registered tools and authority policy."""
 
     def __init__(
         self,
         registry: ToolRegistry,
-        policy: AuthorityPolicy | None = None,
+        policy=None,
+        authority: AuthorityManager | None = None,
     ):
         self.registry = registry
-        self.policy = policy if policy is not None else AuthorityPolicy()
+        self.authority = authority if authority is not None else AuthorityManager(
+            policy=policy,
+        )
+
+    @property
+    def policy(self):
+        """Expose the underlying default risk policy for compatibility."""
+        return self.authority.policy
 
     def dispatch(
         self,
@@ -32,11 +35,7 @@ class ToolDispatcher:
         *,
         confirmed: bool = False,
     ) -> ToolResult:
-        """Dispatch one request.
-
-        ``confirmed=True`` is only intended for requests that have already
-        passed through A.S.T.A.'s ApprovalManager.
-        """
+        """Dispatch one request through authority before execution."""
         start = time.perf_counter()
 
         try:
@@ -49,7 +48,7 @@ class ToolDispatcher:
             )
 
         try:
-            authorization = self.policy.authorize(
+            authorization = self.authority.authorize(
                 tool.definition,
                 confirmed=confirmed,
             )
@@ -57,10 +56,7 @@ class ToolDispatcher:
             return self._failure(
                 request=request,
                 start=start,
-                error=(
-                    f"Authorization error: "
-                    f"{type(exc).__name__}: {exc}"
-                ),
+                error=f"Authorization error: {type(exc).__name__}: {exc}",
             )
 
         if not authorization.allowed:

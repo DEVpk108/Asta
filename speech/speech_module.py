@@ -30,7 +30,9 @@ class SpeechModule(Module):
         self._queue = queue.Queue()
         self._running = False
         self._speech_thread = None
-        self.coalesce_window = 0.08
+        # Keep a small coalescing window to absorb back-to-back sentence chunks
+        # without adding meaningful first-audio latency.
+        self.coalesce_window = 0.03
 
         self._state_lock = threading.Lock()
         self._speech_active = False
@@ -201,8 +203,12 @@ class SpeechModule(Module):
                 break
 
             parts.append(next_text)
-            with self._state_lock:
-                self._queued_text = max(0, self._queued_text - 1)
+            state_lock = getattr(self, "_state_lock", None)
+            if state_lock is None:
+                self._queued_text = max(0, getattr(self, "_queued_text", 0) - 1)
+            else:
+                with state_lock:
+                    self._queued_text = max(0, self._queued_text - 1)
             self._queue.task_done()
 
         return " ".join(part.strip() for part in parts if part and part.strip())

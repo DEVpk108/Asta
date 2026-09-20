@@ -120,6 +120,9 @@ def main():
 
     # Import the runtime stack only after the HUD process is alive.
     from core.kernel import Kernel
+    from core.task_runtime import TaskRuntimeModule
+    from core.workspace_runtime import WorkspaceRuntimeModule
+    from core.skills import register_builtin_skills
     from core.tools import (
         AudioControlTool,
         CloseApplicationTool,
@@ -138,6 +141,7 @@ def main():
     from ai.ai_module import AIModule
     from ai.runtime_patch import apply_ai_runtime_patch
     from ai.final_runtime_patch import apply_final_runtime_patch
+    from ai.context_runtime_patch import apply_context_runtime_patch
     from memory.memory_module import MemoryModule
     from memory.runtime_patch import apply_memory_runtime_patch
     from input.text_input_module import TextInputModule
@@ -147,15 +151,19 @@ def main():
     # Apply small runtime compatibility patches before module instances are created.
     apply_ai_runtime_patch()
     apply_final_runtime_patch()
+    apply_context_runtime_patch()
     apply_memory_runtime_patch()
     apply_presentation_patch()
 
     kernel = Kernel()
+    register_builtin_skills(kernel.skill_manager)
 
     # Construct the backend after the HUD is already visible. Heavy local model
     # loading can now happen in parallel with the user's visual boot animation.
     hud = HUDModule(kernel)
     memory = MemoryModule(kernel)
+    workspace_runtime = WorkspaceRuntimeModule(kernel)
+    task_runtime = TaskRuntimeModule(kernel)
     speech = SpeechModule(kernel)
     ai = AIModule(kernel)
     voice = VoiceModule(kernel)
@@ -164,12 +172,12 @@ def main():
 
     # Register capabilities before the runtime starts.
     for tool in (
-        OpenApplicationTool(),
+        OpenApplicationTool(kernel.application_manager),
         LaunchApplicationTool(),
         StartProcessTool(),
         RunCommandTool(),
         StopProcessTool(),
-        CloseApplicationTool(),
+        CloseApplicationTool(kernel.application_manager),
         ScreenshotTool(capture=capture_screenshot),
         OpenScreenshotTool(),
         AudioControlTool("mute"),
@@ -179,11 +187,12 @@ def main():
 
     print("===== ASTA KERNEL =====")
 
-    # HUD subscribes before MemoryModule and AIModule so THINKING is presented
-    # first, then memory can recall prior context before the AI handles the
-    # same user message.
+    # WorkspaceRuntime populates project/repository/environment context before
+    # AIModule can assemble a reasoning prompt for the first user turn.
     kernel.register_module(hud)
     kernel.register_module(memory)
+    kernel.register_module(workspace_runtime)
+    kernel.register_module(task_runtime)
     kernel.register_module(ai)
     kernel.register_module(speech)
     kernel.register_module(voice)

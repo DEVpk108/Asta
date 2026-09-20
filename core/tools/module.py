@@ -39,7 +39,7 @@ class ToolRuntimeModule(Module):
         result = self.kernel.tool_dispatcher.dispatch(request)
 
         if result.success or not result.metadata.get("requires_confirmation"):
-            self._emit_result(result)
+            self._emit_result(result, request=request)
             if result.success:
                 self._continue_sequence(request)
             return
@@ -78,11 +78,12 @@ class ToolRuntimeModule(Module):
                 request,
                 confirmed=True,
             )
-            self._emit_result(result)
+            self._emit_result(result, request=request)
             if result.success:
                 self._continue_sequence(request)
             return
 
+        pending = self.kernel.approval_manager.get(request_id)
         rejected = self.kernel.approval_manager.reject(request_id)
 
         if not rejected:
@@ -92,12 +93,18 @@ class ToolRuntimeModule(Module):
             )
             return
 
+        rejection_metadata = {"request_id": request_id}
+        if pending is not None:
+            rejection_metadata.update(
+                self._task_metadata(pending.request)
+            )
+
         self._emit_result(
             ToolResult(
                 success=False,
                 tool="",
                 error="Tool execution rejected by user.",
-                metadata={"request_id": request_id},
+                metadata=rejection_metadata,
             )
         )
 
@@ -116,6 +123,7 @@ class ToolRuntimeModule(Module):
             self._emit_error(
                 request.request_id,
                 "Invalid compound command step.",
+                request=request,
             )
             return
 
@@ -131,11 +139,14 @@ class ToolRuntimeModule(Module):
         try:
             next_request = self.tool_request_builder.build(next_intent)
         except ValueError as exc:
-            self._emit_error(request.request_id, str(exc))
+            self._emit_error(request.request_id, str(exc), request=request)
             return
 
         next_request.metadata["sequence"] = [dict(command) for command in sequence]
         next_request.metadata["sequence_index"] = next_index
+        for key in ("task_id", "intent_confidence", "normalized_text", "classifier"):
+            if key in request.metadata:
+                next_request.metadata[key] = request.metadata[key]
 
         print(
             f"[Tools] Continuing compound command: "
@@ -144,15 +155,40 @@ class ToolRuntimeModule(Module):
         )
         self.event_bus.emit("tool_request", request=next_request)
 
-    def _emit_result(self, result):
+    def _emit_result(self, result, *, request=None):
+        if request is not None:
+            metadata = dict(result.metadata)
+            metadata.update(self._task_metadata(request))
+            result = ToolResult(
+                success=result.success,
+                tool=result.tool,
+                output=result.output,
+                error=result.error,
+                duration_seconds=result.duration_seconds,
+                metadata=metadata,
+            )
         self.event_bus.emit("tool_result", result=result)
 
-    def _emit_error(self, request_id, error):
+    @staticmethod
+    def _task_metadata(request):
+        metadata = {}
+        for key in ("request_id", "task_id", "task_step"):
+            if key == "request_id":
+                metadata[key] = request.request_id
+                continue
+            if key in request.metadata:
+                metadata[key] = request.metadata[key]
+        return metadata
+
+    def _emit_error(self, request_id, error, *, request=None):
+        metadata = {"request_id": request_id}
+        if request is not None:
+            metadata.update(self._task_metadata(request))
         self._emit_result(
             ToolResult(
                 success=False,
                 tool="",
                 error=error,
-                metadata={"request_id": request_id},
+                metadata=metadata,
             )
         )

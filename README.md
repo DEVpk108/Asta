@@ -3,8 +3,7 @@
 ### *Adaptive System for Technical Assistance*
 
 A.S.T.A. is a local-first, voice-first personal AI assistant. It waits for a
-wake word, transcribes speech locally, reasons with a local LLM served by LM
-Studio, speaks the answer back with a local TTS model, and executes authorized
+wake word, transcribes speech locally, reasons with a local LLM served by llama.cpp, speaks the answer back with a local TTS model, and executes authorized
 system actions through a tool layer with risk-based approvals. An Electron HUD
 shows what it is doing in real time.
 
@@ -50,9 +49,9 @@ before memory recall and model generation begin.
 - **Python 3.10+** - the code uses `X | None` annotations that are evaluated at
   runtime.
 - **Node.js 18+** for the Electron 31 HUD.
-- **LM Studio**, serving its local REST API on `http://127.0.0.1:1234`
-  (`/api/v1/chat`, `/api/v1/models`). Default model:
-  `nvidia/nemotron-3-nano-4b`.
+- **llama.cpp `llama-server`**, exposing the OpenAI-compatible API on
+  `http://127.0.0.1:8080/v1`. A.S.T.A. discovers the loaded model from
+  `/v1/models` unless `ASTA_LLM_MODEL` is set explicitly.
 - A microphone and speakers. A CUDA GPU is optional; Whisper and Kokoro fall
   back to CPU.
 - Wake-word models in `ai/wakeword/generated/models/`: `hello_asta.onnx`,
@@ -91,7 +90,14 @@ pip install -r voice/requirements-indic.txt   # IndicConformer STT backend
 
 ## Run
 
-1. Start LM Studio and load the configured model.
+1. Start `llama-server` with your GGUF model. A typical Windows command is:
+
+```powershell
+.\\llama-server.exe -m "C:\\Models\\your-model.gguf" --host 127.0.0.1 --port 8080 -c 8192 -ngl 99 --jinja --alias asta-local
+```
+
+Adjust the model path, context size, and GPU offload for your hardware/model.
+`llama-server` provides the OpenAI-compatible `/v1/chat/completions` API used by A.S.T.A.
 2. From the repository root:
 
 ```bash
@@ -121,6 +127,12 @@ yet, so export these before starting A.S.T.A.
 | `ASTA_DISABLE_HUD` | `0` | Skip the Electron HUD auto-launch |
 | `ASTA_PRELAUNCHED_HUD` | `0` | A launcher already started the HUD |
 | `ASTA_ENABLE_TEXT_INPUT` | `0` | Enable the legacy terminal text adapter |
+| `ASTA_LLM_PROVIDER` | `llama_cpp` | Local LLM provider |
+| `ASTA_LLM_BASE_URL` | `http://127.0.0.1:8080/v1` | llama-server OpenAI-compatible base URL |
+| `ASTA_LLM_MODEL` | auto-discovered | llama-server model id/alias |
+| `ASTA_LLM_TIMEOUT` | `120` | LLM HTTP timeout in seconds |
+| `ASTA_LLM_MAX_OUTPUT_TOKENS` | `256` | Maximum generated tokens per response |
+| `ASTA_LLM_REASONING_RETRY_TOKENS` | `512` | Retry budget when the first generation exhausts the output budget |
 | `ASTA_HUD_HOST` | `127.0.0.1` | HUD transport bind address |
 | `ASTA_HUD_PORT` | `18765` | HUD transport port |
 | `ASTA_STT_BACKEND` | `whisper` | `whisper`, `indic` or `hybrid` |
@@ -150,7 +162,7 @@ shell; they always pass argument lists.
 | Path | Contents |
 | --- | --- |
 | `core/` | kernel, event bus, module base, intent router, tool layer |
-| `ai/` | LM Studio client, AI module, runtime patches, wake-word assets |
+| `ai/` | llama.cpp client/provider, AI module, runtime patches, wake-word assets |
 | `voice/` | microphone, wake word, VAD and STT engines |
 | `speech/` | Kokoro TTS and the speech worker |
 | `hud/` | Electron HUD and its localhost transport |

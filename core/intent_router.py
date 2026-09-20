@@ -186,13 +186,9 @@ class IntentRouter:
 
         commands: list[dict[str, Any]] = []
         for part in parts:
-            direct = cls._extract_command_entities(part)
-            if direct and "commands" not in direct:
-                commands.append(direct)
-                continue
-
             # Spoken commands sometimes omit "and" before a screenshot phrase,
-            # e.g. "open camera take screenshot". Split that suffix explicitly.
+            # e.g. "open camera take screenshot". Check this before the generic
+            # open/close parser so the suffix does not get swallowed into target.
             implicit = cls._IMPLICIT_SCREENSHOT_SUFFIX_PATTERN.match(part)
             if implicit:
                 first = cls._extract_command_entities(implicit.group("command").strip())
@@ -200,6 +196,11 @@ class IntentRouter:
                 if first and second:
                     commands.extend((first, second))
                     continue
+
+            direct = cls._extract_command_entities(part)
+            if direct and "commands" not in direct:
+                commands.append(direct)
+                continue
 
             return []
 

@@ -1,3 +1,4 @@
+import re
 import threading
 import time
 from collections import deque
@@ -156,7 +157,10 @@ class VoiceModule(Module):
             self._last_transcript = ""
             self._last_transcript_at = 0.0
             self._awaiting_confirmation = False
-            self.microphone.clear_buffer()
+            microphone = getattr(self, "microphone", None)
+            clear_buffer = getattr(microphone, "clear_buffer", None)
+            if callable(clear_buffer):
+                clear_buffer()
             print("[Voice] Conversation mode: OFF", flush=True)
 
     def _start_conversation(self):
@@ -241,6 +245,12 @@ class VoiceModule(Module):
         if not normalized:
             return False, ""
 
+        if normalized in {"okay, okay, stop", "okay okay stop", "ok, ok, stop", "ok ok stop"}:
+            return True, ""
+
+        if re.match(r"^(?:(?:okay|ok|please)\s*,?\s*)+stop$", normalized):
+            return True, ""
+
         for phrase in cls.INTERRUPT_PHRASES:
             marker = phrase
             if normalized == marker:
@@ -253,6 +263,19 @@ class VoiceModule(Module):
 
         if normalized == "stop":
             return True, ""
+
+        # Whisper may insert acknowledgements before the stop word, e.g.
+        # "okay, okay, stop" or "okay please stop". Treat recent conversational
+        # filler before a bare stop as an interruption while preserving the tail.
+        tokens = normalized.split()
+        if "stop" in tokens:
+            stop_index = tokens.index("stop")
+            before = tokens[:stop_index]
+            after = tokens[stop_index + 1:]
+            if not after or after[0] in {"speaking", "talking", "presenting", "presentation"}:
+                recent = before[-4:]
+                if any(token in {"okay", "ok", "please", "asta", "wait", "hold"} for token in recent):
+                    return True, " ".join(after).strip(" ,.-")
 
         if normalized.startswith("stop "):
             remainder = normalized[5:].strip()

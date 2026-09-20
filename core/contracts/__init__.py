@@ -1,3 +1,5 @@
+from .capability import CapabilityDescriptor
+
 from .intent import (
     IntentResult,
     IntentType,
@@ -8,9 +10,23 @@ from .memory import (
     MemoryRecord,
 )
 
+from .plan import (
+    Plan,
+    PlanStatus,
+    PlanStep,
+    PlanStepStatus,
+)
+
 from .model import (
     ModelRequest,
     ModelResponse,
+)
+
+from .skill import SkillDescriptor
+
+from .task import (
+    AgentTask,
+    TaskStatus,
 )
 
 from .tools import (
@@ -19,15 +35,26 @@ from .tools import (
     ToolResult,
 )
 
+from .workspace import WorkspaceState
+
 
 __all__ = [
+    "AgentTask",
+    "CapabilityDescriptor",
     "IntentResult",
     "IntentType",
     "MemoryQuery",
     "MemoryRecord",
+    "Plan",
+    "PlanStatus",
+    "PlanStep",
+    "PlanStepStatus",
     "ModelRequest",
     "ModelResponse",
+    "SkillDescriptor",
+    "TaskStatus",
     "ToolDefinition",
     "ToolRequest",
     "ToolResult",
+    "WorkspaceState",
 ]

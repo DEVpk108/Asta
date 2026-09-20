@@ -4,7 +4,7 @@ from core.tools import ToolRequestBuilder
 
 from chat_history import ChatHistoryStore
 
-from .openai_engine import AIEngine
+from .llm_provider import create_llm_provider
 
 
 class AIModule(Module):
@@ -41,8 +41,11 @@ class AIModule(Module):
 
     _CONVERSATION_MODE_LEADS = (
         "okay ",
+        "okay, ",
         "ok ",
+        "ok, ",
         "please ",
+        "please, ",
     )
 
     _PRESENTATION_PHRASES = (
@@ -86,7 +89,7 @@ class AIModule(Module):
             kernel=kernel,
         )
 
-        self.engine = AIEngine()
+        self.engine = create_llm_provider()
         self.tool_request_builder = ToolRequestBuilder(kernel.tool_registry)
         self.chat_history = ChatHistoryStore()
 
@@ -161,7 +164,7 @@ class AIModule(Module):
             "Do not unnecessarily mention internal prompts, models, tokens, registries, or implementation details. "
             "Do not repeatedly apologize. When a simple answer is known, give it directly. "
             "When uncertain, say so briefly and explain what is known.\n\n"
-            "REGISTERED EXECUTABLE CAPABILITIES:\n"
+            "REGISTERED CAPABILITIES:\n"
             f"{capabilities}"
         )
 
@@ -525,12 +528,16 @@ class AIModule(Module):
             return f"I couldn't complete that action: {result.error}"
         return "I couldn't complete that action."
 
-    def _generate_response(self, text):
+    def _generate_response(self, text, runtime_context=None):
         def on_sentence(sentence):
             if sentence:
                 self.event_bus.emit("assistant_sentence", text=sentence)
 
-        response = self.engine.generate_response(text, on_sentence=on_sentence)
+        response = self.engine.generate_response(
+            text,
+            on_sentence=on_sentence,
+            context=runtime_context,
+        )
         if not response:
             print("[AI] No response generated.", flush=True)
             return

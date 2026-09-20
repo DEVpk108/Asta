@@ -108,7 +108,8 @@ class RecognitionEngine:
 
     @staticmethod
     def _normalize(text):
-        return re.sub(r"\s+", " ", text.strip().lower())
+        normalized = re.sub(r"\s+", " ", text.strip().lower())
+        return normalized.rstrip(" .!?;:,")
 
     def _is_hallucination(self, text):
         normalized = self._normalize(text)

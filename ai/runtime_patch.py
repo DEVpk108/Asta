@@ -67,6 +67,12 @@ def _is_screenshot_capture_request(text):
     if not normalized:
         return False
 
+    # A natural-language request that asks for a response and then a screenshot
+    # must go through the response-first path below, not the deterministic
+    # screenshot-only shortcut.
+    if _extract_post_response_screenshot(normalized):
+        return False
+
     # Do not turn negative requests such as "don't take a screenshot" into actions.
     if re.search(r"\b(?:don't|do not|dont|never)\b", normalized):
         return False
@@ -260,14 +266,23 @@ def apply_ai_runtime_patch():
             return "Opened the latest screenshot."
         return original_format_tool_success(result)
 
-    def patched_generate_response(self, text):
-        """Emit a completed response once so abbreviations do not become TTS fragments."""
-        response = self.engine.generate_response(text, on_sentence=None)
+    def patched_generate_response(self, text, runtime_context=None):
+        """Stream complete sentence chunks to speech while retaining turn context."""
+        def on_sentence(sentence):
+            if sentence:
+                self.event_bus.emit("assistant_sentence", text=sentence)
+
+        response = self.engine.generate_response(
+            text,
+            on_sentence=on_sentence,
+            context=runtime_context,
+        )
         if not response:
             print("[AI] No response generated.", flush=True)
             return
 
-        self.event_bus.emit("assistant_sentence", text=response)
+        # Speech has already received sentence chunks during generation.
+        # Emit the completed response separately for chat/HUD consumers.
         self.event_bus.emit("assistant_response", text=response)
 
     def patched_voice_on_conversation_mode_set(self, enabled):

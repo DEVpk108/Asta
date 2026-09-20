@@ -6,6 +6,7 @@ import subprocess
 import time
 from typing import Callable
 
+from core.applications import ApplicationManager, ApplicationResolutionError
 from core.contracts import ToolDefinition, ToolRequest, ToolResult
 from core.tools.base import Tool
 
@@ -139,76 +140,130 @@ class StopProcessTool(Tool):
         return _result(request, True, output={"pid": pid, "stopped": True}, start=start)
 
 
-WINDOWS_PROCESS_ALIASES = {
-    "camera": ("WindowsCamera.exe", "WindowsCameraApp.exe"),
-    "windows camera": ("WindowsCamera.exe", "WindowsCameraApp.exe"),
-}
-
-
 class CloseApplicationTool(Tool):
+    def __init__(self, application_manager=None):
+        self.application_manager = application_manager or ApplicationManager()
+
     @property
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
-            name="system.close_application", description="Close a local application by process name or friendly application name.",
-            input_schema={"type": "object", "properties": {"target": {"type": "string", "minLength": 1}}, "required": ["target"]},
-            risk_level="low", metadata={"actions": ["close"], "category": "system"},
+            name="system.close_application",
+            description="Close a running local application discovered from the operating system.",
+            input_schema={
+                "type": "object",
+                "properties": {"target": {"type": "string", "minLength": 1}},
+                "required": ["target"],
+            },
+            risk_level="low",
+            metadata={
+                "actions": ["close"],
+                "category": "system",
+                "application_discovery": True,
+            },
         )
 
     def execute(self, request: ToolRequest) -> ToolResult:
         start = time.perf_counter()
         target = _validated_target(request)
         if target is None:
-            return _result(request, False, error="Argument 'target' must be a non-empty string.", start=start)
+            return _result(
+                request,
+                False,
+                error="Argument 'target' must be a non-empty string.",
+                start=start,
+            )
 
         try:
             system = platform.system()
             if system == "Windows":
-                candidates = []
-                normalized = target.lower()
-                candidates.extend(WINDOWS_PROCESS_ALIASES.get(normalized, ()))
-                candidates.append(target)
-                if not target.lower().endswith(".exe"):
-                    candidates.append(f"{target}.exe")
+                process = self.application_manager.resolve_running_process(target)
+                completed = subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=request.timeout_seconds,
+                    check=False,
+                )
 
-                seen = set()
-                attempts = []
-                for image_name in candidates:
-                    if image_name.lower() in seen:
-                        continue
-                    seen.add(image_name.lower())
-                    completed = subprocess.run(
-                        ["taskkill", "/IM", image_name, "/T", "/F"],
-                        capture_output=True,
-                        text=True,
-                        timeout=request.timeout_seconds,
-                        check=False,
+                if completed.returncode != 0:
+                    detail = (completed.stderr or completed.stdout or "").strip()
+                    error = f"Application '{target}' was not closed."
+                    if detail:
+                        error += f" {detail}"
+                    return _result(
+                        request,
+                        False,
+                        output={
+                            "target": target,
+                            "pid": process.pid,
+                            "process": process.name,
+                            "closed": False,
+                        },
+                        error=error,
+                        start=start,
                     )
-                    attempts.append(completed)
-                    if completed.returncode == 0:
-                        return _result(
-                            request,
-                            True,
-                            output={"target": target, "process": image_name, "closed": True},
-                            start=start,
-                        )
 
-                stderr = next((item.stderr.strip() for item in reversed(attempts) if item.stderr.strip()), "")
-                stdout = next((item.stdout.strip() for item in reversed(attempts) if item.stdout.strip()), "")
-                detail = stderr or stdout
-                error = f"Application '{target}' was not closed."
-                if detail:
-                    error += f" {detail}"
-                return _result(request, False, output={"target": target, "closed": False}, error=error, start=start)
+                return _result(
+                    request,
+                    True,
+                    output={
+                        "target": target,
+                        "pid": process.pid,
+                        "process": process.name,
+                        "closed": True,
+                    },
+                    start=start,
+                )
 
             if system in {"Linux", "Darwin"}:
-                completed = subprocess.run(["pkill", "-TERM", "-x", target], capture_output=True, text=True, timeout=request.timeout_seconds, check=False)
+                completed = subprocess.run(
+                    ["pkill", "-TERM", "-x", target],
+                    capture_output=True,
+                    text=True,
+                    timeout=request.timeout_seconds,
+                    check=False,
+                )
             else:
-                return _result(request, False, error=f"Unsupported platform: {system}", start=start)
+                return _result(
+                    request,
+                    False,
+                    error=f"Unsupported platform: {system}",
+                    start=start,
+                )
+        except ApplicationResolutionError as exc:
+            return _result(request, False, error=str(exc), start=start)
         except subprocess.TimeoutExpired:
-            return _result(request, False, error=f"Close operation timed out after {request.timeout_seconds:.1f}s.", start=start)
+            return _result(
+                request,
+                False,
+                error=f"Close operation timed out after {request.timeout_seconds:.1f}s.",
+                start=start,
+            )
         except Exception as exc:
-            return _result(request, False, error=f"Failed to close '{target}': {type(exc).__name__}: {exc}", start=start)
-        return _result(request, completed.returncode == 0, output={"target": target, "closed": completed.returncode == 0, "stdout": completed.stdout, "stderr": completed.stderr}, error=None if completed.returncode == 0 else f"Application '{target}' was not closed.", start=start)
+            return _result(
+                request,
+                False,
+                error=f"Failed to close '{target}': {type(exc).__name__}: {exc}",
+                start=start,
+            )
+
+        return _result(
+            request,
+            completed.returncode == 0,
+            output={
+                "target": target,
+                "closed": completed.returncode == 0,
+                "stdout": completed.stdout,
+                "stderr": completed.stderr,
+            },
+            error=(
+                None
+                if completed.returncode == 0
+                else f"Application '{target}' was not closed."
+            ),
+            start=start,
+        )
+
 
 
 class ScreenshotTool(Tool):

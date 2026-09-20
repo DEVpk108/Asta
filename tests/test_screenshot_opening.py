@@ -70,7 +70,7 @@ def test_open_screenshot_request_dispatches_real_tool(tmp_path):
     apply_ai_runtime_patch()
     ai = AIModule(kernel)
     results = []
-    kernel.event_bus.subscribe("tool_result", results.append)
+    kernel.event_bus.subscribe("tool_result", lambda result: results.append(result))
 
     try:
         ai.on_user_message("Open the screenshot")

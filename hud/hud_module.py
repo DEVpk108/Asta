@@ -169,9 +169,6 @@ class HUDModule(Module):
             self.event_bus.emit("conversation_mode_set", enabled=enabled)
             return
 
-        if not self._runtime_ready:
-            print("[HUD] Ignoring text input while A.S.T.A. is still booting.", flush=True)
-            return
         if message_type != "hud.input":
             return
         payload = message.get("input") or {}
@@ -198,10 +195,7 @@ class HUDModule(Module):
         self.transport.publish_audio_level(0.0)
 
     def on_speech_finished(self, *args, **kwargs):
-        if self._conversation_active:
-            self.set_state(mode="listening", intensity="medium", status="LISTENING", progress=None, activity="command")
-        else:
-            self.set_state(mode="idle", intensity="low", status="IDLE", progress=None, activity=None)
+        self.set_state(mode="listening", intensity="medium", status="LISTENING", progress=None, activity="command")
         self.transport.publish_audio_level(0.0)
 
     def on_speech_interrupt(self, *args, **kwargs):
@@ -227,10 +221,8 @@ class HUDModule(Module):
     def on_tool_confirmation_response(self, request_id=None, approved=False):
         if approved:
             self.set_state(mode="executing", intensity="high", status="EXECUTING", progress=None, activity="tool")
-        elif self._conversation_active:
-            self.set_state(mode="listening", intensity="medium", status="LISTENING", progress=None, activity="approval_rejected")
         else:
-            self.set_state(mode="idle", intensity="low", status="IDLE", progress=None, activity=None)
+            self.set_state(mode="listening", intensity="medium", status="LISTENING", progress=None, activity="approval_rejected")
 
     def on_assistant_sentence(self, text):
         if not isinstance(text, str) or not text.strip():
