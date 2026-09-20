@@ -210,11 +210,21 @@ def test_conversation_history_is_sent_on_subsequent_requests(monkeypatch):
     )
 
     engine = LlamaCppEngine(model="asta-local")
-    assert engine.generate_response("hello") == "First reply."
+    runtime_context = (
+        "A.S.T.A. RUNTIME CONTEXT\n"
+        "WORKSPACE STATE:\n- branch: feat/asta-hud\n"
+        "USER REQUEST:\nhello"
+    )
+    assert engine.generate_response("hello", context=runtime_context) == "First reply."
     assert engine.generate_response("follow up") == "Second reply."
 
     assert len(calls) == 2
-    assert calls[1]["messages"][-2:] == [
+    assert calls[0]["messages"][-1] == {
+        "role": "user",
+        "content": runtime_context,
+    }
+    assert calls[1]["messages"][-3:] == [
+        {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "First reply."},
         {"role": "user", "content": "follow up"},
     ]
