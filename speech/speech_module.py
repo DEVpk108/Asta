@@ -30,7 +30,9 @@ class SpeechModule(Module):
         self._queue = queue.Queue()
         self._running = False
         self._speech_thread = None
-        self.coalesce_window = 0.08
+        # Keep a small coalescing window to absorb back-to-back sentence chunks
+        # without adding meaningful first-audio latency.
+        self.coalesce_window = 0.03
 
         self._state_lock = threading.Lock()
         self._speech_active = False
