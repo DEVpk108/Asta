@@ -134,3 +134,29 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_task_can_own_a_structured_plan():
+    from core.contracts import Plan, PlanStatus, PlanStep
+
+    manager = TaskManager()
+    plan = Plan(
+        goal="Open and close an application",
+        steps=[
+            PlanStep(id="step-1", description="open app"),
+            PlanStep(id="step-2", description="close app", depends_on=["step-1"]),
+        ],
+        status=PlanStatus.READY,
+    )
+
+    task = manager.create(
+        "Open and close an application",
+        plan=plan,
+        pending_steps=[step.description for step in plan.steps],
+    )
+
+    assert task.plan is plan
+    assert task.pending_steps == ["open app", "close app"]
+    snapshot = task.to_dict()
+    assert snapshot["plan"]["status"] == "ready"
+    assert snapshot["plan"]["steps"][1]["depends_on"] == ["step-1"]
