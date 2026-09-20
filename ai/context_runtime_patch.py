@@ -18,17 +18,18 @@ def apply_context_runtime_patch():
             builder = ContextBuilder(self.kernel)
             self.kernel.context_builder = builder
 
+        context = None
         try:
             intent = self.kernel.intent_router.analyze(text)
-            prompt = builder.build_prompt(text, intent)
+            context = builder.build_prompt(text, intent)
         except Exception as exc:  # context enrichment must not break chat
             print(
                 f"[Context] Failed to build runtime context: {type(exc).__name__}: {exc}",
                 flush=True,
             )
-            prompt = text
+            context = None
 
-        return original_generate_response(self, prompt)
+        return original_generate_response(self, text, runtime_context=context)
 
     AIModule._generate_response = patched_generate_response
     AIModule._asta_context_runtime_patch_applied = True
