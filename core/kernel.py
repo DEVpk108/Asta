@@ -4,6 +4,7 @@ from .applications import ApplicationManager
 from .capability_discovery import CapabilityDiscovery
 from .event_bus import EventBus
 from .intent_router import IntentRouter
+from .planner import Planner
 from .skill_manager import SkillManager
 from .task_manager import TaskManager
 from .workspace_manager import WorkspaceManager
