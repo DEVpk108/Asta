@@ -33,6 +33,7 @@ class Kernel:
         self.skill_manager = SkillManager(event_bus=self.event_bus)
 
         self.tool_registry = ToolRegistry()
+        self.planner = Planner(self.tool_registry)
         self.capability_discovery = CapabilityDiscovery(
             self.tool_registry,
             event_bus=self.event_bus,
