@@ -11,6 +11,7 @@ from .context_builder import ContextBuilder, ContextSnapshot
 from .event_bus import EventBus
 from .kernel import Kernel
 from .module import Module
+from .planner import Planner, PlanningError
 from .skill_manager import SkillManager
 from .task_manager import TaskManager
 from .workspace_manager import WorkspaceManager
@@ -25,6 +26,8 @@ __all__ = [
     "EventBus",
     "Kernel",
     "Module",
+    "Planner",
+    "PlanningError",
     "SkillManager",
     "TaskManager",
     "WorkspaceManager",
