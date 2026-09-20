@@ -164,7 +164,7 @@ def test_server_timings_are_reported_separately_from_client_first_content(monkey
     assert attempt["predicted_ms"] == 35.0
     assert round(attempt["predicted_tokens_per_second"], 3) == 57.143
     assert attempt["server_timings"]["cache_n"] == 12
-    assert attempt["server_usage"]["cached_tokens"] if "cached_tokens" in attempt["server_usage"] else True
+    assert attempt["server_usage"]["prompt_tokens"] == 10
     assert attempt["client_first_content_seconds"] is not None
 
 
