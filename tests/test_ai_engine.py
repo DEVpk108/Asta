@@ -120,6 +120,34 @@ def test_sse_stream_uses_openai_chat_completion_shape(monkeypatch):
     assert result == "Hello ASTA!"
     assert spoken == ["Hello ASTA!"]
 
+def test_sentence_streaming_does_not_split_acronyms_or_common_abbreviations():
+    remaining, sentence = LlamaCppEngine._emit_sentence_chunks(
+        "A.S.T.A. helps with Python. "
+    )
+    assert sentence == "A.S.T.A. helps with Python."
+    assert remaining == ""
+
+    remaining, sentence = LlamaCppEngine._emit_sentence_chunks(
+        "Use e.g. NumPy for arrays. "
+    )
+    assert sentence == "Use e.g. NumPy for arrays."
+    assert remaining == ""
+
+
+def test_sentence_streaming_waits_for_whitespace_after_punctuation():
+    remaining, sentence = LlamaCppEngine._emit_sentence_chunks(
+        "Hello world"
+    )
+    assert sentence is None
+    assert remaining == "Hello world"
+
+    remaining, sentence = LlamaCppEngine._emit_sentence_chunks(
+        "Hello world. Next sentence"
+    )
+    assert sentence == "Hello world."
+    assert remaining == " Next sentence"
+
+
 def test_server_timings_are_reported_separately_from_client_first_content(monkeypatch):
     events = [
         {
