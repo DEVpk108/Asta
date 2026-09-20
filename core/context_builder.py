@@ -90,6 +90,13 @@ class ContextSnapshot:
 
 
 class ContextBuilder:
+    """Assemble the smallest useful runtime context for one model turn.
+
+    The builder is deliberately LLM-agnostic. It reads state from the kernel,
+    discovers relevant skills/capabilities, and produces a structured snapshot
+    that can later grow to include MCP and other context providers.
+    """
+
     _MEMORY_CUES = (
         "remember", "do you remember", "what did we discuss",
         "what were we talking about", "earlier", "previously",
@@ -104,13 +111,6 @@ class ContextBuilder:
         "branch", "repository", "repo", "file", "folder", "codebase",
         "project", "working on asta", "working on a.s.t.a.",
     )
-
-    """Assemble the smallest useful runtime context for one model turn.
-
-    The builder is deliberately LLM-agnostic. It reads state from the kernel,
-    discovers relevant skills/capabilities, and produces a structured snapshot
-    that can later grow to include MCP and other context providers.
-    """
 
     def __init__(self, kernel):
         self.kernel = kernel
