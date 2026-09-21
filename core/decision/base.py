@@ -15,6 +15,14 @@ class DecisionEngine(ABC):
         """Analyze one user request and return structured decisions."""
         raise NotImplementedError
 
+    def warmup(self) -> bool:
+        """Load provider resources during A.S.T.A. startup."""
+        return True
+
+    def shutdown(self) -> None:
+        """Release provider resources during A.S.T.A. shutdown."""
+        return None
+
 
 class NullDecisionEngine(DecisionEngine):
     """No-op provider used when System-1 decisions are disabled."""
