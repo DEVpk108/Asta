@@ -66,6 +66,8 @@ def test_command_creates_and_completes_agent_task():
         assert task.completed_steps == ["open calculator"]
         assert task.pending_steps == []
         assert task.current_step is None
+        assert task.plan.status.value == "completed"
+        assert task.plan.steps[0].status.value == "completed"
         assert task.evidence
         assert task.evidence[-1]["type"] == "tool_result"
         assert task.evidence[-1]["success"] is True
@@ -86,6 +88,7 @@ def test_compound_command_keeps_one_task_across_multiple_tools():
         assert task.status is TaskStatus.COMPLETED
         assert task.completed_steps == ["open calculator", "close calculator"]
         assert task.pending_steps == []
+        assert [step.status.value for step in task.plan.steps] == ["completed", "completed"]
         assert len(task.evidence) == 2
         assert all(item["success"] for item in task.evidence)
     finally:
@@ -99,9 +102,34 @@ def test_command_task_is_created_from_a_plan():
 
         task = kernel.task_manager.list()[0]
         assert task.plan is not None
-        assert task.plan.status.value == "ready"
+        assert task.plan.status.value == "completed"
         assert len(task.plan.steps) == 1
         assert task.plan.steps[0].description == "open calculator"
         assert task.plan.steps[0].metadata["tool"] == "test.capability"
+    finally:
+        _shutdown(tasks, ai, tools)
+
+
+def test_failed_tool_marks_plan_step_failed():
+    kernel, tasks, ai, tools = _build_runtime()
+    try:
+        original = kernel.tool_dispatcher.dispatch
+
+        def failed_dispatch(request, *, confirmed=False):
+            return ToolResult(
+                success=False,
+                tool=request.tool,
+                error="simulated failure",
+            )
+
+        kernel.tool_dispatcher.dispatch = failed_dispatch
+        kernel.event_bus.emit("user_message", "open calculator")
+
+        task = kernel.task_manager.list()[0]
+        assert task.status is TaskStatus.FAILED
+        assert task.plan.status.value == "failed"
+        assert task.plan.steps[0].status.value == "failed"
+
+        kernel.tool_dispatcher.dispatch = original
     finally:
         _shutdown(tasks, ai, tools)
