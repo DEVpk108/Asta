@@ -5,6 +5,7 @@ from uuid import uuid4
 from typing import Any, Iterable
 
 from .contracts.plan import Plan
+from .contracts.plan import PlanStepStatus
 from .contracts.task import AgentTask, TaskStatus
 
 
@@ -135,6 +136,33 @@ class TaskManager:
         with self._lock:
             task = self._require(task_id or self._active_task_id)
             task.complete_step(step)
+            snapshot = task.to_dict()
+
+        self._emit("task_updated", task=snapshot)
+        return task
+
+    def set_plan_step_status(
+        self,
+        step_id: str,
+        status: PlanStepStatus,
+        task_id: str | None = None,
+    ) -> AgentTask:
+        with self._lock:
+            task = self._require(task_id or self._active_task_id)
+            if task.plan is None:
+                raise ValueError("task has no structured plan")
+            task.plan.set_step_status(step_id, status)
+            snapshot = task.to_dict()
+
+        self._emit("task_updated", task=snapshot)
+        return task
+
+    def refresh_ready_plan_steps(self, task_id: str | None = None) -> AgentTask:
+        with self._lock:
+            task = self._require(task_id or self._active_task_id)
+            if task.plan is None:
+                raise ValueError("task has no structured plan")
+            task.plan.mark_ready_steps()
             snapshot = task.to_dict()
 
         self._emit("task_updated", task=snapshot)
