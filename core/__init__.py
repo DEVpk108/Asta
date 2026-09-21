@@ -2,12 +2,20 @@
 A.S.T.A. Cognitive OS core infrastructure.
 
 The core package provides runtime orchestration, tasks, workspaces,
-capability discovery, skills, context, and host application discovery.
+capability discovery, skills, context, decision providers, and host application
+discovery.
 """
 
 from .applications import ApplicationManager, ApplicationRecord, ApplicationResolutionError
 from .capability_discovery import CapabilityDiscovery
 from .context_builder import ContextBuilder, ContextSnapshot
+from .decision import (
+    DecisionEngine,
+    DecisionSnapshot,
+    LayaDecisionEngine,
+    NullDecisionEngine,
+    create_decision_engine,
+)
 from .event_bus import EventBus
 from .kernel import Kernel
 from .module import Module
@@ -23,6 +31,11 @@ __all__ = [
     "CapabilityDiscovery",
     "ContextBuilder",
     "ContextSnapshot",
+    "DecisionEngine",
+    "DecisionSnapshot",
+    "LayaDecisionEngine",
+    "NullDecisionEngine",
+    "create_decision_engine",
     "EventBus",
     "Kernel",
     "Module",
