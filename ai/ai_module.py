@@ -201,6 +201,8 @@ class AIModule(Module):
             )
             return
 
+        self._run_system1_decision(text)
+
         context_response = self._context_response(text)
         if context_response is not None:
             print("[AI] Answering from recent chat context.", flush=True)
@@ -226,6 +228,32 @@ class AIModule(Module):
             return
 
         self._generate_response(text)
+
+    def _run_system1_decision(self, text):
+        engine = getattr(self.kernel, "decision_engine", None)
+        if engine is None:
+            return
+
+        try:
+            snapshot = engine.analyze(text)
+        except Exception as exc:
+            print(
+                f"[AI] System 1 decision unavailable: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            return
+
+        if snapshot.engine == "disabled":
+            return
+
+        print(
+            f"[AI] System 1: engine={snapshot.engine} "
+            f"model={snapshot.model or 'unknown'} "
+            f"latency={snapshot.latency_ms:.1f}ms",
+            flush=True,
+        )
+        self.event_bus.emit("decision_result", decision=snapshot)
 
     def _context_response(self, text):
         normalized = self._normalize_question(text)
