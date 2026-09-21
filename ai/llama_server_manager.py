@@ -72,7 +72,22 @@ class LlamaServerManager:
     @staticmethod
     def _default_server_path() -> str | None:
         executable = "llama-server.exe" if os.name == "nt" else "llama-server"
-        return shutil.which(executable) or shutil.which("llama-server")
+
+        candidates = [
+            shutil.which(executable),
+            shutil.which("llama-server"),
+            Path.cwd() / executable,
+            Path(__file__).resolve().parents[2] / "llama" / executable,
+        ]
+
+        for candidate in candidates:
+            if not candidate:
+                continue
+            path = Path(candidate).expanduser()
+            if path.exists() and path.is_file():
+                return str(path)
+
+        return None
 
     @staticmethod
     def _model_path_from_legacy_env() -> str | None:
