@@ -74,10 +74,10 @@ def test_tool_runtime_does_not_advance_compound_sequences():
     runtime = ToolRuntimeModule(kernel)
     runtime.initialize()
 
-    emitted = []
+    observed_requests = []
     kernel.event_bus.subscribe(
         "tool_request",
-        lambda request: emitted.append(request),
+        lambda request: observed_requests.append(request),
     )
 
     try:
@@ -94,6 +94,9 @@ def test_tool_runtime_does_not_advance_compound_sequences():
             },
         )
         kernel.event_bus.emit("tool_request", request=request)
-        assert emitted == []
+
+        assert len(observed_requests) == 1
+        assert observed_requests[0] is request
+        assert observed_requests[0].request_id == "sequence-runtime-1"
     finally:
         runtime.shutdown()
