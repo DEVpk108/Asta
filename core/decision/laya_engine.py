@@ -38,7 +38,7 @@ class LayaDecisionEngine(DecisionEngine):
         )
         self.preload = self._env_bool(
             "ASTA_LAYA_PRELOAD",
-            False if preload is None else preload,
+            True if preload is None else preload,
         )
         self.max_loaded = max(
             1,
@@ -49,6 +49,7 @@ class LayaDecisionEngine(DecisionEngine):
             ),
         )
         self._router = None
+        self.warmed = False
 
     def _get_router(self):
         if self._router is not None:
@@ -70,16 +71,49 @@ class LayaDecisionEngine(DecisionEngine):
         if self.device:
             kwargs["device"] = self.device
 
-        router = Router(**kwargs)
-
-        # Router(preload=True) loads every checkpoint. A.S.T.A. deliberately
-        # preloads only the selected model so multilingual remains the fast,
-        # low-memory default while still avoiding first-request model loading.
-        if self.preload:
-            router.preload([self.model])
-
-        self._router = router
+        self._router = Router(**kwargs)
         return self._router
+
+    def warmup(self) -> bool:
+        """Load the selected Laya checkpoint during A.S.T.A. startup."""
+        try:
+            router = self._get_router()
+            if self.preload:
+                router.preload([self.model])
+            else:
+                router.load(self.model)
+            self.warmed = True
+            print(
+                f"[AI] Laya {self.model} warm-up complete.",
+                flush=True,
+            )
+            return True
+        except Exception as exc:
+            self.warmed = False
+            print(
+                f"[AI] Laya warm-up unavailable: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            return False
+
+    def shutdown(self) -> None:
+        router = self._router
+        self._router = None
+        self.warmed = False
+
+        if router is None:
+            return
+
+        try:
+            router.unload()
+            print("[AI] Laya checkpoint unloaded.", flush=True)
+        except Exception as exc:
+            print(
+                f"[AI] Laya shutdown error: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
 
     def analyze(self, text: str) -> DecisionSnapshot:
         value = str(text or "").strip()
