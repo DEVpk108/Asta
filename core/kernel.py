@@ -65,6 +65,10 @@ class Kernel:
 
         self._running = False
         self._stop_event = threading.Event()
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_started = False
+        self._shutdown_owner = None
+        self._shutdown_complete = threading.Event()
 
     def create_task(self, goal, **kwargs):
         return self.task_manager.create(goal, **kwargs)
@@ -99,6 +103,11 @@ class Kernel:
             print(f"[Kernel] Initializing {module.name}...")
             module.initialize()
 
+        with self._shutdown_lock:
+            self._shutdown_started = False
+            self._shutdown_owner = None
+            self._shutdown_complete.clear()
+
         self._running = True
         self._stop_event.clear()
         self.event_bus.emit("kernel_ready")
@@ -119,19 +128,44 @@ class Kernel:
             self.shutdown()
 
     def shutdown(self):
-        if not self._running:
+        current_thread = threading.get_ident()
+
+        with self._shutdown_lock:
+            if self._shutdown_complete.is_set():
+                return
+
+            if self._shutdown_started:
+                if self._shutdown_owner == current_thread:
+                    return
+                owner = False
+            else:
+                self._shutdown_started = True
+                self._shutdown_owner = current_thread
+                self._running = False
+                self._stop_event.set()
+                owner = True
+
+        if not owner:
+            # Another thread owns the shutdown sequence (for example the HUD
+            # transport worker). The main runtime must stay alive until that
+            # sequence has completed instead of exiting early and leaving
+            # managed child processes such as llama-server behind.
+            self._shutdown_complete.wait()
             return
 
-        print("[Kernel] Shutting down...")
+        try:
+            print("[Kernel] Shutting down...")
 
-        self._running = False
-        self._stop_event.set()
-        self.approval_manager.clear()
+            self.approval_manager.clear()
 
-        for module in reversed(self.modules):
-            try:
-                module.shutdown()
-            except Exception as exc:
-                print(f"[Kernel] Error shutting down {module.name}: {exc}")
+            for module in reversed(self.modules):
+                try:
+                    module.shutdown()
+                except Exception as exc:
+                    print(f"[Kernel] Error shutting down {module.name}: {exc}")
 
-        print("[Kernel] Stopped")
+            print("[Kernel] Stopped")
+        finally:
+            with self._shutdown_lock:
+                self._shutdown_owner = None
+                self._shutdown_complete.set()
