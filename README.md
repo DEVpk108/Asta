@@ -35,7 +35,9 @@ before memory recall and model generation begin.
    with streaming Silero VAD.
 2. faster-whisper transcribes the audio and the module emits `user_message`.
 3. `ai` handles deterministic cases first (tool approvals, conversation mode,
-   presentation, screenshot phrasing), then falls back to `IntentRouter`.
+   presentation, screenshot phrasing), then optionally runs the System 1 decision
+   provider (Laya) for structured routing signals. The existing `IntentRouter`
+   remains authoritative for executable command parsing in this first integration stage.
 4. A command becomes a `tool_request`. The tool layer checks the authority
    policy and either runs it or emits `tool_confirmation_required` and waits
    for a spoken yes/no.
@@ -70,6 +72,8 @@ source .venv/bin/activate
 
 pip install -r requirements.txt
 pip install -r requirements-kokoro.txt
+# Optional System 1 decision layer
+pip install -r requirements-laya.txt
 
 cd hud
 npm install
@@ -84,6 +88,7 @@ file).
 Optional extras:
 
 ```bash
+pip install -r requirements-laya.txt          # Laya System 1 decision layer
 pip install -r requirements-mempalace.txt     # long-term memory
 pip install -r voice/requirements-indic.txt   # IndicConformer STT backend
 ```
@@ -133,6 +138,10 @@ yet, so export these before starting A.S.T.A.
 | `ASTA_LLM_TIMEOUT` | `120` | LLM HTTP timeout in seconds |
 | `ASTA_LLM_MAX_OUTPUT_TOKENS` | `256` | Maximum generated tokens per response |
 | `ASTA_LLM_REASONING_RETRY_TOKENS` | `512` | Retry budget when the first generation exhausts the output budget |
+| `ASTA_DECISION_ENGINE` | `disabled` | System 1 decision provider: `disabled` or `laya` |
+| `ASTA_LAYA_DEVICE` | `auto` | Laya device override such as `cpu` or `cuda` |
+| `ASTA_LAYA_PRELOAD` | `0` | Preload Laya checkpoints instead of lazy-loading on first decision |
+| `ASTA_LAYA_MAX_LOADED` | `1` | Maximum Laya checkpoints kept resident by its router |
 | `ASTA_HUD_HOST` | `127.0.0.1` | HUD transport bind address |
 | `ASTA_HUD_PORT` | `18765` | HUD transport port |
 | `ASTA_STT_BACKEND` | `whisper` | `whisper`, `indic` or `hybrid` |
@@ -142,6 +151,29 @@ yet, so export these before starting A.S.T.A.
 
 Secrets belong in the environment, never in the repository. `.env`, `*.key` and
 `*.pem` are git-ignored.
+
+## Laya System 1 decision layer
+
+A.S.T.A. can optionally run Laya as a fast, non-generative decision layer before
+the existing intent/parser and reasoning paths.
+
+Enable it with:
+
+```powershell
+$env:ASTA_DECISION_ENGINE="laya"
+pip install -r requirements-laya.txt
+```
+
+The first integration is deliberately advisory: Laya emits a `decision_result`
+event containing structured decisions such as intent, domain, tool need,
+reasoning need, sensitivity, selected checkpoint, and latency. The existing
+rule-based `IntentRouter`, Planner, ToolRuntime, and AuthorityManager remain
+authoritative. This lets A.S.T.A. benchmark Laya against the current pipeline
+before promoting any Laya decision to control execution.
+
+Laya is not a replacement for the main local LLM. It is intended as a System 1
+routing/classification layer that can later feed model selection, planning
+strategy, multilingual intent classification, and guardrails.
 
 ## Tools and approvals
 
@@ -161,7 +193,7 @@ shell; they always pass argument lists.
 
 | Path | Contents |
 | --- | --- |
-| `core/` | kernel, event bus, module base, intent router, tool layer |
+| `core/` | kernel, event bus, module base, intent router, decision providers, tool layer |
 | `ai/` | llama.cpp client/provider, AI module, runtime patches, wake-word assets |
 | `voice/` | microphone, wake word, VAD and STT engines |
 | `speech/` | Kokoro TTS and the speech worker |
