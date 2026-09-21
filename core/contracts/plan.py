@@ -165,18 +165,44 @@ class Plan:
 
         return any(visit(node) for node in graph)
 
-    def ready_steps(self) -> list[PlanStep]:
+    def get_step(self, step_id: str) -> PlanStep:
+        value = str(step_id).strip()
+        for step in self.steps:
+            if step.id == value:
+                return step
+        raise KeyError(f"unknown plan step: {value}")
+
+    def mark_ready_steps(self) -> list[PlanStep]:
         completed = {
             step.id
             for step in self.steps
             if step.status is PlanStepStatus.COMPLETED
         }
+        ready: list[PlanStep] = []
 
+        for step in self.steps:
+            if step.status is not PlanStepStatus.PENDING:
+                continue
+            if all(dependency in completed for dependency in step.depends_on):
+                step.status = PlanStepStatus.READY
+                ready.append(step)
+
+        if ready:
+            self._touch()
+        return ready
+
+    def set_step_status(self, step_id: str, status: PlanStepStatus) -> PlanStep:
+        step = self.get_step(step_id)
+        step.status = PlanStepStatus(status)
+        self._touch()
+        return step
+
+    def ready_steps(self) -> list[PlanStep]:
+        self.mark_ready_steps()
         return [
             step
             for step in self.steps
-            if step.status in {PlanStepStatus.PENDING, PlanStepStatus.READY}
-            and all(dependency in completed for dependency in step.depends_on)
+            if step.status is PlanStepStatus.READY
         ]
 
     def to_dict(self) -> dict[str, Any]:
