@@ -44,17 +44,18 @@ def test_factory_rejects_unknown_provider(monkeypatch):
         create_decision_engine()
 
 
-def test_laya_engine_maps_router_result(monkeypatch):
+def test_laya_engine_uses_multilingual_model_by_default(monkeypatch):
     class FakeRouter:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-        def predict(self, state, questions):
+        def predict(self, state, questions, model=None):
             assert state == {"user_request": "open spotify"}
             assert "intent" in questions
             assert "needs_tools" in questions
+            assert model == "multilingual"
             return {
-                "model": "laya-rl-agent",
+                "model": "laya-multilingual",
                 "answers": {
                     "intent": {
                         "type": "choice",
@@ -68,8 +69,8 @@ def test_laya_engine_maps_router_result(monkeypatch):
                     },
                 },
                 "routing": {
-                    "model": "english",
-                    "reason": "English Latin text",
+                    "model": "multilingual",
+                    "reason": "explicit model='multilingual'",
                 },
             }
 
@@ -86,12 +87,43 @@ def test_laya_engine_maps_router_result(monkeypatch):
     )
     snapshot = engine.analyze("open spotify")
 
+    assert engine.model == "multilingual"
+    assert engine._router.kwargs["default"] == "multilingual"
+    assert engine._router.kwargs["preload"] is False
     assert snapshot.engine == "laya"
-    assert snapshot.model == "english"
+    assert snapshot.model == "multilingual"
     assert snapshot.choice("intent") == "command"
     assert snapshot.probability("needs_tools") == 0.99
-    assert snapshot.routing["reason"] == "English Latin text"
+    assert snapshot.routing["reason"] == "explicit model='multilingual'"
     assert snapshot.latency_ms is not None
+
+
+def test_laya_engine_model_can_be_overridden(monkeypatch):
+    class FakeRouter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def predict(self, state, questions, model=None):
+            assert model == "english"
+            return {
+                "answers": {},
+                "routing": {
+                    "model": "english",
+                    "reason": "explicit model='english'",
+                },
+            }
+
+    monkeypatch.setitem(
+        sys.modules,
+        "laya",
+        types.SimpleNamespace(Router=FakeRouter),
+    )
+
+    engine = LayaDecisionEngine(model="english")
+    snapshot = engine.analyze("hello")
+
+    assert engine.model == "english"
+    assert snapshot.model == "english"
 
 
 def test_laya_engine_reports_missing_dependency(monkeypatch):
