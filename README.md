@@ -95,14 +95,26 @@ pip install -r voice/requirements-indic.txt   # IndicConformer STT backend
 
 ## Run
 
-1. Start `llama-server` with your GGUF model. A typical Windows command is:
+1. Configure A.S.T.A. to manage the local llama.cpp server. On startup, A.S.T.A.
+checks whether the configured loopback server is already running. If it is not,
+A.S.T.A. starts `llama-server`, waits for `/v1/models` to become ready, warms
+the model, and owns that process for the lifetime of the assistant.
+
+Set the server executable and GGUF model path:
 
 ```powershell
-.\\llama-server.exe -m "C:\\Models\\your-model.gguf" --host 127.0.0.1 --port 8080 -c 8192 -ngl 99 --jinja --alias asta-local
+$env:ASTA_LLAMA_SERVER_PATH="C:\\Models\\llama-server.exe"
+$env:ASTA_LLM_MODEL_PATH="C:\\Models\\your-model.gguf"
 ```
 
-Adjust the model path, context size, and GPU offload for your hardware/model.
-`llama-server` provides the OpenAI-compatible `/v1/chat/completions` API used by A.S.T.A.
+The default startup settings use context `8192`, `-ngl 99`, `--jinja`, and
+`--reasoning off`. These can be changed through the configuration variables
+below.
+
+You can still start llama.cpp yourself. When A.S.T.A. detects an already-running
+server, it uses it but does not take ownership of or terminate that external
+process.
+
 2. From the repository root:
 
 ```bash
@@ -135,13 +147,21 @@ yet, so export these before starting A.S.T.A.
 | `ASTA_LLM_PROVIDER` | `llama_cpp` | Local LLM provider |
 | `ASTA_LLM_BASE_URL` | `http://127.0.0.1:8080/v1` | llama-server OpenAI-compatible base URL |
 | `ASTA_LLM_MODEL` | auto-discovered | llama-server model id/alias |
+| `ASTA_LLM_MODEL_PATH` | - | GGUF file path used when A.S.T.A. auto-starts llama-server |
+| `ASTA_LLAMA_SERVER_PATH` | `llama-server` on PATH | llama-server executable used for auto-start |
+| `ASTA_LLM_AUTOSTART` | `1` | Automatically start a local llama-server when it is not already running |
+| `ASTA_LLAMA_SERVER_STARTUP_TIMEOUT` | `120` | Seconds to wait for the managed llama-server to become ready |
+| `ASTA_LLM_CONTEXT_SIZE` | `8192` | llama.cpp context size when A.S.T.A. starts the server |
+| `ASTA_LLM_GPU_LAYERS` | `99` | llama.cpp GPU layer offload when A.S.T.A. starts the server |
+| `ASTA_LLM_JINJA` | `1` | Pass `--jinja` to llama-server |
+| `ASTA_LLM_REASONING` | `off` | Pass the reasoning mode to llama-server |
 | `ASTA_LLM_TIMEOUT` | `120` | LLM HTTP timeout in seconds |
 | `ASTA_LLM_MAX_OUTPUT_TOKENS` | `256` | Maximum generated tokens per response |
 | `ASTA_LLM_REASONING_RETRY_TOKENS` | `512` | Retry budget when the first generation exhausts the output budget |
 | `ASTA_DECISION_ENGINE` | `disabled` | System 1 decision provider: `disabled` or `laya` |
 | `ASTA_LAYA_MODEL` | `multilingual` | Laya checkpoint: `multilingual` or `english` |
 | `ASTA_LAYA_DEVICE` | `auto` | Laya device override such as `cpu` or `cuda` |
-| `ASTA_LAYA_PRELOAD` | `0` | Preload only the selected Laya checkpoint before first input |
+| `ASTA_LAYA_PRELOAD` | `1` | Preload the selected Laya checkpoint during A.S.T.A. startup |
 | `ASTA_LAYA_MAX_LOADED` | `1` | Maximum Laya checkpoints kept resident by its router |
 | `ASTA_HUD_HOST` | `127.0.0.1` | HUD transport bind address |
 | `ASTA_HUD_PORT` | `18765` | HUD transport port |
@@ -170,6 +190,9 @@ passed explicitly to Laya rather than letting the router switch checkpoints per
 request. This keeps the System 1 path predictable and avoids loading the larger
 English checkpoint when it is not needed.
 
+When Laya is enabled, its selected checkpoint is loaded during A.S.T.A. startup,
+while the HUD is already visible. On shutdown, A.S.T.A. unloads the checkpoint.
+
 The model can be overridden:
 
 ```powershell
@@ -188,6 +211,10 @@ reasoning need, sensitivity, selected checkpoint, and latency. The existing
 rule-based `IntentRouter`, Planner, ToolRuntime, and AuthorityManager remain
 authoritative. This lets A.S.T.A. benchmark Laya against the current pipeline
 before promoting any Laya decision to control execution.
+
+The same lifecycle principle applies to llama.cpp: A.S.T.A. owns a server only
+when it started that process itself. A server started externally is reused but
+never terminated by A.S.T.A.
 
 Laya is not a replacement for the main local LLM. It is intended as a System 1
 routing/classification layer that can later feed model selection, planning
