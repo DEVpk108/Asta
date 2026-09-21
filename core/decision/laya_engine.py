@@ -36,9 +36,10 @@ class LayaDecisionEngine(DecisionEngine):
         self.model = self._normalize_model(
             model or os.getenv("ASTA_LAYA_MODEL", "multilingual")
         )
-        self.preload = self._env_bool(
-            "ASTA_LAYA_PRELOAD",
-            True if preload is None else preload,
+        self.preload = (
+            self._env_bool("ASTA_LAYA_PRELOAD", True)
+            if preload is None
+            else bool(preload)
         )
         self.max_loaded = max(
             1,
