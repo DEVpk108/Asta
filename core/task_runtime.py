@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from .contracts import IntentType, TaskStatus, ToolRequest, ToolResult
+from .contracts import (
+    IntentType,
+    PlanStepStatus,
+    TaskStatus,
+    ToolRequest,
+    ToolResult,
+)
 from .planner import PlanningError
 from .module import Module
 
@@ -89,8 +95,16 @@ class TaskRuntimeModule(Module):
             return
 
         task_step = self._request_step(request)
+        plan_step_id = self._request_plan_step_id(request, task)
         request.metadata["task_id"] = task.id
         request.metadata["task_step"] = task_step
+        if plan_step_id is not None:
+            request.metadata["plan_step_id"] = plan_step_id
+            self.kernel.task_manager.set_plan_step_status(
+                plan_step_id,
+                PlanStepStatus.RUNNING,
+                task.id,
+            )
         self.kernel.task_manager.set_step(task_step, task.id)
 
     def on_tool_result(self, result):
@@ -116,7 +130,14 @@ class TaskRuntimeModule(Module):
         }
         self.kernel.task_manager.add_evidence(evidence, task.id)
 
+        plan_step_id = result.metadata.get("plan_step_id")
         if not result.success:
+            if plan_step_id:
+                self.kernel.task_manager.set_plan_step_status(
+                    plan_step_id,
+                    PlanStepStatus.FAILED,
+                    task.id,
+                )
             self.kernel.task_manager.fail(
                 result.error or "Tool execution failed.",
                 task.id,
@@ -125,6 +146,14 @@ class TaskRuntimeModule(Module):
 
         step = result.metadata.get("task_step") or task.current_step or result.tool
         self.kernel.task_manager.complete_step(step, task.id)
+
+        if plan_step_id:
+            self.kernel.task_manager.set_plan_step_status(
+                plan_step_id,
+                PlanStepStatus.COMPLETED,
+                task.id,
+            )
+            self.kernel.task_manager.refresh_ready_plan_steps(task.id)
 
         refreshed = self.kernel.task_manager.get(task.id)
         if refreshed is not None and not refreshed.pending_steps:
@@ -171,6 +200,32 @@ class TaskRuntimeModule(Module):
         action = str(command.get("action") or "command").strip()
         target = str(command.get("target") or "").strip()
         return f"{action} {target}".strip()
+
+    @staticmethod
+    def _request_plan_step_id(request: ToolRequest, task) -> str | None:
+        plan = task.plan
+        if plan is None:
+            return None
+
+        index = request.metadata.get("sequence_index")
+        if isinstance(index, int):
+            candidate = f"step-{index + 1}"
+            try:
+                plan.get_step(candidate)
+            except KeyError:
+                return None
+            return candidate
+
+        for step in plan.steps:
+            if step.status in {PlanStepStatus.PENDING, PlanStepStatus.READY}:
+                if step.metadata.get("tool") == request.tool:
+                    return step.id
+
+        for step in plan.steps:
+            if step.status in {PlanStepStatus.PENDING, PlanStepStatus.READY}:
+                return step.id
+
+        return None
 
     @classmethod
     def _request_step(cls, request: ToolRequest) -> str:
