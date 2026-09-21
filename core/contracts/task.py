@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from .plan import Plan
+from .plan import Plan, PlanStatus, PlanStepStatus
 
 
 class TaskStatus(str, Enum):
@@ -59,7 +59,7 @@ class AgentTask:
             raise ValueError(f"cannot activate task in {self.status.value} state")
         self.status = TaskStatus.ACTIVE
         if self.plan is not None:
-            self.plan.status = self.plan.status.ACTIVE
+            self.plan.status = PlanStatus.ACTIVE
             self.plan.mark_ready_steps()
         self._touch()
 
@@ -83,11 +83,11 @@ class AgentTask:
         self.current_step = None
         self.error = None
         if self.plan is not None:
-            self.plan.status = self.plan.status.COMPLETED
+            self.plan.status = PlanStatus.COMPLETED
             for step in self.plan.steps:
                 if step.status not in {
-                    step.status.COMPLETED,
-                    step.status.SKIPPED,
+                    PlanStepStatus.COMPLETED,
+                    PlanStepStatus.SKIPPED,
                 }:
                     step.status = step.status.SKIPPED
             self.plan.updated_at = datetime.now(timezone.utc)
@@ -100,7 +100,7 @@ class AgentTask:
         self.error = str(error)
         self.current_step = None
         if self.plan is not None:
-            self.plan.status = self.plan.status.FAILED
+            self.plan.status = PlanStatus.FAILED
             self.plan.updated_at = datetime.now(timezone.utc)
         self._touch()
 
@@ -111,7 +111,7 @@ class AgentTask:
         self.error = str(reason) if reason else self.error
         self.current_step = None
         if self.plan is not None:
-            self.plan.status = self.plan.status.CANCELLED
+            self.plan.status = PlanStatus.CANCELLED
             self.plan.updated_at = datetime.now(timezone.utc)
         self._touch()
 
