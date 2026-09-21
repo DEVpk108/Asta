@@ -162,7 +162,14 @@ Your goal is not merely to produce an answer. Help the user understand the probl
     def warmup(self):
         start = time.perf_counter()
         try:
-            self.server_manager.ensure_running()
+            if not self.server_manager.ensure_running():
+                print(
+                    "[AI] llama.cpp server is not ready; "
+                    "LLM warm-up skipped.",
+                    flush=True,
+                )
+                return False
+
             model = self._discover_model()
             print(f"[AI] llama.cpp model: {model}", flush=True)
             response = self.session.post(
