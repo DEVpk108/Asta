@@ -141,3 +141,58 @@ def test_laya_engine_reports_missing_dependency(monkeypatch):
 
     with pytest.raises(RuntimeError, match="laya.*not installed"):
         engine.analyze("hello")
+
+
+def test_laya_engine_warmup_preloads_selected_model(monkeypatch):
+    class FakeRouter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.preloaded = []
+
+        def preload(self, names):
+            self.preloaded.append(list(names))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "laya",
+        types.SimpleNamespace(Router=FakeRouter),
+    )
+
+    engine = LayaDecisionEngine(
+        model="multilingual",
+        preload=True,
+    )
+
+    assert engine.warmup() is True
+    assert engine.warmed is True
+    assert engine._router.preloaded == [["multilingual"]]
+
+
+def test_laya_engine_shutdown_unloads_router(monkeypatch):
+    class FakeRouter:
+        def __init__(self, **kwargs):
+            self.unload_calls = 0
+
+        def load(self, name):
+            return object()
+
+        def unload(self):
+            self.unload_calls += 1
+
+    monkeypatch.setitem(
+        sys.modules,
+        "laya",
+        types.SimpleNamespace(Router=FakeRouter),
+    )
+
+    engine = LayaDecisionEngine(model="multilingual", preload=False)
+
+    assert engine.warmup() is True
+    router = engine._router
+
+    engine.shutdown()
+
+    assert router.unload_calls == 1
+    assert engine._router is None
+    assert engine.warmed is False
+
