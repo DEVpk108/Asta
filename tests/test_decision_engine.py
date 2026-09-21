@@ -45,6 +45,8 @@ def test_factory_rejects_unknown_provider(monkeypatch):
 
 
 def test_laya_engine_uses_multilingual_model_by_default(monkeypatch):
+    monkeypatch.delenv("ASTA_LAYA_MODEL", raising=False)
+
     class FakeRouter:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -187,6 +189,7 @@ def test_laya_engine_shutdown_unloads_router(monkeypatch):
 
     engine = LayaDecisionEngine(model="multilingual", preload=False)
 
+    assert engine.preload is False
     assert engine.warmup() is True
     router = engine._router
 
