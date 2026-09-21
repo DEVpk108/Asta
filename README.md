@@ -100,12 +100,16 @@ checks whether the configured loopback server is already running. If it is not,
 A.S.T.A. starts `llama-server`, waits for `/v1/models` to become ready, warms
 the model, and owns that process for the lifetime of the assistant.
 
-Set the server executable and GGUF model path:
+Set the server executable and GGUF model path when they are not automatically discoverable:
 
 ```powershell
 $env:ASTA_LLAMA_SERVER_PATH="C:\\Models\\llama-server.exe"
 $env:ASTA_LLM_MODEL_PATH="C:\\Models\\your-model.gguf"
 ```
+
+A.S.T.A. first checks the system PATH and the repository's sibling `llama\\`
+directory for `llama-server.exe`. If the selected server directory contains
+exactly one `models\\*.gguf`, that model is discovered automatically.
 
 The default startup settings use context `8192`, `-ngl 99`, `--jinja`, and
 `--reasoning off`. These can be changed through the configuration variables
