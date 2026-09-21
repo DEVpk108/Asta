@@ -58,6 +58,9 @@ class AgentTask:
         }:
             raise ValueError(f"cannot activate task in {self.status.value} state")
         self.status = TaskStatus.ACTIVE
+        if self.plan is not None:
+            self.plan.status = self.plan.status.ACTIVE
+            self.plan.mark_ready_steps()
         self._touch()
 
     def pause(self) -> None:
@@ -79,6 +82,15 @@ class AgentTask:
         self.result = result
         self.current_step = None
         self.error = None
+        if self.plan is not None:
+            self.plan.status = self.plan.status.COMPLETED
+            for step in self.plan.steps:
+                if step.status not in {
+                    step.status.COMPLETED,
+                    step.status.SKIPPED,
+                }:
+                    step.status = step.status.SKIPPED
+            self.plan.updated_at = datetime.now(timezone.utc)
         self._touch()
 
     def fail(self, error: str) -> None:
@@ -87,6 +99,9 @@ class AgentTask:
         self.status = TaskStatus.FAILED
         self.error = str(error)
         self.current_step = None
+        if self.plan is not None:
+            self.plan.status = self.plan.status.FAILED
+            self.plan.updated_at = datetime.now(timezone.utc)
         self._touch()
 
     def cancel(self, reason: str | None = None) -> None:
@@ -95,6 +110,9 @@ class AgentTask:
         self.status = TaskStatus.CANCELLED
         self.error = str(reason) if reason else self.error
         self.current_step = None
+        if self.plan is not None:
+            self.plan.status = self.plan.status.CANCELLED
+            self.plan.updated_at = datetime.now(timezone.utc)
         self._touch()
 
     def set_current_step(self, step: str | None) -> None:
