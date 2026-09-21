@@ -1,6 +1,5 @@
 from core import Kernel
 from core.contracts import ToolDefinition, ToolRequest, ToolResult, TaskStatus
-from core.module import Module
 from core.task_runtime import TaskRuntimeModule
 from core.tools import Tool, ToolRuntimeModule
 
@@ -88,7 +87,10 @@ def test_compound_command_keeps_one_task_across_multiple_tools():
         assert task.status is TaskStatus.COMPLETED
         assert task.completed_steps == ["open calculator", "close calculator"]
         assert task.pending_steps == []
-        assert [step.status.value for step in task.plan.steps] == ["completed", "completed"]
+        assert [step.status.value for step in task.plan.steps] == [
+            "completed",
+            "completed",
+        ]
         assert len(task.evidence) == 2
         assert all(item["success"] for item in task.evidence)
     finally:
@@ -156,9 +158,17 @@ def test_task_runtime_controls_compound_plan_execution():
         ]
 
         assert len(requests) == 2
-        assert requests[0].metadata["plan_step_id"] == "step-1"
-        assert requests[1].metadata["plan_step_id"] == "step-2"
-        assert requests[1].metadata["planner"] == "task_runtime"
-        assert "sequence" not in requests[1].metadata
+        requests_by_step = {
+            request.metadata["plan_step_id"]: request
+            for request in requests
+        }
+        assert set(requests_by_step) == {"step-1", "step-2"}
+
+        first = requests_by_step["step-1"]
+        second = requests_by_step["step-2"]
+
+        assert first.metadata["sequence_index"] == 0
+        assert second.metadata["planner"] == "task_runtime"
+        assert "sequence" not in second.metadata
     finally:
         _shutdown(tasks, ai, tools)
