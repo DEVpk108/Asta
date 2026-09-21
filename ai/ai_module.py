@@ -98,6 +98,10 @@ class AIModule(Module):
         self._ground_engine_in_capabilities()
         self.chat_history.initialize()
 
+        decision_warmup = getattr(self.kernel.decision_engine, "warmup", None)
+        if callable(decision_warmup):
+            decision_warmup()
+
         warmup = getattr(self.engine, "warmup", None)
         if callable(warmup):
             warmup()
@@ -117,6 +121,15 @@ class AIModule(Module):
             self.on_tool_confirmation_required,
         )
         self.chat_history.close()
+
+        engine_shutdown = getattr(self.engine, "shutdown", None)
+        if callable(engine_shutdown):
+            engine_shutdown()
+
+        decision_shutdown = getattr(self.kernel.decision_engine, "shutdown", None)
+        if callable(decision_shutdown):
+            decision_shutdown()
+
         print("[AI] Stopped", flush=True)
 
     def _ground_engine_in_capabilities(self):
