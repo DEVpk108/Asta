@@ -2,6 +2,7 @@ import threading
 
 from .applications import ApplicationManager
 from .capability_discovery import CapabilityDiscovery
+from .decision import create_decision_engine
 from .event_bus import EventBus
 from .intent_router import IntentRouter
 from .planner import Planner
@@ -28,6 +29,7 @@ class Kernel:
     ):
         self.event_bus = EventBus()
         self.intent_router = IntentRouter()
+        self.decision_engine = create_decision_engine()
         self.task_manager = TaskManager(event_bus=self.event_bus)
         self.workspace_manager = WorkspaceManager(event_bus=self.event_bus)
         self.application_manager = ApplicationManager()
