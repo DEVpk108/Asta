@@ -158,8 +158,10 @@ def test_task_can_own_a_structured_plan():
     assert task.plan is plan
     assert task.pending_steps == ["open app", "close app"]
     snapshot = task.to_dict()
-    assert snapshot["plan"]["status"] == "ready"
+    assert snapshot["plan"]["status"] == "active"
     assert snapshot["plan"]["steps"][1]["depends_on"] == ["step-1"]
+    assert snapshot["plan"]["steps"][0]["status"] == "ready"
+    assert snapshot["plan"]["steps"][1]["status"] == "pending"
 
 
 def test_plan_lifecycle_and_step_status_are_synchronized():
