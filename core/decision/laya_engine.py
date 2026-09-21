@@ -17,6 +17,10 @@ class LayaDecisionEngine(DecisionEngine):
     """
 
     name = "laya"
+    _SUPPORTED_MODELS = {
+        "english",
+        "multilingual",
+    }
 
     def __init__(
         self,
@@ -24,9 +28,13 @@ class LayaDecisionEngine(DecisionEngine):
         device: str | None = None,
         preload: bool | None = None,
         max_loaded: int | None = None,
+        model: str | None = None,
     ):
         self.device = self._normalize_device(
             device or os.getenv("ASTA_LAYA_DEVICE")
+        )
+        self.model = self._normalize_model(
+            model or os.getenv("ASTA_LAYA_MODEL", "multilingual")
         )
         self.preload = self._env_bool(
             "ASTA_LAYA_PRELOAD",
@@ -55,15 +63,22 @@ class LayaDecisionEngine(DecisionEngine):
             ) from exc
 
         kwargs: dict[str, Any] = {
+            "default": self.model,
             "max_loaded": self.max_loaded,
+            "preload": False,
         }
         if self.device:
             kwargs["device"] = self.device
 
-        self._router = Router(
-            **kwargs,
-            preload=self.preload,
-        )
+        router = Router(**kwargs)
+
+        # Router(preload=True) loads every checkpoint. A.S.T.A. deliberately
+        # preloads only the selected model so multilingual remains the fast,
+        # low-memory default while still avoiding first-request model loading.
+        if self.preload:
+            router.preload([self.model])
+
+        self._router = router
         return self._router
 
     def analyze(self, text: str) -> DecisionSnapshot:
@@ -79,6 +94,7 @@ class LayaDecisionEngine(DecisionEngine):
         result = self._get_router().predict(
             {"user_request": value},
             ASTA_DECISION_QUESTIONS,
+            model=self.model,
         )
         elapsed_ms = (time.perf_counter() - started) * 1000.0
 
@@ -98,6 +114,24 @@ class LayaDecisionEngine(DecisionEngine):
             routing=dict(routing),
             latency_ms=elapsed_ms,
         )
+
+    @classmethod
+    def _normalize_model(cls, value: str | None) -> str:
+        normalized = str(value or "").strip().lower()
+        aliases = {
+            "multi": "multilingual",
+            "ml": "multilingual",
+            "laya-multilingual": "multilingual",
+            "en": "english",
+            "laya": "english",
+        }
+        normalized = aliases.get(normalized, normalized)
+        if normalized not in cls._SUPPORTED_MODELS:
+            supported = ", ".join(sorted(cls._SUPPORTED_MODELS))
+            raise ValueError(
+                f"Unsupported Laya model '{value}'. Supported models: {supported}."
+            )
+        return normalized
 
     @staticmethod
     def _normalize_device(value: str | None) -> str | None:
