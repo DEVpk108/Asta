@@ -139,8 +139,9 @@ yet, so export these before starting A.S.T.A.
 | `ASTA_LLM_MAX_OUTPUT_TOKENS` | `256` | Maximum generated tokens per response |
 | `ASTA_LLM_REASONING_RETRY_TOKENS` | `512` | Retry budget when the first generation exhausts the output budget |
 | `ASTA_DECISION_ENGINE` | `disabled` | System 1 decision provider: `disabled` or `laya` |
+| `ASTA_LAYA_MODEL` | `multilingual` | Laya checkpoint: `multilingual` or `english` |
 | `ASTA_LAYA_DEVICE` | `auto` | Laya device override such as `cpu` or `cuda` |
-| `ASTA_LAYA_PRELOAD` | `0` | Preload Laya checkpoints instead of lazy-loading on first decision |
+| `ASTA_LAYA_PRELOAD` | `0` | Preload only the selected Laya checkpoint before first input |
 | `ASTA_LAYA_MAX_LOADED` | `1` | Maximum Laya checkpoints kept resident by its router |
 | `ASTA_HUD_HOST` | `127.0.0.1` | HUD transport bind address |
 | `ASTA_HUD_PORT` | `18765` | HUD transport port |
@@ -163,6 +164,23 @@ Enable it with:
 $env:ASTA_DECISION_ENGINE="laya"
 pip install -r requirements-laya.txt
 ```
+
+A.S.T.A. uses Laya's **multilingual checkpoint by default**. The selected model is
+passed explicitly to Laya rather than letting the router switch checkpoints per
+request. This keeps the System 1 path predictable and avoids loading the larger
+English checkpoint when it is not needed.
+
+The model can be overridden:
+
+```powershell
+$env:ASTA_LAYA_MODEL="english"
+```
+
+Set `ASTA_LAYA_MODEL=multilingual` to return to the default.
+
+When `ASTA_LAYA_PRELOAD=1`, A.S.T.A. preloads only the selected checkpoint so
+the first user request does not pay the cold model-load cost. `ASTA_LAYA_MAX_LOADED`
+still controls the router's resident-model limit.
 
 The first integration is deliberately advisory: Laya emits a `decision_result`
 event containing structured decisions such as intent, domain, tool need,
