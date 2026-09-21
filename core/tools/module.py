@@ -5,7 +5,7 @@ from core.tools.request_builder import ToolRequestBuilder
 
 
 class ToolRuntimeModule(Module):
-    """EventBus adapter for tool dispatch, approval, and command sequences."""
+    """EventBus adapter for tool dispatch and approval."""
 
     def __init__(self, kernel):
         super().__init__(
