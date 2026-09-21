@@ -133,3 +133,32 @@ def test_failed_tool_marks_plan_step_failed():
         kernel.tool_dispatcher.dispatch = original
     finally:
         _shutdown(tasks, ai, tools)
+
+
+def test_task_runtime_controls_compound_plan_execution():
+    kernel, tasks, ai, tools = _build_runtime()
+    requests = []
+    kernel.event_bus.subscribe(
+        "tool_request",
+        lambda request: requests.append(request),
+    )
+    try:
+        kernel.event_bus.emit(
+            "user_message",
+            "open calculator and then close calculator",
+        )
+
+        task = kernel.task_manager.list()[0]
+        assert task.status is TaskStatus.COMPLETED
+        assert [step.status.value for step in task.plan.steps] == [
+            "completed",
+            "completed",
+        ]
+
+        assert len(requests) == 2
+        assert requests[0].metadata["plan_step_id"] == "step-1"
+        assert requests[1].metadata["plan_step_id"] == "step-2"
+        assert requests[1].metadata["planner"] == "task_runtime"
+        assert "sequence" not in requests[1].metadata
+    finally:
+        _shutdown(tasks, ai, tools)
