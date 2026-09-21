@@ -24,16 +24,23 @@ class FakeDecisionEngine:
         )
 
 
-def test_ai_module_emits_system1_decision_result():
+def _build_module(decision_engine):
     module = object.__new__(AIModule)
+    event_bus = FakeEventBus()
     module.kernel = type(
         "KernelStub",
         (),
         {
-            "decision_engine": FakeDecisionEngine(),
-            "event_bus": FakeEventBus(),
+            "decision_engine": decision_engine,
+            "event_bus": event_bus,
         },
     )()
+    module.event_bus = event_bus
+    return module
+
+
+def test_ai_module_emits_system1_decision_result():
+    module = _build_module(FakeDecisionEngine())
 
     module._run_system1_decision("what is a transformer?")
 
@@ -55,15 +62,7 @@ def test_ai_module_system1_failure_does_not_raise():
         def analyze(self, text):
             raise RuntimeError("simulated decision failure")
 
-    module = object.__new__(AIModule)
-    module.kernel = type(
-        "KernelStub",
-        (),
-        {
-            "decision_engine": FailingEngine(),
-            "event_bus": FakeEventBus(),
-        },
-    )()
+    module = _build_module(FailingEngine())
 
     module._run_system1_decision("hello")
     assert module.kernel.event_bus.events == []
