@@ -3,12 +3,14 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import (
+    IntentResult,
     IntentType,
     PlanStepStatus,
     TaskStatus,
     ToolRequest,
     ToolResult,
 )
+from .tools.request_builder import ToolRequestBuilder
 from .planner import PlanningError
 from .module import Module
 
@@ -26,6 +28,7 @@ class TaskRuntimeModule(Module):
             event_bus=kernel.event_bus,
             kernel=kernel,
         )
+        self.tool_request_builder = ToolRequestBuilder(kernel.tool_registry)
 
     def initialize(self):
         self.event_bus.subscribe("user_message", self.on_user_message)
@@ -95,7 +98,9 @@ class TaskRuntimeModule(Module):
             return
 
         task_step = self._request_step(request)
-        plan_step_id = self._request_plan_step_id(request, task)
+        plan_step_id = request.metadata.get("plan_step_id")
+        if not isinstance(plan_step_id, str) or not plan_step_id.strip():
+            plan_step_id = self._request_plan_step_id(request, task)
         request.metadata["task_id"] = task.id
         request.metadata["task_step"] = task_step
         if plan_step_id is not None:
@@ -156,7 +161,10 @@ class TaskRuntimeModule(Module):
             self.kernel.task_manager.refresh_ready_plan_steps(task.id)
 
         refreshed = self.kernel.task_manager.get(task.id)
-        if refreshed is not None and not refreshed.pending_steps:
+        if refreshed is None:
+            return
+
+        if not refreshed.pending_steps:
             self.kernel.task_manager.complete(
                 result={
                     "tool": result.tool,
@@ -164,6 +172,25 @@ class TaskRuntimeModule(Module):
                 },
                 task_id=task.id,
             )
+            return
+
+        next_step = self._next_ready_plan_step(refreshed)
+        if next_step is None:
+            return
+
+        next_request = self._build_plan_request(refreshed, next_step)
+        if next_request is None:
+            self.kernel.task_manager.fail(
+                f"Unable to build a tool request for plan step '{next_step.id}'.",
+                refreshed.id,
+            )
+            return
+
+        print(
+            f"[Tasks] Advancing plan: {next_step.id} -> {next_request.tool}",
+            flush=True,
+        )
+        self.event_bus.emit("tool_request", request=next_request)
 
     def on_confirmation_response(self, request_id, approved):
         if not isinstance(request_id, str) or not isinstance(approved, bool):
@@ -200,6 +227,52 @@ class TaskRuntimeModule(Module):
         action = str(command.get("action") or "command").strip()
         target = str(command.get("target") or "").strip()
         return f"{action} {target}".strip()
+
+    @staticmethod
+    def _next_ready_plan_step(task):
+        if task.plan is None:
+            return None
+
+        for step in task.plan.steps:
+            if step.status is PlanStepStatus.READY:
+                return step
+
+        return None
+
+    def _build_plan_request(self, task, step) -> ToolRequest | None:
+        action = str(step.metadata.get("action") or "").strip()
+        target = str(step.metadata.get("target") or "").strip()
+        if not action:
+            return None
+
+        intent = IntentResult(
+            intent=IntentType.COMMAND,
+            confidence=float(
+                task.metadata.get("confidence", 0.98)
+            ),
+            normalized_text=task.goal,
+            entities={
+                "action": action,
+                **({"target": target} if target else {}),
+            },
+            requires_tools=True,
+            classifier=str(task.metadata.get("classifier", "rules")),
+        )
+
+        try:
+            request = self.tool_request_builder.build(intent)
+        except ValueError as exc:
+            print(
+                f"[Tasks] Could not build next plan step: {exc}",
+                flush=True,
+            )
+            return None
+
+        request.metadata["task_id"] = task.id
+        request.metadata["task_step"] = step.description
+        request.metadata["plan_step_id"] = step.id
+        request.metadata["planner"] = "task_runtime"
+        return request
 
     @staticmethod
     def _request_plan_step_id(request: ToolRequest, task) -> str | None:
