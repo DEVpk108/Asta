@@ -214,7 +214,8 @@ class AIModule(Module):
             )
             return
 
-        self._run_system1_decision(text)
+        intent_hint = self.kernel.intent_router.analyze(text)
+        self._run_system1_decision(text, intent_hint=intent_hint)
 
         context_response = self._context_response(text)
         if context_response is not None:
@@ -222,7 +223,7 @@ class AIModule(Module):
             self._emit_assistant_text(context_response)
             return
 
-        result: IntentResult = self.kernel.intent_router.analyze(text)
+        result: IntentResult = intent_hint
         print(
             f"[AI] Intent: {result.intent.value} "
             f"(confidence={result.confidence:.2f}, classifier={result.classifier})",
@@ -242,10 +243,63 @@ class AIModule(Module):
 
         self._generate_response(text)
 
-    def _run_system1_decision(self, text):
+    def _run_system1_decision(self, text, *, intent_hint=None):
         engine = getattr(self.kernel, "decision_engine", None)
         if engine is None:
             return
+
+        # Computer commands use the action-oriented System-1 path. The
+        # deterministic intent router remains an execution safety boundary and
+        # also provides candidate application names to Laya.
+        if (
+            intent_hint is not None
+            and intent_hint.intent == IntentType.COMMAND
+            and callable(getattr(engine, "decide_action", None))
+        ):
+            try:
+                candidates = []
+                manager = getattr(self.kernel, "application_manager", None)
+                if manager is not None:
+                    recent = getattr(manager, "last_opened_application", None)
+                    if recent is not None:
+                        candidates.append(recent)
+
+                    target = intent_hint.entities.get("target")
+                    if isinstance(target, str) and target.strip():
+                        try:
+                            candidates.extend(
+                                manager.discover(target, limit=8)
+                            )
+                        except Exception:
+                            pass
+
+                action_decision = engine.decide_action(
+                    text,
+                    applications=candidates,
+                )
+            except Exception as exc:
+                print(
+                    f"[AI] System 1 action decision unavailable: "
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[AI] System 1 Action: "
+                    f"action={action_decision.action.value} "
+                    f"target={action_decision.arguments.get('target_app', 'none')} "
+                    f"confidence={action_decision.confidence:.2f} "
+                    f"addressed={action_decision.addressed:.2f} "
+                    f"complete={action_decision.command_complete} "
+                    f"compound={action_decision.compound} "
+                    f"latency={action_decision.latency_ms:.1f}ms",
+                    flush=True,
+                )
+                self.event_bus.emit(
+                    "action_decision",
+                    decision=action_decision,
+                )
+                return
 
         try:
             snapshot = engine.analyze(text)
