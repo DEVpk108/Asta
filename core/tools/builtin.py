@@ -229,10 +229,11 @@ class CloseApplicationTool(Tool):
 
                 initial_roots = roots
                 killed_pids = []
+                attempted_pids = set()
                 max_passes = 3
 
-                for pass_index in range(max_passes):
-                    if pass_index > 0:
+                for _pass_index in range(max_passes):
+                    if _pass_index > 0:
                         try:
                             roots = resolve_roots()
                         except ApplicationResolutionError:
@@ -240,11 +241,20 @@ class CloseApplicationTool(Tool):
                         if not roots:
                             break
 
-                    seen = set()
-                    for process in roots:
-                        if process.pid in seen:
-                            continue
-                        seen.add(process.pid)
+                    new_roots = [
+                        process for process in roots
+                        if process.pid not in attempted_pids
+                    ]
+
+                    # Do not repeatedly taskkill the same surviving PID. A
+                    # persistent PID is one process tree that has already been
+                    # attempted; only newly discovered independent roots need
+                    # another kill pass.
+                    if not new_roots:
+                        break
+
+                    for process in new_roots:
+                        attempted_pids.add(process.pid)
                         closed, detail = self._kill_process_tree(
                             process, request.timeout_seconds
                         )
@@ -252,39 +262,34 @@ class CloseApplicationTool(Tool):
                             killed_pids.append(process.pid)
                             continue
 
-                        if pass_index >= max_passes - 1:
-                            compact = " ".join(detail.split())
-                            if "access is denied" in compact.lower():
-                                compact = "Access is denied."
-                            elif len(compact) > 240:
-                                compact = compact[:237] + "..."
-                            return _result(
-                                request,
-                                False,
-                                output={
-                                    "target": target,
-                                    "pid": initial_roots[0].pid,
-                                    "process": initial_roots[0].name,
-                                    "root_pids": [p.pid for p in initial_roots],
-                                    "closed": False,
-                                    **({"resolved_target": resolved_target}
-                                       if resolved_target != target else {}),
-                                },
-                                error=(
-                                    f"Application '{resolved_target}' could not be closed."
-                                    + (f" {compact}" if compact else "")
+                        compact = " ".join(detail.split())
+                        if "access is denied" in compact.lower():
+                            compact = "Access is denied."
+                        elif len(compact) > 240:
+                            compact = compact[:237] + "..."
+                        return _result(
+                            request,
+                            False,
+                            output={
+                                "target": target,
+                                "pid": initial_roots[0].pid,
+                                "process": initial_roots[0].name,
+                                "root_pids": [p.pid for p in initial_roots],
+                                "closed": False,
+                                **(
+                                    {"resolved_target": resolved_target}
+                                    if resolved_target != target
+                                    else {}
                                 ),
-                                start=start,
-                            )
+                            },
+                            error=(
+                                f"Application '{resolved_target}' could not be closed."
+                                + (f" {compact}" if compact else "")
+                            ),
+                            start=start,
+                        )
 
                     time.sleep(0.20)
-
-                    try:
-                        remaining = resolve_roots()
-                    except ApplicationResolutionError:
-                        remaining = ()
-                    if not remaining:
-                        break
 
                 try:
                     remaining = resolve_roots()
