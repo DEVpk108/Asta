@@ -239,21 +239,23 @@ class CloseApplicationTool(Tool):
                     still_running = True
                     while time.monotonic() < deadline:
                         still_running = bool(is_running(resolved_target))
-                        if not still_running:
+                        if close_success:
                             break
                         time.sleep(0.15)
+                    # A successful post-close verification is authoritative.
+                    close_success = not still_running
                 else:
-                    # Minimal/fake application managers used in tests may not
-                    # provide a post-close verifier. The native taskkill result
-                    # is the only available evidence in that case.
-                    still_running = False
+                    # Minimal/fake application managers do not provide a
+                    # verifier, so the native taskkill result is authoritative.
+                    close_success = not failures
+                    still_running = not close_success
 
                 first_process = processes[0]
                 output = {
                     "target": target,
                     "pid": first_process.pid,
                     "process": first_process.name,
-                    "closed": not still_running,
+                    "closed": close_success,
                 }
                 if len(killed_pids) > 1:
                     output["pids"] = list(killed_pids)
