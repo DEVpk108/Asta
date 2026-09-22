@@ -132,3 +132,77 @@ def test_close_application_compacts_access_denied_errors(monkeypatch):
     assert result.success is False
     assert result.error.endswith("Access is denied.")
     assert len(result.error) < 160
+
+
+def test_close_application_fails_when_process_survives_taskkill(monkeypatch):
+    monkeypatch.setattr(builtin.platform, "system", lambda: "Windows")
+    calls = []
+
+    class FakeManager:
+        checks = 0
+
+        def resolve_reference(self, target):
+            return target
+
+        def discover_running_application_processes(self, target, limit=64):
+            return (
+                RunningProcessRecord(
+                    pid=4242,
+                    name="Spotify",
+                    executable_path=r"C:\Program Files\Spotify\Spotify.exe",
+                    window_title="Spotify",
+                ),
+            )
+
+        def is_application_running(self, target):
+            self.checks += 1
+            return self.checks < 20
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(builtin.subprocess, "run", fake_run)
+
+    result = CloseApplicationTool(FakeManager()).execute(
+        make_request("spotify")
+    )
+
+    assert result.success is False
+    assert result.output["closed"] is False
+    assert "still running" in result.error.lower()
+    assert calls == [["taskkill", "/PID", "4242", "/T", "/F"]]
+
+
+def test_close_application_succeeds_when_verification_confirms_exit(monkeypatch):
+    monkeypatch.setattr(builtin.platform, "system", lambda: "Windows")
+
+    class FakeManager:
+        checks = 0
+
+        def resolve_reference(self, target):
+            return target
+
+        def discover_running_application_processes(self, target, limit=64):
+            return (
+                RunningProcessRecord(
+                    pid=4242,
+                    name="Spotify",
+                ),
+            )
+
+        def is_application_running(self, target):
+            self.checks += 1
+            return self.checks == 1
+
+    def fake_run(command, **kwargs):
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(builtin.subprocess, "run", fake_run)
+
+    result = CloseApplicationTool(FakeManager()).execute(
+        make_request("spotify")
+    )
+
+    assert result.success is True
+    assert result.output["closed"] is True
