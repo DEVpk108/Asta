@@ -196,3 +196,97 @@ def test_close_application_fails_when_process_survives_taskkill(monkeypatch):
         ["taskkill", "/PID", "4242", "/T", "/F"],
         ["taskkill", "/PID", "4242", "/T", "/F"],
     ]
+
+def test_close_application_terminates_all_independent_process_roots(monkeypatch):
+    monkeypatch.setattr(builtin.platform, "system", lambda: "Windows")
+    calls = []
+
+    class FakeManager:
+        checks = 0
+
+        def resolve_reference(self, target):
+            return target
+
+        def discover_running_process_roots(self, target, limit=64):
+            assert target == "sample app"
+            self.checks += 1
+            if self.checks <= 2:
+                return (
+                    RunningProcessRecord(
+                        pid=100,
+                        name="sample",
+                        parent_pid=500,
+                    ),
+                    RunningProcessRecord(
+                        pid=200,
+                        name="sample",
+                        parent_pid=700,
+                    ),
+                )
+            raise builtin.ApplicationResolutionError(
+                "No running application matched 'sample app'."
+            )
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(builtin.subprocess, "run", fake_run)
+
+    result = CloseApplicationTool(FakeManager()).execute(
+        make_request("sample app")
+    )
+
+    assert result.success is True
+    assert result.output["closed"] is True
+    assert result.output["root_pids"] == [100, 200]
+    assert result.output["killed_pids"] == [100, 200]
+    assert [call[0] for call in calls] == [
+        ["taskkill", "/PID", "100", "/T", "/F"],
+        ["taskkill", "/PID", "200", "/T", "/F"],
+    ]
+    assert all(
+        call[1]["stdin"] is builtin.subprocess.DEVNULL
+        and call[1]["creationflags"] == getattr(
+            builtin.subprocess,
+            "CREATE_NO_WINDOW",
+            0,
+        )
+        for call in calls
+    )
+
+
+def test_close_application_ignores_root_already_gone_race(monkeypatch):
+    monkeypatch.setattr(builtin.platform, "system", lambda: "Windows")
+
+    class FakeManager:
+        checks = 0
+
+        def discover_running_process_roots(self, target, limit=64):
+            self.checks += 1
+            if self.checks == 1:
+                return (
+                    RunningProcessRecord(
+                        pid=4242,
+                        name="sample",
+                    ),
+                )
+            raise builtin.ApplicationResolutionError(
+                "No running application matched 'sample'."
+            )
+
+    def fake_run(command, **kwargs):
+        return types.SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="ERROR: The process "4242" not found.",
+        )
+
+    monkeypatch.setattr(builtin.subprocess, "run", fake_run)
+
+    result = CloseApplicationTool(FakeManager()).execute(
+        make_request("sample")
+    )
+
+    assert result.success is True
+    assert result.output["closed"] is True
