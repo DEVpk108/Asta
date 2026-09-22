@@ -39,7 +39,7 @@ class RecognitionEngine:
         compute_type = "float16" if device == "cuda" else "int8"
 
         self.device = device
-        self.model_name = model_name
+        self.model_name = os.getenv("ASTA_STT_MODEL", str(model_name)).strip() or str(model_name)
         try:
             configured_beam_size = int(
                 os.getenv("ASTA_STT_BEAM_SIZE", str(beam_size))
