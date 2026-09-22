@@ -279,7 +279,7 @@ def test_close_application_ignores_root_already_gone_race(monkeypatch):
         return types.SimpleNamespace(
             returncode=1,
             stdout="",
-            stderr="ERROR: The process "4242" not found.",
+            stderr='ERROR: The process "4242" not found.',
         )
 
     monkeypatch.setattr(builtin.subprocess, "run", fake_run)
