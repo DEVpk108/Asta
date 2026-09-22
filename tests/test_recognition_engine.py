@@ -79,3 +79,17 @@ def test_obvious_whisper_hallucination_phrase_is_rejected():
 
     assert engine._is_hallucination("The speaker is using English.") is True
     assert engine._is_hallucination("open camera") is False
+
+
+def test_strict_recognition_rejects_high_no_speech_segments():
+    engine = object.__new__(RecognitionEngine)
+
+    noisy = SimpleNamespace(
+        text="Thank you.",
+        avg_logprob=-0.92,
+        no_speech_prob=0.83,
+        compression_ratio=0.56,
+    )
+
+    assert engine._segment_is_unreliable(noisy, strict=True) is True
+    assert engine._segment_is_unreliable(noisy, strict=False) is False
