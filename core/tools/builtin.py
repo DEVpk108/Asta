@@ -176,7 +176,8 @@ class CloseApplicationTool(Tool):
         try:
             system = platform.system()
             if system == "Windows":
-                process = self.application_manager.resolve_running_process(target)
+                resolved_target = self.application_manager.resolve_reference(target)
+                process = self.application_manager.resolve_running_process(resolved_target)
                 completed = subprocess.run(
                     ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                     capture_output=True,
@@ -187,6 +188,12 @@ class CloseApplicationTool(Tool):
 
                 if completed.returncode != 0:
                     detail = (completed.stderr or completed.stdout or "").strip()
+                    if "access is denied" in detail.lower():
+                        detail = "Access is denied."
+                    elif detail:
+                        detail = " ".join(detail.split())
+                        if len(detail) > 320:
+                            detail = detail[:317] + "..."
                     error = f"Application '{target}' was not closed."
                     if detail:
                         error += f" {detail}"
@@ -198,6 +205,11 @@ class CloseApplicationTool(Tool):
                             "pid": process.pid,
                             "process": process.name,
                             "closed": False,
+                            **(
+                                {"resolved_target": resolved_target}
+                                if resolved_target != target
+                                else {}
+                            ),
                         },
                         error=error,
                         start=start,
@@ -211,6 +223,11 @@ class CloseApplicationTool(Tool):
                         "pid": process.pid,
                         "process": process.name,
                         "closed": True,
+                        **(
+                            {"resolved_target": resolved_target}
+                            if resolved_target != target
+                            else {}
+                        ),
                     },
                     start=start,
                 )
