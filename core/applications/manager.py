@@ -33,6 +33,7 @@ class RunningProcessRecord:
     name: str
     executable_path: str | None = None
     window_title: str | None = None
+    parent_pid: int | None = None
 
 
 class ApplicationResolutionError(RuntimeError):
@@ -164,6 +165,51 @@ class ApplicationManager:
             return bool(self.discover_running_application_processes(query, limit=64))
         except ApplicationResolutionError:
             return False
+    def discover_running_process_roots(self, query: str, *, minimum_score: float = 0.80, limit: int = 64):
+        """Return independent root processes for all matching application trees."""
+        if os.name != "nt":
+            return ()
+
+        query = self.resolve_reference(str(query).strip())
+        if not query:
+            raise ApplicationResolutionError("Application name cannot be empty.")
+
+        processes = self._discover_windows_processes()
+        if not processes:
+            raise ApplicationResolutionError(f"No running application matched '{query}'.")
+
+        comparison_names = [query]
+        try:
+            comparison_names.append(self.resolve(query).name)
+        except ApplicationResolutionError:
+            pass
+
+        ranked = []
+        for process in processes:
+            score = max(
+                _score_running_process(candidate, process)
+                for candidate in comparison_names
+            )
+            if score >= minimum_score:
+                ranked.append((score, process))
+
+        if not ranked:
+            raise ApplicationResolutionError(
+                f"No running application matched '{query}' confidently."
+            )
+
+        matched = {process.pid for _, process in ranked}
+        roots = [
+            (score, process)
+            for score, process in ranked
+            if process.parent_pid is None or process.parent_pid not in matched
+        ]
+
+        if not roots:
+            roots = [max(ranked, key=lambda item: (item[0], -item[1].pid))]
+
+        roots.sort(key=lambda item: (-item[0], item[1].pid))
+        return tuple(process for _, process in roots[:max(1, int(limit))])
 
     def resolve_running_process(self, query: str) -> RunningProcessRecord:
         query = self.resolve_reference(str(query).strip())
