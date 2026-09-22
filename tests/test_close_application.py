@@ -29,7 +29,7 @@ def test_close_application_uses_discovered_process_pid(monkeypatch):
             )
 
     def fake_run(command, **kwargs):
-        calls.append(command)
+        calls.append((command, kwargs))
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(builtin.subprocess, "run", fake_run)
@@ -45,7 +45,13 @@ def test_close_application_uses_discovered_process_pid(monkeypatch):
         "process": "fdm",
         "closed": True,
     }
-    assert calls == [["taskkill", "/PID", "4242", "/T", "/F"]]
+    assert calls[0][0] == ["taskkill", "/PID", "4242", "/T", "/F"]
+    assert calls[0][1]["stdin"] is builtin.subprocess.DEVNULL
+    assert calls[0][1]["creationflags"] == getattr(
+        builtin.subprocess,
+        "CREATE_NO_WINDOW",
+        0,
+    )
 
 
 def test_close_application_reports_missing_running_application(monkeypatch):
