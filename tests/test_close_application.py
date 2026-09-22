@@ -144,19 +144,14 @@ def test_close_application_fails_when_process_survives_taskkill(monkeypatch):
         def resolve_reference(self, target):
             return target
 
-        def discover_running_application_processes(self, target, limit=64):
-            return (
-                RunningProcessRecord(
-                    pid=4242,
-                    name="Spotify",
-                    executable_path=r"C:\Program Files\Spotify\Spotify.exe",
-                    window_title="Spotify",
-                ),
-            )
-
-        def is_application_running(self, target):
+        def resolve_running_process(self, target):
             self.checks += 1
-            return self.checks < 20
+            return RunningProcessRecord(
+                pid=4242,
+                name="Spotify",
+                executable_path=r"C:\Program Files\Spotify\Spotify.exe",
+                window_title="Spotify",
+            )
 
     def fake_run(command, **kwargs):
         calls.append(command)
@@ -171,7 +166,10 @@ def test_close_application_fails_when_process_survives_taskkill(monkeypatch):
     assert result.success is False
     assert result.output["closed"] is False
     assert "still running" in result.error.lower()
-    assert calls == [["taskkill", "/PID", "4242", "/T", "/F"]]
+    assert calls == [
+        ["taskkill", "/PID", "4242", "/T", "/F"],
+        ["taskkill", "/PID", "4242", "/T", "/F"],
+    ]
 
 
 def test_close_application_succeeds_when_verification_confirms_exit(monkeypatch):
@@ -183,17 +181,16 @@ def test_close_application_succeeds_when_verification_confirms_exit(monkeypatch)
         def resolve_reference(self, target):
             return target
 
-        def discover_running_application_processes(self, target, limit=64):
-            return (
-                RunningProcessRecord(
+        def resolve_running_process(self, target):
+            self.checks += 1
+            if self.checks == 1:
+                return RunningProcessRecord(
                     pid=4242,
                     name="Spotify",
-                ),
+                )
+            raise builtin.ApplicationResolutionError(
+                "No running application matched 'spotify'."
             )
-
-        def is_application_running(self, target):
-            self.checks += 1
-            return self.checks == 1
 
     def fake_run(command, **kwargs):
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
