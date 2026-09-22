@@ -129,7 +129,7 @@ class RecognitionEngine:
         return False
 
     @staticmethod
-    def _segment_is_unreliable(segment):
+    def _segment_is_unreliable(segment, *, strict=False):
         """Reject segments that strongly look like silence/noise transcription."""
         avg_logprob = float(getattr(segment, "avg_logprob", 0.0) or 0.0)
         no_speech_prob = float(getattr(segment, "no_speech_prob", 0.0) or 0.0)
@@ -137,16 +137,23 @@ class RecognitionEngine:
             getattr(segment, "compression_ratio", 0.0) or 0.0
         )
 
-        # Require multiple weak signals before dropping a segment. This avoids
-        # throwing away quiet but legitimate speech solely because confidence is
-        # imperfect.
+        # Normal recognition uses multiple weak signals before dropping a
+        # segment so quiet legitimate speech is not discarded too aggressively.
         if no_speech_prob >= 0.80 and avg_logprob <= -1.0:
+            return True
+
+        # Barge-in is a special-purpose recognizer: its only useful outputs are
+        # explicit interruption phrases. Speaker playback commonly leaks into
+        # the microphone as high-no_speech Whisper segments such as
+        # "Thank you." Reject those aggressively before they reach the
+        # interruption matcher.
+        if strict and no_speech_prob >= 0.80:
             return True
         if compression_ratio >= 3.0 and avg_logprob <= -1.0:
             return True
         return False
 
-    def _transcribe_whisper(self, audio):
+    def _transcribe_whisper(self, audio, *, strict=False):
         if self.model is None:
             raise RuntimeError("Whisper backend is not initialized.")
 
@@ -179,16 +186,17 @@ class RecognitionEngine:
             )
             segment_stats.append((avg_logprob, no_speech_prob, compression_ratio))
 
-            if self._segment_is_unreliable(segment):
+            if self._segment_is_unreliable(segment, strict=strict):
                 rejected_segments += 1
-                print(
-                    "[STT] Rejected low-confidence segment: "
+                if not strict:
+                    print(
+                        "[STT] Rejected low-confidence segment: "
                     f"text={segment.text!r} "
                     f"avg_logprob={avg_logprob:.2f} "
                     f"no_speech={no_speech_prob:.2f} "
                     f"compression={compression_ratio:.2f}",
-                    flush=True,
-                )
+                        flush=True,
+                    )
                 continue
 
             parts.append(segment.text.strip())
@@ -250,7 +258,7 @@ class RecognitionEngine:
         self.last_backend = "whisper-fallback"
         return whisper_text
 
-    def transcribe(self, audio):
+    def transcribe(self, audio, *, strict=False):
         if audio is None:
             return ""
 
@@ -262,7 +270,7 @@ class RecognitionEngine:
                 whisper_text = self._transcribe_whisper(audio)
                 text = self._use_indic(audio, whisper_text)
             else:
-                text = self._transcribe_whisper(audio)
+                text = self._transcribe_whisper(audio, strict=strict)
                 self.last_backend = "whisper"
 
             if self._is_hallucination(text):
