@@ -70,6 +70,12 @@ class VADEngine:
         pre_roll = deque(maxlen=self.pre_roll_samples)
         recording = False
 
+        initial_seed = None
+        if initial_audio is not None:
+            seed = np.asarray(initial_audio, dtype=np.float32).flatten()
+            if seed.size:
+                initial_seed = seed[-self.pre_roll_samples :].copy()
+
         # The wake-word detector's ring buffer is intentionally not reused for
         # command recognition. The command gets a fresh, live pre-roll instead.
         _ = initial_audio
@@ -111,10 +117,10 @@ class VADEngine:
                     print("[VAD] Command started.")
                     recording = True
 
-                    # Keep a larger amount of fresh live audio before VAD start.
-                    # This reduces first-word truncation without reusing the
-                    # wake-word detector's stale ring buffer.
-                    if pre_roll:
+                    if initial_seed is not None:
+                        audio_buffer.append(initial_seed)
+                        initial_seed = None
+                    elif pre_roll:
                         audio_buffer.append(np.asarray(pre_roll, dtype=np.float32))
 
                 if recording:
