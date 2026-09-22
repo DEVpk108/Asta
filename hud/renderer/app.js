@@ -148,7 +148,6 @@
   }
 
   function speakReady () {
-    if (audio.muted) return
     try {
       if (!window.speechSynthesis) return
       var u = new SpeechSynthesisUtterance('Ready')
@@ -336,7 +335,6 @@
     } else if (k === 'f') {
       e.preventDefault()
       toggleFullscreen()
-    }
     }
   })
 
