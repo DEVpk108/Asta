@@ -244,14 +244,17 @@ class ApplicationManager:
 
     def _discover_windows_processes(self):
         output = self._powershell_runner(
+            "$windowTitles = @{}; "
             "Get-Process | ForEach-Object { "
-            "$path = $null; "
-            "try { $path = $_.Path } catch {} "
+            "try { $windowTitles[[int]$_.Id] = [string]$_.MainWindowTitle } catch {} "
+            "}; "
+            "Get-CimInstance Win32_Process | ForEach-Object { "
             "[pscustomobject]@{ "
-            "ProcessId = [int]$_.Id; "
-            "Name = [string]$_.ProcessName; "
-            "Path = [string]$path; "
-            "WindowTitle = [string]$_.MainWindowTitle "
+            "ProcessId = [int]$_.ProcessId; "
+            "ParentProcessId = [int]$_.ParentProcessId; "
+            "Name = [string]$_.Name; "
+            "Path = [string]$_.ExecutablePath; "
+            "WindowTitle = [string]$windowTitles[[int]$_.ProcessId] "
             "} "
             "} | ConvertTo-Json -Compress"
         )
@@ -272,6 +275,13 @@ class ApplicationManager:
             if pid <= 0:
                 continue
 
+            try:
+                parent_pid = int(item.get("ParentProcessId"))
+            except (TypeError, ValueError):
+                parent_pid = None
+            if parent_pid is not None and parent_pid <= 0:
+                parent_pid = None
+
             name = str(item.get("Name") or "").strip()
             path = str(item.get("Path") or "").strip() or None
             window_title = str(item.get("WindowTitle") or "").strip() or None
@@ -284,6 +294,7 @@ class ApplicationManager:
                     name=name,
                     executable_path=path,
                     window_title=window_title,
+                    parent_pid=parent_pid,
                 )
             )
         return records
