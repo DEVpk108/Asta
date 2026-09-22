@@ -183,82 +183,133 @@ class CloseApplicationTool(Tool):
                 )
                 resolved_target = resolve_reference(target)
 
-                discover = getattr(
+                resolver = getattr(
                     self.application_manager,
-                    "discover_running_application_processes",
+                    "resolve_running_process",
                     None,
                 )
-                if callable(discover):
-                    processes = list(discover(resolved_target, limit=64))
-                else:
-                    processes = [self.application_manager.resolve_running_process(resolved_target)]
-
-                if not processes:
+                if not callable(resolver):
                     return _result(
                         request,
                         False,
-                        error=f"No running application matched '{resolved_target}'.",
+                        error="Windows application resolver is unavailable.",
                         start=start,
                     )
 
-                killed_pids = []
-                failures = []
-                for process in processes:
+                # Kill the application's best matching root process once.
+                # taskkill /T already terminates its child process tree; walking
+                # every matching PID causes repeated kills of processes that have
+                # already disappeared and can produce visible console flashes.
+                process = resolver(resolved_target)
+
+                command = [
+                    "taskkill",
+                    "/PID",
+                    str(process.pid),
+                    "/T",
+                    "/F",
+                ]
+                completed = subprocess.run(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=request.timeout_seconds,
+                    check=False,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+
+                if completed.returncode != 0:
+                    detail = (completed.stderr or completed.stdout or "").strip()
+                    if "access is denied" in detail.lower():
+                        detail = "Access is denied."
+                    elif detail:
+                        detail = " ".join(detail.split())
+                        if len(detail) > 240:
+                            detail = detail[:237] + "..."
+                    error = f"Application '{resolved_target}' was not closed."
+                    if detail:
+                        error += f" {detail}"
+                    return _result(
+                        request,
+                        False,
+                        output={
+                            "target": target,
+                            "pid": process.pid,
+                            "process": process.name,
+                            "closed": False,
+                            **(
+                                {"resolved_target": resolved_target}
+                                if resolved_target != target
+                                else {}
+                            ),
+                        },
+                        error=error,
+                        start=start,
+                    )
+
+                # Confirm the root process is gone. If another independent
+                # process remains, resolve it once and give the same process-tree
+                # termination strategy one additional pass. Avoid repeated
+                # full-system scans while the close operation is settling.
+                current = process
+                close_success = False
+                max_passes = 2
+                for pass_index in range(max_passes):
+                    time.sleep(0.20)
+
+                    verifier = getattr(
+                        self.application_manager,
+                        "resolve_running_process",
+                        None,
+                    )
+                    if not callable(verifier):
+                        close_success = True
+                        break
+
+                    try:
+                        remaining = verifier(resolved_target)
+                    except ApplicationResolutionError:
+                        close_success = True
+                        break
+
+                    current = remaining
+                    if pass_index >= max_passes - 1:
+                        close_success = False
+                        break
+
                     completed = subprocess.run(
-                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        [
+                            "taskkill",
+                            "/PID",
+                            str(remaining.pid),
+                            "/T",
+                            "/F",
+                        ],
+                        stdin=subprocess.DEVNULL,
                         capture_output=True,
                         text=True,
                         timeout=request.timeout_seconds,
                         check=False,
+                        creationflags=getattr(
+                            subprocess,
+                            "CREATE_NO_WINDOW",
+                            0,
+                        ),
                     )
-                    if completed.returncode == 0:
-                        killed_pids.append(process.pid)
-                    else:
-                        detail = (completed.stderr or completed.stdout or "").strip()
-                        if "access is denied" in detail.lower():
-                            detail = "Access is denied."
-                        elif detail:
-                            detail = " ".join(detail.split())
-                            if len(detail) > 240:
-                                detail = detail[:237] + "..."
-                        failures.append(
-                            f"PID {process.pid}: {detail or 'taskkill failed.'}"
-                        )
+                    if completed.returncode != 0:
+                        close_success = False
+                        break
 
-                is_running = getattr(
-                    self.application_manager,
-                    "is_application_running",
-                    None,
-                )
-
-                if callable(is_running):
-                    deadline = time.monotonic() + min(
-                        2.0,
-                        max(0.5, request.timeout_seconds),
-                    )
-                    still_running = True
-                    while time.monotonic() < deadline:
-                        still_running = bool(is_running(resolved_target))
-                        if not still_running:
-                            break
-                        time.sleep(0.15)
-                    # A successful post-close verification is authoritative.
-                    close_success = not still_running
-                else:
-                    # Minimal/fake application managers do not provide a
-                    # verifier, so the native taskkill result is authoritative.
-                    close_success = not failures
-                    still_running = not close_success
-
-                first_process = processes[0]
                 output = {
                     "target": target,
-                    "pid": first_process.pid,
-                    "process": first_process.name,
+                    "pid": process.pid,
+                    "process": process.name,
                     "closed": close_success,
                 }
-                if len(killed_pids) > 1:
-                    output["pids"] = list(killed_pids)
+                if current.pid != process.pid:
+                    output["remaining_pid"] = current.pid
+                    output["remaining_process"] = current.name
                 if resolved_target != target:
                     output["resolved_target"] = resolved_target
 
@@ -270,14 +321,14 @@ class CloseApplicationTool(Tool):
                         start=start,
                     )
 
-                detail = "; ".join(failures[:3])
-                if not detail:
-                    detail = "The application process is still running."
                 return _result(
                     request,
                     False,
                     output=output,
-                    error=f"Application '{resolved_target}' was not fully closed. {detail}",
+                    error=(
+                        f"Application '{resolved_target}' was not fully closed. "
+                        f"The process is still running."
+                    ),
                     start=start,
                 )
 
