@@ -125,6 +125,8 @@ class TaskRuntimeModule(Module):
         }:
             return
 
+        self._remember_opened_application(result)
+
         evidence: dict[str, Any] = {
             "type": "tool_result",
             "tool": result.tool,
@@ -191,6 +193,37 @@ class TaskRuntimeModule(Module):
             flush=True,
         )
         self.event_bus.emit("tool_request", request=next_request)
+
+    def _remember_opened_application(self, result: ToolResult) -> None:
+        if not result.success or result.tool not in {
+            "system.open_application",
+            "system.launch_application",
+        }:
+            return
+
+        output = result.output
+        if not isinstance(output, dict):
+            return
+
+        target = str(output.get("target") or "").strip()
+        if not target:
+            return
+
+        manager = getattr(self.kernel, "application_manager", None)
+        remember_opened = getattr(manager, "remember_opened", None)
+        resolve = getattr(manager, "resolve", None)
+        if not callable(remember_opened) or not callable(resolve):
+            return
+
+        try:
+            application = resolve(target)
+        except Exception:
+            return
+
+        try:
+            remember_opened(application)
+        except Exception:
+            return
 
     def on_confirmation_response(self, request_id, approved):
         if not isinstance(request_id, str) or not isinstance(approved, bool):
