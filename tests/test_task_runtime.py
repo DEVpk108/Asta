@@ -172,3 +172,37 @@ def test_task_runtime_controls_compound_plan_execution():
         assert "sequence" not in second.metadata
     finally:
         _shutdown(tasks, ai, tools)
+
+
+def test_task_runtime_remembers_successful_opened_application():
+    from core.applications import ApplicationRecord
+
+    kernel = Kernel()
+    tasks = TaskRuntimeModule(kernel)
+    record = ApplicationRecord(
+        name="Spotify",
+        launch_target=r"shell:AppsFolder\Spotify.App",
+        provider="windows.start_apps",
+        app_id="Spotify.App",
+    )
+
+    original_resolve = kernel.application_manager.resolve
+    original_remember = kernel.application_manager.remember_opened
+    captured = []
+
+    kernel.application_manager.resolve = lambda target: record
+    kernel.application_manager.remember_opened = captured.append
+
+    try:
+        tasks._remember_opened_application(
+            ToolResult(
+                success=True,
+                tool="system.open_application",
+                output={"target": "spotify"},
+            )
+        )
+    finally:
+        kernel.application_manager.resolve = original_resolve
+        kernel.application_manager.remember_opened = original_remember
+
+    assert captured == [record]
