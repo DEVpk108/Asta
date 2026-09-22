@@ -162,6 +162,24 @@ class CloseApplicationTool(Tool):
             },
         )
 
+    @staticmethod
+    def _kill_process_tree(process, timeout):
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        detail = (completed.stderr or completed.stdout or "").strip()
+        lowered = detail.lower()
+        already_gone = (
+            "not found" in lowered
+            or "no running instance" in lowered
+        )
+        return completed.returncode == 0 or already_gone, detail
     def execute(self, request: ToolRequest) -> ToolResult:
         start = time.perf_counter()
         target = _validated_target(request)
@@ -183,137 +201,111 @@ class CloseApplicationTool(Tool):
                 )
                 resolved_target = resolve_reference(target)
 
-                resolver = getattr(
+                root_resolver = getattr(
+                    self.application_manager,
+                    "discover_running_process_roots",
+                    None,
+                )
+                single_resolver = getattr(
                     self.application_manager,
                     "resolve_running_process",
                     None,
                 )
-                if not callable(resolver):
-                    return _result(
-                        request,
-                        False,
-                        error="Windows application resolver is unavailable.",
-                        start=start,
+
+                def resolve_roots():
+                    if callable(root_resolver):
+                        return tuple(root_resolver(resolved_target, limit=64))
+                    if callable(single_resolver):
+                        return (single_resolver(resolved_target),)
+                    raise ApplicationResolutionError(
+                        "Windows application resolver is unavailable."
                     )
 
-                # Kill the application's best matching root process once.
-                # taskkill /T already terminates its child process tree; walking
-                # every matching PID causes repeated kills of processes that have
-                # already disappeared and can produce visible console flashes.
-                process = resolver(resolved_target)
-
-                command = [
-                    "taskkill",
-                    "/PID",
-                    str(process.pid),
-                    "/T",
-                    "/F",
-                ]
-                completed = subprocess.run(
-                    command,
-                    stdin=subprocess.DEVNULL,
-                    capture_output=True,
-                    text=True,
-                    timeout=request.timeout_seconds,
-                    check=False,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-
-                if completed.returncode != 0:
-                    detail = (completed.stderr or completed.stdout or "").strip()
-                    if "access is denied" in detail.lower():
-                        detail = "Access is denied."
-                    elif detail:
-                        detail = " ".join(detail.split())
-                        if len(detail) > 240:
-                            detail = detail[:237] + "..."
-                    error = f"Application '{resolved_target}' was not closed."
-                    if detail:
-                        error += f" {detail}"
-                    return _result(
-                        request,
-                        False,
-                        output={
-                            "target": target,
-                            "pid": process.pid,
-                            "process": process.name,
-                            "closed": False,
-                            **(
-                                {"resolved_target": resolved_target}
-                                if resolved_target != target
-                                else {}
-                            ),
-                        },
-                        error=error,
-                        start=start,
+                roots = resolve_roots()
+                if not roots:
+                    raise ApplicationResolutionError(
+                        f"No running application matched '{resolved_target}'."
                     )
 
-                # Confirm the root process is gone. If another independent
-                # process remains, resolve it once and give the same process-tree
-                # termination strategy one additional pass. Avoid repeated
-                # full-system scans while the close operation is settling.
-                current = process
-                close_success = False
-                max_passes = 2
+                initial_roots = roots
+                killed_pids = []
+                max_passes = 3
+
                 for pass_index in range(max_passes):
+                    if pass_index > 0:
+                        try:
+                            roots = resolve_roots()
+                        except ApplicationResolutionError:
+                            roots = ()
+                        if not roots:
+                            break
+
+                    seen = set()
+                    for process in roots:
+                        if process.pid in seen:
+                            continue
+                        seen.add(process.pid)
+                        closed, detail = self._kill_process_tree(
+                            process, request.timeout_seconds
+                        )
+                        if closed:
+                            killed_pids.append(process.pid)
+                            continue
+
+                        if pass_index >= max_passes - 1:
+                            compact = " ".join(detail.split())
+                            if "access is denied" in compact.lower():
+                                compact = "Access is denied."
+                            elif len(compact) > 240:
+                                compact = compact[:237] + "..."
+                            return _result(
+                                request,
+                                False,
+                                output={
+                                    "target": target,
+                                    "pid": initial_roots[0].pid,
+                                    "process": initial_roots[0].name,
+                                    "root_pids": [p.pid for p in initial_roots],
+                                    "closed": False,
+                                    **({"resolved_target": resolved_target}
+                                       if resolved_target != target else {}),
+                                },
+                                error=(
+                                    f"Application '{resolved_target}' could not be closed."
+                                    + (f" {compact}" if compact else "")
+                                ),
+                                start=start,
+                            )
+
                     time.sleep(0.20)
 
-                    verifier = getattr(
-                        self.application_manager,
-                        "resolve_running_process",
-                        None,
-                    )
-                    if not callable(verifier):
-                        close_success = True
-                        break
-
                     try:
-                        remaining = verifier(resolved_target)
+                        remaining = resolve_roots()
                     except ApplicationResolutionError:
-                        close_success = True
+                        remaining = ()
+                    if not remaining:
                         break
 
-                    current = remaining
-                    if pass_index >= max_passes - 1:
-                        close_success = False
-                        break
-
-                    completed = subprocess.run(
-                        [
-                            "taskkill",
-                            "/PID",
-                            str(remaining.pid),
-                            "/T",
-                            "/F",
-                        ],
-                        stdin=subprocess.DEVNULL,
-                        capture_output=True,
-                        text=True,
-                        timeout=request.timeout_seconds,
-                        check=False,
-                        creationflags=getattr(
-                            subprocess,
-                            "CREATE_NO_WINDOW",
-                            0,
-                        ),
-                    )
-                    if completed.returncode != 0:
-                        close_success = False
-                        break
+                try:
+                    remaining = resolve_roots()
+                except ApplicationResolutionError:
+                    remaining = ()
 
                 output = {
                     "target": target,
-                    "pid": process.pid,
-                    "process": process.name,
-                    "closed": close_success,
+                    "pid": initial_roots[0].pid,
+                    "process": initial_roots[0].name,
+                    "root_pids": [p.pid for p in initial_roots],
+                    "killed_pids": sorted(set(killed_pids)),
+                    "closed": not remaining,
                 }
-                if current.pid != process.pid:
-                    output["remaining_pid"] = current.pid
-                    output["remaining_process"] = current.name
+                if remaining:
+                    output["remaining_pids"] = [p.pid for p in remaining]
+                    output["remaining_processes"] = [p.name for p in remaining]
                 if resolved_target != target:
                     output["resolved_target"] = resolved_target
 
-                if close_success:
+                if not remaining:
                     return _result(
                         request,
                         True,
@@ -327,11 +319,10 @@ class CloseApplicationTool(Tool):
                     output=output,
                     error=(
                         f"Application '{resolved_target}' was not fully closed. "
-                        f"The process is still running."
+                        f"{len(remaining)} process tree(s) are still running."
                     ),
                     start=start,
                 )
-
             if system in {"Linux", "Darwin"}:
                 completed = subprocess.run(
                     ["pkill", "-TERM", "-x", target],
