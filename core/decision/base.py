@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from .contracts import DecisionSnapshot
+from core.contracts.action import ActionDecision
 
 
 class DecisionEngine(ABC):
@@ -14,6 +15,10 @@ class DecisionEngine(ABC):
     def analyze(self, text: str) -> DecisionSnapshot:
         """Analyze one user request and return structured decisions."""
         raise NotImplementedError
+
+    def decide_action(self, text: str, *, applications=None) -> ActionDecision:
+        """Return a structured action decision when the provider supports it."""
+        return ActionDecision(source=self.name)
 
     def warmup(self) -> bool:
         """Load provider resources during A.S.T.A. startup."""
