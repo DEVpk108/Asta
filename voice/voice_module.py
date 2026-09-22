@@ -48,6 +48,8 @@ class VoiceModule(Module):
         self._barge_thread = None
         self._barge_stop = threading.Event()
         self._barge_check_lock = threading.Lock()
+        self._speech_interrupted = threading.Event()
+        self._interrupted_audio = None
         self._listener_ready_reported = False
 
         self.conversation_timeout = 30.0
@@ -58,9 +60,16 @@ class VoiceModule(Module):
         self._tts_guard_until = 0.0
         self._microphone_paused_for_tts = False
 
-        self._barge_window_seconds = 1.4
-        self._barge_check_interval = 0.65
-        self._barge_min_rms = 0.010
+        # Barge-in is a cheap acoustic onset detector. Whisper should never run
+        # while TTS is playing: that made interruption detection slow and could
+        # transcribe A.S.T.A.'s own playback.
+        self._barge_check_interval = 0.04
+        self._barge_window_seconds = 0.16
+        self._barge_min_rms = 0.012
+        self._barge_min_peak = 0.045
+        self._barge_rms_ratio = 1.35
+        self._barge_peak_ratio = 1.20
+        self._barge_confirmation_frames = 2
 
         # A pending high-risk tool approval needs a more sensitive listener
         # because responses like "yes" and "no" are intentionally very short.
@@ -210,7 +219,9 @@ class VoiceModule(Module):
         print("[Voice] Speech interrupt received.", flush=True)
         self._tts_active = False
         self._tts_guard_until = time.monotonic() + 0.05
-        self.microphone.clear_buffer()
+        # Preserve the ring-buffer onset. The command capture will consume it
+        # so the user's first word is not lost after the interrupt.
+        self.microphone.flush()
         self._stop_barge_listener()
 
     def _start_barge_listener(self):
@@ -285,59 +296,69 @@ class VoiceModule(Module):
         return False, ""
 
     def _barge_listen_loop(self):
-        max_samples = int(self.microphone.sample_rate * self._barge_window_seconds)
-        rolling = deque(maxlen=max_samples)
-        next_check = time.monotonic() + self._barge_check_interval
+        sample_rate = self.microphone.sample_rate
+        window_samples = max(1, int(sample_rate * self._barge_window_seconds))
+        seed_samples = max(1, int(sample_rate * 0.35))
+
+        baseline_rms = None
+        baseline_peak = None
+        consecutive_hits = 0
+        next_check = time.monotonic() + 0.10
 
         while self._running and not self._barge_stop.is_set():
-            try:
-                chunk = self.microphone.get_chunk().flatten()
-            except Exception:
-                if self._barge_stop.wait(0.02):
-                    break
-                continue
+            if self._barge_stop.wait(0.02):
+                break
 
-            if chunk is None or len(chunk) == 0:
-                continue
-
-            rolling.extend(np.asarray(chunk, dtype=np.float32))
             now = time.monotonic()
             if now < next_check:
                 continue
             next_check = now + self._barge_check_interval
 
-            if len(rolling) < int(self.microphone.sample_rate * 0.55):
-                continue
-
-            audio = np.asarray(rolling, dtype=np.float32)
-            rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
-            if rms < self._barge_min_rms:
-                continue
-
             try:
-                text = self.recognition.transcribe(audio, strict=True)
-            except Exception as exc:
-                print(
-                    f"[Voice] Barge-in STT error: {type(exc).__name__}: {exc}",
-                    flush=True,
-                )
+                audio = self.microphone.get_buffer()
+            except Exception:
                 continue
 
-            if not text:
+            if audio.size < window_samples:
                 continue
 
-            interrupted, tail = self._extract_interrupt_tail(text)
-            if not interrupted:
+            recent = np.asarray(audio[-window_samples:], dtype=np.float32)
+            rms = float(np.sqrt(np.mean(np.square(recent)))) if recent.size else 0.0
+            peak = float(np.max(np.abs(recent))) if recent.size else 0.0
+
+            if baseline_rms is None:
+                baseline_rms = rms
+                baseline_peak = peak
                 continue
 
-            print(f"[Interrupt] Barge-in detected: {text!r}", flush=True)
-            self.event_bus.emit("speech_interrupt", text=text)
+            baseline_rms = 0.92 * baseline_rms + 0.08 * rms
+            baseline_peak = 0.92 * baseline_peak + 0.08 * peak
 
-            if tail:
-                print(f"[Interrupt] Continuing with: {tail}", flush=True)
-                self._last_interaction = time.monotonic()
-                self.event_bus.emit("user_message", text=tail)
+            rms_gate = max(
+                self._barge_min_rms,
+                baseline_rms * self._barge_rms_ratio,
+            )
+            peak_gate = max(
+                self._barge_min_peak,
+                baseline_peak * self._barge_peak_ratio,
+            )
 
+            speech_onset = rms >= rms_gate and peak >= peak_gate
+            consecutive_hits = consecutive_hits + 1 if speech_onset else 0
+
+            if consecutive_hits < self._barge_confirmation_frames:
+                continue
+
+            seed = np.asarray(audio[-seed_samples:], dtype=np.float32).copy()
+            self._interrupted_audio = seed
+            self._speech_interrupted.set()
+
+            print(
+                f"[Interrupt] Speech onset detected "
+                f"(rms={rms:.4f}, peak={peak:.4f})",
+                flush=True,
+            )
+            self.event_bus.emit("speech_interrupt")
             break
 
     def _on_tool_confirmation_required(self, *args, **kwargs):
@@ -417,10 +438,11 @@ class VoiceModule(Module):
 
         return text
 
-    def _collect_command_audio(self):
+    def _collect_command_audio(self, initial_audio=None):
         if not self._awaiting_confirmation:
             return self.vad.collect_utterance(
                 self.microphone,
+                initial_audio=initial_audio,
                 speech_timeout=3,
             )
 
@@ -439,6 +461,7 @@ class VoiceModule(Module):
             print("[VAD] Listening for short confirmation...", flush=True)
             return self.vad.collect_utterance(
                 self.microphone,
+                initial_audio=initial_audio,
                 speech_timeout=2.0,
             )
         finally:
@@ -487,9 +510,17 @@ class VoiceModule(Module):
                 if not self._can_listen():
                     continue
 
+                interrupted_audio = None
+                if self._speech_interrupted.is_set():
+                    interrupted_audio = self._interrupted_audio
+                    self._interrupted_audio = None
+                    self._speech_interrupted.clear()
+
                 self.microphone.clear_buffer()
 
-                audio = self._collect_command_audio()
+                audio = self._collect_command_audio(
+                    initial_audio=interrupted_audio
+                )
 
                 if not self._running:
                     break
