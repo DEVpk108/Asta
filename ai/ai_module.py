@@ -254,6 +254,7 @@ class AIModule(Module):
         if (
             intent_hint is not None
             and intent_hint.intent == IntentType.COMMAND
+            and getattr(engine, "name", "unknown") != "disabled"
             and callable(getattr(engine, "decide_action", None))
         ):
             try:
