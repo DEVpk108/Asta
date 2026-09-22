@@ -268,8 +268,14 @@ class AIModule(Module):
                     target = intent_hint.entities.get("target")
                     if isinstance(target, str) and target.strip():
                         try:
+                            resolve_reference = getattr(
+                                manager,
+                                "resolve_reference",
+                                lambda value: value,
+                            )
+                            resolved_target = resolve_reference(target)
                             candidates.extend(
-                                manager.discover(target, limit=8)
+                                manager.discover(resolved_target, limit=8)
                             )
                         except Exception:
                             pass
