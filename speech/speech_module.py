@@ -1,4 +1,5 @@
 import queue
+import re
 import threading
 import time
 
@@ -74,6 +75,107 @@ class SpeechModule(Module):
         print("[Speech] Stopped", flush=True)
 
     @staticmethod
+    def _looks_like_code_or_diagnostic(line):
+        value = str(line or "").strip()
+        if not value:
+            return True
+
+        lowered = value.lower()
+        blocked = (
+            "traceback (most recent call last):",
+            "error:",
+            "exception:",
+            "stack trace:",
+            "during handling of the above exception",
+            'file "',
+            "raise ",
+            "assert ",
+            "ps >",
+            ">>>",
+        )
+        if lowered.startswith(blocked):
+            return True
+
+        if "|" in value and value.count("|") >= 2:
+            return True
+
+        code_starts = (
+            "def ", "class ", "import ", "from ", "return ",
+            "const ", "let ", "var ", "function ", "async ",
+            "await ", "if __name__",
+        )
+        if lowered.startswith(code_starts):
+            return True
+
+        if any(token in value for token in ("=>", ":=", "==", "!=", "<=", ">=")):
+            return True
+
+        if value.startswith(("C:\\", "/")) or value.startswith(("http://", "https://")):
+            return True
+
+        punctuation = sum(value.count(ch) for ch in "{}[]();<>=_")
+        letters = sum(ch.isalpha() for ch in value)
+        if letters and punctuation / max(1, letters) > 0.20:
+            return True
+
+        return False
+
+    @classmethod
+    def _prepare_for_speech(cls, text):
+        value = str(text or "")
+        if not value.strip():
+            return ""
+
+        # Remove fenced code and inline-code payloads without changing the
+        # original HUD/chat text.
+        fence = chr(96) * 3
+        tick = chr(96)
+        while fence in value:
+            first = value.find(fence)
+            second = value.find(fence, first + 3)
+            if second < 0:
+                value = value[:first]
+                break
+            value = value[:first] + " " + value[second + 3:]
+        while tick in value:
+            first = value.find(tick)
+            second = value.find(tick, first + 1)
+            if second < 0:
+                value = value[:first]
+                break
+            value = value[:first] + " " + value[second + 1:]
+
+        lines = []
+        for raw_line in value.splitlines():
+            line = raw_line.strip()
+            if not line or cls._looks_like_code_or_diagnostic(line):
+                continue
+
+            line = re.sub(r"^#{1,6}\s*", "", line)
+            line = re.sub(r"^[-*]\s+", "", line)
+            line = re.sub(r"^\d+[.)]\s+", "", line)
+            line = re.sub(r"\[(.*?)\]\([^)]*\)", r"\1", line)
+            lines.append(line)
+
+        value = re.sub(r"\s+", " ", " ".join(lines)).strip()
+        if not value:
+            return ""
+
+        normalized = value.lower().rstrip(".")
+        if normalized in {
+            "here is the code",
+            "here's the code",
+            "the code is",
+            "code",
+            "traceback",
+            "stack trace",
+            "error details",
+        }:
+            return ""
+
+        return value
+
+    @staticmethod
     def _remove_emoji(text):
         """Remove emoji/presentation characters from text before TTS.
 
@@ -121,8 +223,9 @@ class SpeechModule(Module):
         else:
             queued_text = text
 
-        # Keep chat/display text untouched, but prevent emoji/presentation
-        # glyphs from being sent into Kokoro.
+        # Keep the HUD/chat text untouched, but make the spoken channel
+        # prose-only so code blocks and raw diagnostics are not read aloud.
+        queued_text = self._prepare_for_speech(queued_text)
         queued_text = self._remove_emoji(queued_text)
         if not queued_text:
             return
