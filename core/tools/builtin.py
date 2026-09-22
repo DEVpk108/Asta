@@ -176,7 +176,12 @@ class CloseApplicationTool(Tool):
         try:
             system = platform.system()
             if system == "Windows":
-                resolved_target = self.application_manager.resolve_reference(target)
+                resolve_reference = getattr(
+                    self.application_manager,
+                    "resolve_reference",
+                    lambda value: value,
+                )
+                resolved_target = resolve_reference(target)
                 process = self.application_manager.resolve_running_process(resolved_target)
                 completed = subprocess.run(
                     ["taskkill", "/PID", str(process.pid), "/T", "/F"],
