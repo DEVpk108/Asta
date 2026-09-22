@@ -15,7 +15,6 @@
   var particleCountEl = $('particleCount')
   var fpsEl = $('fps')
   var uptimeEl = $('uptime')
-  var muteBtn = $('muteBtn')
   var reassembleBtn = $('reassembleBtn')
   var dockButtons = document.querySelectorAll('.dock button[data-state]')
 
@@ -148,113 +147,6 @@
     bars.push(bar)
   }
 
-  /* ---------- audio ambience ---------- */
-  var audio = { ctx: null, master: null, nodes: [], muted: false, level: 0.16 }
-
-  function startDrone () {
-    if (audio.muted) return
-    try {
-      if (!audio.ctx) {
-        var AC = window.AudioContext || window.webkitAudioContext
-        if (!AC) return
-        audio.ctx = new AC()
-      }
-      if (audio.ctx.state === 'suspended') audio.ctx.resume()
-      if (audio.nodes.length) return
-
-      var ctx = audio.ctx
-      var now = ctx.currentTime
-
-      var master = ctx.createGain()
-      master.gain.setValueAtTime(0.0001, now)
-      master.gain.exponentialRampToValueAtTime(audio.level, now + 1.4)
-      master.connect(ctx.destination)
-
-      var lp = ctx.createBiquadFilter()
-      lp.type = 'lowpass'
-      lp.frequency.value = 380
-      lp.Q.value = 0.7
-      lp.connect(master)
-
-      var lfo = ctx.createOscillator()
-      var lfoGain = ctx.createGain()
-      lfo.frequency.value = 0.13
-      lfoGain.gain.value = 140
-      lfo.connect(lfoGain)
-      lfoGain.connect(lp.frequency)
-      lfo.start()
-
-      var nodes = [master, lp, lfo, lfoGain]
-      var specs = [[55, 'sine', 0.4], [82.5, 'sine', 0.4], [110.55, 'triangle', 0.18]]
-      for (var i = 0; i < specs.length; i++) {
-        var osc = ctx.createOscillator()
-        var g = ctx.createGain()
-        osc.type = specs[i][1]
-        osc.frequency.value = specs[i][0]
-        g.gain.value = specs[i][2]
-        osc.connect(g)
-        g.connect(lp)
-        osc.start()
-        nodes.push(osc, g)
-      }
-
-      var len = Math.floor(ctx.sampleRate * 2)
-      var buf = ctx.createBuffer(1, len, ctx.sampleRate)
-      var chan = buf.getChannelData(0)
-      for (var n = 0; n < len; n++) chan[n] = (Math.random() * 2 - 1) * 0.6
-      var noise = ctx.createBufferSource()
-      noise.buffer = buf
-      noise.loop = true
-      var bp = ctx.createBiquadFilter()
-      bp.type = 'bandpass'
-      bp.frequency.value = 600
-      bp.Q.value = 0.5
-      var ng = ctx.createGain()
-      ng.gain.value = 0.15
-      noise.connect(bp)
-      bp.connect(ng)
-      ng.connect(master)
-      noise.start()
-      nodes.push(noise, bp, ng)
-
-      audio.master = master
-      audio.nodes = nodes
-    } catch (e) { /* audio unavailable */ }
-  }
-
-  function stopDrone (immediate) {
-    if (!audio.ctx || !audio.nodes.length) return
-    try {
-      if (audio.master) {
-        var now = audio.ctx.currentTime
-        audio.master.gain.cancelScheduledValues(now)
-        audio.master.gain.setValueAtTime(Math.max(0.0001, audio.master.gain.value), now)
-        audio.master.gain.exponentialRampToValueAtTime(0.0001, now + (immediate ? 0.05 : 0.7))
-      }
-    } catch (e) { /* ignore */ }
-    var nodes = audio.nodes
-    audio.nodes = []
-    audio.master = null
-    setTimeout(function () {
-      for (var i = 0; i < nodes.length; i++) {
-        try { if (nodes[i].stop) nodes[i].stop() } catch (e) { /* ignore */ }
-        try { nodes[i].disconnect() } catch (e) { /* ignore */ }
-      }
-    }, immediate ? 80 : 900)
-  }
-
-  function toggleMute () {
-    audio.muted = !audio.muted
-    if (audio.muted) {
-      stopDrone(false)
-      muteBtn.textContent = 'AMBIENCE OFF'
-    } else {
-      muteBtn.textContent = 'AMBIENCE ON'
-      startDrone()
-    }
-  }
-  if (muteBtn) muteBtn.addEventListener('click', toggleMute)
-
   function speakReady () {
     if (audio.muted) return
     try {
@@ -273,7 +165,6 @@
     assembled = false
     progress = 0
     assembleStart = performance.now()
-    if (!audio.muted && !audio.nodes.length) startDrone()
   }
 
   window.AstaHUD = window.AstaHUD || {}
@@ -445,9 +336,7 @@
     } else if (k === 'f') {
       e.preventDefault()
       toggleFullscreen()
-    } else if (k === 'm') {
-      e.preventDefault()
-      toggleMute()
+    }
     }
   })
 
