@@ -63,3 +63,72 @@ def test_close_application_reports_missing_running_application(monkeypatch):
 
     assert result.success is False
     assert result.error == "No running application matched 'not running'."
+
+
+def test_close_application_resolves_recent_reference(monkeypatch):
+    monkeypatch.setattr(builtin.platform, "system", lambda: "Windows")
+    calls = []
+
+    class FakeManager:
+        def resolve_reference(self, target):
+            assert target == "it"
+            return "Spotify"
+
+        def resolve_running_process(self, target):
+            assert target == "Spotify"
+            return RunningProcessRecord(
+                pid=4242,
+                name="Spotify",
+                executable_path=r"C:\Program Files\Spotify\Spotify.exe",
+                window_title="Spotify",
+            )
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(builtin.subprocess, "run", fake_run)
+
+    result = CloseApplicationTool(FakeManager()).execute(
+        make_request("it")
+    )
+
+    assert result.success is True
+    assert result.output["target"] == "it"
+    assert result.output["resolved_target"] == "Spotify"
+    assert calls == [["taskkill", "/PID", "4242", "/T", "/F"]]
+
+
+def test_close_application_compacts_access_denied_errors(monkeypatch):
+    monkeypatch.setattr(builtin.platform, "system", lambda: "Windows")
+
+    class FakeManager:
+        def resolve_reference(self, target):
+            return target
+
+        def resolve_running_process(self, target):
+            return RunningProcessRecord(
+                pid=4242,
+                name="Spotify",
+            )
+
+    long_error = "\n".join(
+        [f"ERROR: The process with PID {pid} could not be terminated.\nReason: Access is denied." for pid in range(1000, 1050)]
+    )
+
+    def fake_run(command, **kwargs):
+        return types.SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=long_error,
+        )
+
+    monkeypatch.setattr(builtin.subprocess, "run", fake_run)
+
+    result = CloseApplicationTool(FakeManager()).execute(
+        make_request("spotify")
+    )
+
+    assert result.success is False
+    assert result.error.endswith("Access is denied.")
+    assert len(result.error) < 160
