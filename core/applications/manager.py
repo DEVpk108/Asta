@@ -150,6 +150,21 @@ class ApplicationManager:
         ranked.sort(key=lambda item: (-item[0], item[1].pid))
         return tuple(process for _, process in ranked[: max(1, int(limit))])
 
+    def discover_running_application_processes(
+        self,
+        query: str,
+        *,
+        limit: int = 64,
+    ):
+        """Return a broader set of running processes matching an application."""
+        return self.discover_running_processes(query, limit=max(1, int(limit)))
+
+    def is_application_running(self, query: str) -> bool:
+        try:
+            return bool(self.discover_running_application_processes(query, limit=64))
+        except ApplicationResolutionError:
+            return False
+
     def resolve_running_process(self, query: str) -> RunningProcessRecord:
         query = self.resolve_reference(str(query).strip())
         if not query:
