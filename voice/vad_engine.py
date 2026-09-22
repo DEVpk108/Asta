@@ -1,3 +1,4 @@
+import os
 import queue
 import time
 from collections import deque
@@ -17,13 +18,20 @@ class VADEngine:
         sample_rate=16000,
         min_speech_duration=0.30,
         threshold=0.55,
-        silence_ms=1100,
+        silence_ms=None,
         speech_pad_ms=350,
         min_rms=0.012,
         min_peak=0.04,
         start_chunk_rms=0.005,
         pre_roll_ms=450,
     ):
+
+        if silence_ms is None:
+            try:
+                silence_ms = int(os.getenv("ASTA_VAD_SILENCE_MS", "700"))
+            except ValueError:
+                silence_ms = 700
+        silence_ms = max(250, min(2000, int(silence_ms)))
 
         self.sample_rate = sample_rate
         self.min_speech_duration = min_speech_duration
