@@ -261,12 +261,36 @@ class AIModule(Module):
                 candidates = []
                 manager = getattr(self.kernel, "application_manager", None)
                 if manager is not None:
-                    recent = getattr(manager, "last_opened_application", None)
-                    if recent is not None:
-                        candidates.append(recent)
-
                     target = intent_hint.entities.get("target")
-                    if isinstance(target, str) and target.strip():
+                    normalized_target = (
+                        str(target).strip().lower()
+                        if isinstance(target, str)
+                        else ""
+                    )
+                    reference_targets = {
+                        "it",
+                        "this",
+                        "that",
+                        "this app",
+                        "that app",
+                        "the app",
+                        "the application",
+                    }
+
+                    # Only use the recent application when the user's target
+                    # is explicitly a reference such as "it". Never offer a
+                    # recent app as a fallback for an unrelated explicit name;
+                    # otherwise Laya can be forced to choose Spotify for
+                    # commands such as "close Asta HUD".
+                    if normalized_target in reference_targets:
+                        recent = getattr(
+                            manager,
+                            "last_opened_application",
+                            None,
+                        )
+                        if recent is not None:
+                            candidates.append(recent)
+                    elif isinstance(target, str) and target.strip():
                         try:
                             resolve_reference = getattr(
                                 manager,
