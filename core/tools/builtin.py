@@ -295,10 +295,11 @@ class CloseApplicationTool(Tool):
                     "target": target,
                     "pid": initial_roots[0].pid,
                     "process": initial_roots[0].name,
-                    "root_pids": [p.pid for p in initial_roots],
-                    "killed_pids": sorted(set(killed_pids)),
                     "closed": not remaining,
                 }
+                if len(initial_roots) > 1:
+                    output["root_pids"] = [p.pid for p in initial_roots]
+                    output["killed_pids"] = sorted(set(killed_pids))
                 if remaining:
                     output["remaining_pids"] = [p.pid for p in remaining]
                     output["remaining_processes"] = [p.name for p in remaining]
