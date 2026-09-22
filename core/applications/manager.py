@@ -48,6 +48,7 @@ class ApplicationManager:
         self._applications: tuple[ApplicationRecord, ...] = ()
         self._last_refresh = 0.0
         self._last_error: str | None = None
+        self._last_opened_application: ApplicationRecord | None = None
 
     def refresh(self):
         if os.name != "nt":
@@ -123,7 +124,7 @@ class ApplicationManager:
         if not query or not str(query).strip():
             return tuple(processes[: max(1, int(limit))])
 
-        query = str(query).strip()
+        query = self.resolve_reference(str(query).strip())
         comparison_names = [query]
         try:
             comparison_names.append(self.resolve(query).name)
@@ -150,7 +151,7 @@ class ApplicationManager:
         return tuple(process for _, process in ranked[: max(1, int(limit))])
 
     def resolve_running_process(self, query: str) -> RunningProcessRecord:
-        query = str(query).strip()
+        query = self.resolve_reference(str(query).strip())
         if not query:
             raise ApplicationResolutionError("Application name cannot be empty.")
 
@@ -173,7 +174,7 @@ class ApplicationManager:
             ),
             default=0.0,
         )
-        if top < 0.60:
+        if top < 0.80:
             raise ApplicationResolutionError(
                 f"No running application matched '{query}' confidently."
             )
@@ -230,6 +231,27 @@ class ApplicationManager:
     @property
     def last_error(self):
         return self._last_error
+
+    @property
+    def last_opened_application(self) -> ApplicationRecord | None:
+        return self._last_opened_application
+
+    def remember_opened(self, application: ApplicationRecord) -> None:
+        if not isinstance(application, ApplicationRecord):
+            raise TypeError("application must be an ApplicationRecord")
+        self._last_opened_application = application
+
+    def resolve_reference(self, query: str) -> str:
+        value = str(query).strip()
+        normalized = normalize_application_name(value)
+        if normalized in {"it", "this", "that", "the app", "the application"}:
+            application = self._last_opened_application
+            if application is None:
+                raise ApplicationResolutionError(
+                    f"No recent application reference is available for '{value}'."
+                )
+            return application.name
+        return value
 
     def _discover_start_apps(self):
         output = self._powershell_runner(
