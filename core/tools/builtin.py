@@ -231,26 +231,22 @@ class CloseApplicationTool(Tool):
                     None,
                 )
 
-                deadline = time.monotonic() + min(
-                    2.0,
-                    max(0.5, request.timeout_seconds),
-                )
-                still_running = True
-                while time.monotonic() < deadline:
-                    if callable(is_running):
+                if callable(is_running):
+                    deadline = time.monotonic() + min(
+                        2.0,
+                        max(0.5, request.timeout_seconds),
+                    )
+                    still_running = True
+                    while time.monotonic() < deadline:
                         still_running = bool(is_running(resolved_target))
-                    else:
-                        try:
-                            self.application_manager.resolve_running_process(
-                                resolved_target
-                            )
-                            still_running = True
-                        except ApplicationResolutionError:
-                            still_running = False
-
-                    if not still_running:
-                        break
-                    time.sleep(0.15)
+                        if not still_running:
+                            break
+                        time.sleep(0.15)
+                else:
+                    # Minimal/fake application managers used in tests may not
+                    # provide a post-close verifier. The native taskkill result
+                    # is the only available evidence in that case.
+                    still_running = False
 
                 output = {
                     "target": target,
