@@ -101,3 +101,31 @@ def test_grounded_prompt_contains_only_registered_capabilities():
 
     assert "REGISTERED CAPABILITIES:" in ai.engine.system_prompt
     assert "system.open_application" not in ai.engine.system_prompt
+
+
+def test_tool_failure_is_concise_for_close_application():
+    from core.contracts import ToolResult
+    result = ToolResult(
+        success=False,
+        tool="system.close_application",
+        output={"target": "Spotify", "closed": False},
+        error="Application 'Spotify' was not fully closed. The process is still running.",
+    )
+
+    assert AIModule._format_tool_failure(result) == "I couldn't close Spotify."
+
+
+def test_tool_failure_does_not_speak_raw_diagnostics():
+    from core.contracts import ToolResult
+    result = ToolResult(
+        success=False,
+        tool="system.open_application",
+        output={"target": "VS Code"},
+        error='Traceback (most recent call last): File "main.py", line 10',
+    )
+
+    spoken = AIModule._format_tool_failure(result)
+
+    assert spoken == "I couldn't open VS Code."
+    assert "Traceback" not in spoken
+    assert "main.py" not in spoken
