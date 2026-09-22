@@ -315,7 +315,7 @@ class VoiceModule(Module):
                 continue
 
             try:
-                text = self.recognition.transcribe(audio)
+                text = self.recognition.transcribe(audio, strict=True)
             except Exception as exc:
                 print(
                     f"[Voice] Barge-in STT error: {type(exc).__name__}: {exc}",
