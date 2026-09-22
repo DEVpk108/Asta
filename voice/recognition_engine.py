@@ -40,7 +40,13 @@ class RecognitionEngine:
 
         self.device = device
         self.model_name = model_name
-        self.beam_size = beam_size
+        try:
+            configured_beam_size = int(
+                os.getenv("ASTA_STT_BEAM_SIZE", str(beam_size))
+            )
+        except ValueError:
+            configured_beam_size = int(beam_size)
+        self.beam_size = max(1, min(10, configured_beam_size))
         self.language = language
         self.backend = (
             (backend or os.getenv("ASTA_STT_BACKEND", "whisper"))
@@ -79,7 +85,11 @@ class RecognitionEngine:
                 flush=True,
             )
 
-        print(f"[STT] Backend: {self.backend}", flush=True)
+        print(
+            f"[STT] Backend: {self.backend} "
+            f"(beam_size={self.beam_size})",
+            flush=True,
+        )
 
     def _load_indic(self):
         if self._indic is not None:
