@@ -239,7 +239,6 @@ function buildMenu () {
       { label: 'Speaking', accelerator: 'CmdOrCtrl+4', click: () => send('state:speaking') },
       { type: 'separator' },
       { label: 'Re-assemble', accelerator: 'CmdOrCtrl+R', click: () => send('reassemble') },
-      { label: 'Mute ambience', accelerator: 'CmdOrCtrl+M', click: () => send('mute') },
       { type: 'separator' },
       isMac ? { role: 'close' } : { role: 'quit' }
     ]
