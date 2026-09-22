@@ -74,13 +74,13 @@ class RecognitionEngine:
         if self.backend in {"whisper", "hybrid", "indic"}:
             start = time.perf_counter()
             self.model = WhisperModel(
-                model_size_or_path=model_name,
+                model_size_or_path=self.model_name,
                 device=device,
                 compute_type=compute_type,
             )
             print(
                 f"[STT/Whisper] Ready "
-                f"(model={model_name}, device={device}, "
+                f"(model={self.model_name}, device={device}, "
                 f"load={time.perf_counter() - start:.3f}s)",
                 flush=True,
             )
