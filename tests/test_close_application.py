@@ -192,8 +192,9 @@ def test_close_application_fails_when_process_survives_taskkill(monkeypatch):
     assert result.success is False
     assert result.output["closed"] is False
     assert "still running" in result.error.lower()
+    # A persistent PID is not re-killed. The close logic retries only
+    # newly discovered independent roots.
     assert calls == [
-        ["taskkill", "/PID", "4242", "/T", "/F"],
         ["taskkill", "/PID", "4242", "/T", "/F"],
     ]
 
