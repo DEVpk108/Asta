@@ -182,58 +182,99 @@ class CloseApplicationTool(Tool):
                     lambda value: value,
                 )
                 resolved_target = resolve_reference(target)
-                process = self.application_manager.resolve_running_process(resolved_target)
-                completed = subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    capture_output=True,
-                    text=True,
-                    timeout=request.timeout_seconds,
-                    check=False,
-                )
 
-                if completed.returncode != 0:
-                    detail = (completed.stderr or completed.stdout or "").strip()
-                    if "access is denied" in detail.lower():
-                        detail = "Access is denied."
-                    elif detail:
-                        detail = " ".join(detail.split())
-                        if len(detail) > 320:
-                            detail = detail[:317] + "..."
-                    error = f"Application '{target}' was not closed."
-                    if detail:
-                        error += f" {detail}"
+                discover = getattr(
+                    self.application_manager,
+                    "discover_running_application_processes",
+                    None,
+                )
+                if callable(discover):
+                    processes = list(discover(resolved_target, limit=64))
+                else:
+                    processes = [self.application_manager.resolve_running_process(resolved_target)]
+
+                if not processes:
                     return _result(
                         request,
                         False,
-                        output={
-                            "target": target,
-                            "pid": process.pid,
-                            "process": process.name,
-                            "closed": False,
-                            **(
-                                {"resolved_target": resolved_target}
-                                if resolved_target != target
-                                else {}
-                            ),
-                        },
-                        error=error,
+                        error=f"No running application matched '{resolved_target}'.",
                         start=start,
                     )
 
+                killed_pids = []
+                failures = []
+                for process in processes:
+                    completed = subprocess.run(
+                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        capture_output=True,
+                        text=True,
+                        timeout=request.timeout_seconds,
+                        check=False,
+                    )
+                    if completed.returncode == 0:
+                        killed_pids.append(process.pid)
+                    else:
+                        detail = (completed.stderr or completed.stdout or "").strip()
+                        if "access is denied" in detail.lower():
+                            detail = "Access is denied."
+                        elif detail:
+                            detail = " ".join(detail.split())
+                            if len(detail) > 240:
+                                detail = detail[:237] + "..."
+                        failures.append(
+                            f"PID {process.pid}: {detail or 'taskkill failed.'}"
+                        )
+
+                is_running = getattr(
+                    self.application_manager,
+                    "is_application_running",
+                    None,
+                )
+
+                deadline = time.monotonic() + min(
+                    2.0,
+                    max(0.5, request.timeout_seconds),
+                )
+                still_running = True
+                while time.monotonic() < deadline:
+                    if callable(is_running):
+                        still_running = bool(is_running(resolved_target))
+                    else:
+                        try:
+                            self.application_manager.resolve_running_process(
+                                resolved_target
+                            )
+                            still_running = True
+                        except ApplicationResolutionError:
+                            still_running = False
+
+                    if not still_running:
+                        break
+                    time.sleep(0.15)
+
+                output = {
+                    "target": target,
+                    "resolved_target": resolved_target,
+                    "pids": killed_pids,
+                    "closed": not still_running,
+                }
+
+                if not still_running:
+                    return _result(
+                        request,
+                        True,
+                        output=output,
+                        start=start,
+                    )
+
+                detail = "; ".join(failures[:3])
+                if not detail:
+                    detail = "The application process is still running."
                 return _result(
                     request,
-                    True,
-                    output={
-                        "target": target,
-                        "pid": process.pid,
-                        "process": process.name,
-                        "closed": True,
-                        **(
-                            {"resolved_target": resolved_target}
-                            if resolved_target != target
-                            else {}
-                        ),
-                    },
+                    False,
+                    output=output,
+                    error=f"Application '{resolved_target}' was not fully closed. {detail}",
                     start=start,
                 )
 
