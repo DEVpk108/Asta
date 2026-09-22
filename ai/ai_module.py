@@ -251,6 +251,25 @@ class AIModule(Module):
         # Computer commands use the action-oriented System-1 path. The
         # deterministic intent router remains an execution safety boundary and
         # also provides candidate application names to Laya.
+        #
+        # High-confidence direct commands already have a deterministic action
+        # and target, so do not make Laya inference a synchronous latency tax.
+        # Laya stays on the path for compound, ambiguous, or non-rule commands
+        # where its structured action selection is actually useful.
+        if (
+            intent_hint is not None
+            and intent_hint.intent == IntentType.COMMAND
+            and intent_hint.classifier == "rules"
+            and intent_hint.confidence >= 0.95
+            and "commands" not in intent_hint.entities
+        ):
+            print(
+                "[AI] System 1 fast-path: deterministic direct command; "
+                "Laya not blocking execution.",
+                flush=True,
+            )
+            return
+
         if (
             intent_hint is not None
             and intent_hint.intent == IntentType.COMMAND
