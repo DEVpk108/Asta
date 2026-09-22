@@ -19,13 +19,20 @@ def test_close_application_uses_discovered_process_pid(monkeypatch):
     calls = []
 
     class FakeManager:
+        checks = 0
+
         def resolve_running_process(self, target):
             assert target == "free download manager"
-            return RunningProcessRecord(
-                pid=4242,
-                name="fdm",
-                executable_path=r"C:\Program Files\Free Download Manager\fdm.exe",
-                window_title="Free Download Manager",
+            self.checks += 1
+            if self.checks == 1:
+                return RunningProcessRecord(
+                    pid=4242,
+                    name="fdm",
+                    executable_path=r"C:\Program Files\Free Download Manager\fdm.exe",
+                    window_title="Free Download Manager",
+                )
+            raise builtin.ApplicationResolutionError(
+                f"No running application matched '{target}'."
             )
 
     def fake_run(command, **kwargs):
@@ -76,21 +83,28 @@ def test_close_application_resolves_recent_reference(monkeypatch):
     calls = []
 
     class FakeManager:
+        checks = 0
+
         def resolve_reference(self, target):
             assert target == "it"
             return "Spotify"
 
         def resolve_running_process(self, target):
             assert target == "Spotify"
-            return RunningProcessRecord(
-                pid=4242,
-                name="Spotify",
-                executable_path=r"C:\Program Files\Spotify\Spotify.exe",
-                window_title="Spotify",
+            self.checks += 1
+            if self.checks == 1:
+                return RunningProcessRecord(
+                    pid=4242,
+                    name="Spotify",
+                    executable_path=r"C:\Program Files\Spotify\Spotify.exe",
+                    window_title="Spotify",
+                )
+            raise builtin.ApplicationResolutionError(
+                f"No running application matched '{target}'."
             )
 
     def fake_run(command, **kwargs):
-        calls.append(command)
+        calls.append((command, kwargs))
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(builtin.subprocess, "run", fake_run)
@@ -102,7 +116,13 @@ def test_close_application_resolves_recent_reference(monkeypatch):
     assert result.success is True
     assert result.output["target"] == "it"
     assert result.output["resolved_target"] == "Spotify"
-    assert calls == [["taskkill", "/PID", "4242", "/T", "/F"]]
+    assert calls[0][0] == ["taskkill", "/PID", "4242", "/T", "/F"]
+    assert calls[0][1]["stdin"] is builtin.subprocess.DEVNULL
+    assert calls[0][1]["creationflags"] == getattr(
+        builtin.subprocess,
+        "CREATE_NO_WINDOW",
+        0,
+    )
 
 
 def test_close_application_compacts_access_denied_errors(monkeypatch):
@@ -176,36 +196,3 @@ def test_close_application_fails_when_process_survives_taskkill(monkeypatch):
         ["taskkill", "/PID", "4242", "/T", "/F"],
         ["taskkill", "/PID", "4242", "/T", "/F"],
     ]
-
-
-def test_close_application_succeeds_when_verification_confirms_exit(monkeypatch):
-    monkeypatch.setattr(builtin.platform, "system", lambda: "Windows")
-
-    class FakeManager:
-        checks = 0
-
-        def resolve_reference(self, target):
-            return target
-
-        def resolve_running_process(self, target):
-            self.checks += 1
-            if self.checks == 1:
-                return RunningProcessRecord(
-                    pid=4242,
-                    name="Spotify",
-                )
-            raise builtin.ApplicationResolutionError(
-                "No running application matched 'spotify'."
-            )
-
-    def fake_run(command, **kwargs):
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(builtin.subprocess, "run", fake_run)
-
-    result = CloseApplicationTool(FakeManager()).execute(
-        make_request("spotify")
-    )
-
-    assert result.success is True
-    assert result.output["closed"] is True
