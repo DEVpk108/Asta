@@ -244,7 +244,15 @@ class ApplicationManager:
     def resolve_reference(self, query: str) -> str:
         value = str(query).strip()
         normalized = normalize_application_name(value)
-        if normalized in {"it", "this", "that", "the app", "the application"}:
+        if normalized in {
+            "it",
+            "this",
+            "that",
+            "this app",
+            "that app",
+            "the app",
+            "the application",
+        }:
             application = self._last_opened_application
             if application is None:
                 raise ApplicationResolutionError(
