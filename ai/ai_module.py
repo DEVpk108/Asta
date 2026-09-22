@@ -669,8 +669,34 @@ class AIModule(Module):
 
     @staticmethod
     def _format_tool_failure(result: ToolResult) -> str:
-        if result.error:
-            return f"I couldn't complete that action: {result.error}"
+        output = result.output if isinstance(result.output, dict) else {}
+
+        if result.tool == "system.close_application":
+            target = output.get("target") or output.get("resolved_target")
+            if target:
+                return f"I couldn't close {target}."
+            return "I couldn't close the application."
+
+        if result.tool in {
+            "system.open_application",
+            "system.launch_application",
+        }:
+            target = output.get("target") or output.get("resolved_target")
+            if target:
+                return f"I couldn't open {target}."
+            return "I couldn't open the application."
+
+        if result.tool == "system.start_process":
+            target = output.get("target")
+            return f"I couldn't start {target}." if target else "I couldn't start the process."
+
+        if result.tool == "system.stop_process":
+            return "I couldn't stop that process."
+
+        if result.tool in {"vision.screenshot", "vision.open_screenshot"}:
+            return "I couldn't complete the screenshot action."
+
+        # Keep internal diagnostics in logs/HUD metadata, not in spoken audio.
         return "I couldn't complete that action."
 
     def _generate_response(self, text, runtime_context=None):
