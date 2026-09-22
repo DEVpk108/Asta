@@ -171,3 +171,80 @@ def test_running_process_discovery_accepts_compact_application_name(monkeypatch)
 
     assert process.pid == 3131
     assert process.name == "Code"
+
+def test_running_process_roots_group_multiple_independent_trees(monkeypatch):
+    monkeypatch.setattr(manager_module.os, "name", "nt")
+    start_apps = json.dumps(
+        {"Name": "Sample App", "AppID": "Sample.App"}
+    )
+    running_processes = json.dumps(
+        [
+            {
+                "ProcessId": 100,
+                "ParentProcessId": 500,
+                "Name": "sample",
+                "Path": r"C:\Program Files\Sample\sample.exe",
+                "WindowTitle": "Sample App",
+            },
+            {
+                "ProcessId": 101,
+                "ParentProcessId": 100,
+                "Name": "sample-helper",
+                "Path": r"C:\Program Files\Sample\sample-helper.exe",
+                "WindowTitle": "",
+            },
+            {
+                "ProcessId": 200,
+                "ParentProcessId": 700,
+                "Name": "sample",
+                "Path": r"C:\Program Files\Sample\sample.exe",
+                "WindowTitle": "Sample App",
+            },
+            {
+                "ProcessId": 201,
+                "ParentProcessId": 200,
+                "Name": "sample-helper",
+                "Path": r"C:\Program Files\Sample\sample-helper.exe",
+                "WindowTitle": "",
+            },
+            {
+                "ProcessId": 900,
+                "ParentProcessId": 800,
+                "Name": "other",
+                "Path": r"C:\Program Files\Other\other.exe",
+                "WindowTitle": "Other",
+            },
+        ]
+    )
+
+    def runner(command):
+        if "Get-StartApps" in command:
+            return start_apps
+        return running_processes
+
+    manager = ApplicationManager(powershell_runner=runner)
+    roots = manager.discover_running_process_roots("sample app")
+
+    assert [process.pid for process in roots] == [100, 200]
+    assert [process.parent_pid for process in roots] == [500, 700]
+
+
+def test_running_process_record_preserves_parent_pid(monkeypatch):
+    monkeypatch.setattr(manager_module.os, "name", "nt")
+    payload = json.dumps(
+        {
+            "ProcessId": 4242,
+            "ParentProcessId": 1111,
+            "Name": "fdm",
+            "Path": r"C:\Program Files\Free Download Manager\fdm.exe",
+            "WindowTitle": "Free Download Manager",
+        }
+    )
+
+    manager = ApplicationManager(
+        powershell_runner=lambda command: payload
+    )
+    process = manager.resolve_running_process("free download manager")
+
+    assert process.pid == 4242
+    assert process.parent_pid == 1111
