@@ -199,3 +199,75 @@ def test_laya_engine_shutdown_unloads_router(monkeypatch):
     assert engine._router is None
     assert engine.warmed is False
 
+
+
+def test_laya_engine_decide_action_selects_structured_app_action(monkeypatch):
+    class FakeRouter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def predict(self, state, questions, model=None):
+            assert state == {
+                "user_request": "close it",
+                "applications": ["Spotify", "Visual Studio Code"],
+            }
+            assert "action" in questions
+            assert "target_app" in questions
+            assert "command_complete" in questions
+            assert model == "multilingual"
+            return {
+                "model": "laya-multilingual",
+                "answers": {
+                    "action": {
+                        "type": "choice",
+                        "choice": "close_app",
+                        "confidence": 0.96,
+                    },
+                    "addressed": {
+                        "type": "noul",
+                        "noul": 0.99,
+                        "confidence": 0.99,
+                    },
+                    "compound": {
+                        "type": "noul",
+                        "noul": 0.04,
+                        "confidence": 0.96,
+                    },
+                    "command_complete": {
+                        "type": "noul",
+                        "noul": 0.98,
+                        "confidence": 0.99,
+                    },
+                    "target_app": {
+                        "type": "choice",
+                        "choice": "Spotify",
+                        "confidence": 0.94,
+                    },
+                },
+                "routing": {
+                    "model": "multilingual",
+                    "reason": "explicit model='multilingual'",
+                },
+            }
+
+    monkeypatch.setitem(
+        sys.modules,
+        "laya",
+        types.SimpleNamespace(Router=FakeRouter),
+    )
+
+    engine = LayaDecisionEngine(model="multilingual")
+    decision = engine.decide_action(
+        "close it",
+        applications=["Spotify", "Visual Studio Code"],
+    )
+
+    assert decision.action.value == "close_app"
+    assert decision.arguments == {"target_app": "Spotify"}
+    assert decision.confidence == pytest.approx(0.94)
+    assert decision.addressed == pytest.approx(0.99)
+    assert decision.command_complete is True
+    assert decision.compound is False
+    assert decision.source == "laya"
+    assert decision.model == "multilingual"
+    assert decision.latency_ms is not None
