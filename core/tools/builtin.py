@@ -248,12 +248,17 @@ class CloseApplicationTool(Tool):
                     # is the only available evidence in that case.
                     still_running = False
 
+                first_process = processes[0]
                 output = {
                     "target": target,
-                    "resolved_target": resolved_target,
-                    "pids": killed_pids,
+                    "pid": first_process.pid,
+                    "process": first_process.name,
                     "closed": not still_running,
                 }
+                if len(killed_pids) > 1:
+                    output["pids"] = list(killed_pids)
+                if resolved_target != target:
+                    output["resolved_target"] = resolved_target
 
                 if not still_running:
                     return _result(
