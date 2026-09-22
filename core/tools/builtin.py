@@ -239,7 +239,7 @@ class CloseApplicationTool(Tool):
                     still_running = True
                     while time.monotonic() < deadline:
                         still_running = bool(is_running(resolved_target))
-                        if close_success:
+                        if not still_running:
                             break
                         time.sleep(0.15)
                     # A successful post-close verification is authoritative.
@@ -262,7 +262,7 @@ class CloseApplicationTool(Tool):
                 if resolved_target != target:
                     output["resolved_target"] = resolved_target
 
-                if not still_running:
+                if close_success:
                     return _result(
                         request,
                         True,
