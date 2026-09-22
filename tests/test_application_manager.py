@@ -190,7 +190,7 @@ def test_running_process_roots_group_multiple_independent_trees(monkeypatch):
                 "ProcessId": 101,
                 "ParentProcessId": 100,
                 "Name": "sample-helper",
-                "Path": r"C:\Program Files\Sample\sample-helper.exe",
+                "Path": r"C:\Program Files\Sample App\sample-helper.exe",
                 "WindowTitle": "",
             },
             {
