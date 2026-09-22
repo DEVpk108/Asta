@@ -4,9 +4,12 @@ import os
 import time
 from typing import Any
 
+from core.contracts.action import ActionDecision, ActionType
+
 from .base import DecisionEngine
 from .contracts import DecisionSnapshot
 from .laya_schemas import ASTA_DECISION_QUESTIONS
+from .laya_action_schemas import build_action_questions
 
 
 class LayaDecisionEngine(DecisionEngine):
@@ -97,6 +100,100 @@ class LayaDecisionEngine(DecisionEngine):
                 flush=True,
             )
             return False
+
+
+    def decide_action(
+        self,
+        text: str,
+        *,
+        applications=None,
+    ) -> ActionDecision:
+        """Select a computer action from a finite structured action space."""
+        value = str(text or "").strip()
+        if not value:
+            return ActionDecision(source=self.name, model=self.model)
+
+        names = []
+        for application in applications or ():
+            name = getattr(application, "name", application)
+            name = str(name or "").strip()
+            if name and name not in names:
+                names.append(name)
+
+        names = names[:128]
+        questions = build_action_questions(names)
+
+        started = time.perf_counter()
+        result = self._get_router().predict(
+            {"user_request": value, "applications": names},
+            questions,
+            model=self.model,
+        )
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+
+        answers = result.get("answers") or {}
+        routing = result.get("routing") or {}
+        model = routing.get("model") or result.get("model") or self.model
+
+        def choice(question_id: str, default=None):
+            answer = answers.get(question_id) or {}
+            value = answer.get("choice")
+            return value if value is not None else default
+
+        def probability(question_id: str) -> float:
+            answer = answers.get(question_id) or {}
+            try:
+                return float(answer.get("noul", 0.0))
+            except (TypeError, ValueError):
+                return 0.0
+
+        action_value = str(choice("action", "none") or "none").strip().lower()
+        try:
+            action = ActionType(action_value)
+        except ValueError:
+            action = ActionType.NONE
+
+        target_app = choice("target_app")
+        arguments = {}
+        if target_app and target_app != "none":
+            arguments["target_app"] = str(target_app)
+
+        addressed = probability("addressed")
+        complete = probability("command_complete") >= 0.50
+        compound = probability("compound") >= 0.50
+
+        action_answer = answers.get("action") or {}
+        try:
+            confidence = float(action_answer.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+
+        if target_app and target_app != "none":
+            target_answer = answers.get("target_app") or {}
+            try:
+                confidence = min(
+                    confidence,
+                    float(target_answer.get("confidence", confidence)),
+                )
+            except (TypeError, ValueError):
+                pass
+
+        return ActionDecision(
+            action=action,
+            confidence=max(0.0, min(1.0, confidence)),
+            arguments=arguments,
+            addressed=max(0.0, min(1.0, addressed)),
+            command_complete=complete,
+            compound=compound,
+            source=self.name,
+            model=str(model) if model is not None else None,
+            latency_ms=elapsed_ms,
+            raw_decisions={
+                str(key): dict(answer)
+                for key, answer in answers.items()
+                if isinstance(answer, dict)
+            },
+        )
 
     def shutdown(self) -> None:
         router = self._router
