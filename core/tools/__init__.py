@@ -23,6 +23,7 @@ from .request_builder import ToolRequestBuilder
 from .selector import ToolSelector
 from .screenshot import OpenScreenshotTool
 from .system import OpenApplicationTool
+from .notes import CreateNoteTool, ListNotesTool, ReadNoteTool, SearchNotesTool
 from .test_tool import EchoTool
 
 __all__ = [
@@ -33,4 +34,5 @@ __all__ = [
     "ToolRequestBuilder", "ToolSelector", "OpenApplicationTool", "LaunchApplicationTool",
     "StartProcessTool", "RunCommandTool", "StopProcessTool", "CloseApplicationTool",
     "ScreenshotTool", "OpenScreenshotTool", "AudioControlTool", "EchoTool",
+    "CreateNoteTool", "ReadNoteTool", "ListNotesTool", "SearchNotesTool",
 ]
