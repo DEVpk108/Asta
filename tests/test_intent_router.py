@@ -139,3 +139,50 @@ def test_compound_command_with_multiple_natural_steps():
             {"action": "screenshot"},
         ]
     }
+
+
+def test_create_note_command_is_actionable():
+    result = IntentRouter().analyze(
+        "Take a note: test the new barge in detector."
+    )
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "create_note",
+        "content": "test the new barge in detector",
+    }
+
+
+def test_titled_note_command_extracts_title_and_content():
+    result = IntentRouter().analyze(
+        "Write a note titled Voice Test saying check interruption."
+    )
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "create_note",
+        "title": "voice test",
+        "content": "check interruption",
+    }
+
+
+def test_read_note_command_is_actionable():
+    result = IntentRouter().analyze("Read note Voice Test.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "read_note",
+        "target": "voice test",
+    }
+
+
+def test_list_notes_command_is_actionable():
+    result = IntentRouter().analyze("Show my notes.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {"action": "list_notes"}
+
+
+def test_search_notes_command_is_actionable():
+    result = IntentRouter().analyze("Search notes for interruption.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "search_notes",
+        "query": "interruption",
+    }
