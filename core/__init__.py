@@ -19,6 +19,7 @@ from .decision import (
 from .event_bus import EventBus
 from .kernel import Kernel
 from .module import Module
+from .notes_manager import NotesManager
 from .planner import Planner, PlanningError
 from .skill_manager import SkillManager
 from .task_manager import TaskManager
@@ -39,6 +40,7 @@ __all__ = [
     "EventBus",
     "Kernel",
     "Module",
+    "NotesManager",
     "Planner",
     "PlanningError",
     "SkillManager",
