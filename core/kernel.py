@@ -5,6 +5,7 @@ from .capability_discovery import CapabilityDiscovery
 from .decision import create_decision_engine
 from .event_bus import EventBus
 from .intent_router import IntentRouter
+from .notes_manager import NotesManager
 from .planner import Planner
 from .skill_manager import SkillManager
 from .task_manager import TaskManager
