@@ -34,6 +34,7 @@ class Kernel:
         self.workspace_manager = WorkspaceManager(event_bus=self.event_bus)
         self.application_manager = ApplicationManager()
         self.skill_manager = SkillManager(event_bus=self.event_bus)
+        self.notes_manager = NotesManager()
 
         self.tool_registry = ToolRegistry()
         self.planner = Planner(self.tool_registry)
