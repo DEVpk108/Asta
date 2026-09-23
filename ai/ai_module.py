@@ -663,6 +663,29 @@ class AIModule(Module):
                 if path:
                     print(f"[AI] Screenshot saved: {path}", flush=True)
                 return "Screenshot captured."
+            if result.tool == "notes.create_note":
+                title = output.get("title")
+                return f"Saved note '{title}'." if title else "Saved note."
+            if result.tool == "notes.read_note":
+                content = output.get("content")
+                return str(content).strip() if content else "That note is empty."
+            if result.tool == "notes.list_notes":
+                count = int(output.get("count", 0))
+                notes = output.get("notes") or []
+                if count == 0:
+                    return "You don't have any saved notes yet."
+                titles = [str(item.get("title")).strip() for item in notes[:8] if item.get("title")]
+                suffix = f": {', '.join(titles)}" if titles else "."
+                if count > len(titles):
+                    suffix = suffix.rstrip(".") + f", and {count - len(titles)} more."
+                return f"You have {count} saved note{'s' if count != 1 else ''}{suffix}"
+            if result.tool == "notes.search_notes":
+                count = int(output.get("count", 0))
+                matches = output.get("matches") or []
+                if count == 0:
+                    return "I couldn't find any matching notes."
+                titles = [str(item.get("title")).strip() for item in matches[:8] if item.get("title")]
+                return f"I found {count} matching note{'s' if count != 1 else ''}: {', '.join(titles)}."
         if output is None:
             return f"{result.tool} completed successfully."
         return str(output)
