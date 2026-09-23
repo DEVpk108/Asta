@@ -108,6 +108,17 @@ class IntentRouter:
                     classifier="rules",
                 )
 
+        note_entities = self._extract_note_command(normalized)
+        if note_entities:
+            return IntentResult(
+                intent=IntentType.COMMAND,
+                confidence=0.98,
+                normalized_text=normalized,
+                entities=note_entities,
+                requires_tools=True,
+                classifier="rules",
+            )
+
         compound_commands = self._extract_compound_commands(normalized)
         if compound_commands:
             return IntentResult(
@@ -165,6 +176,89 @@ class IntentRouter:
         text = re.sub(r"\s+", " ", text)
         text = re.sub(r"[.!?,;:]+$", "", text)
         return text.strip()
+
+    @classmethod
+    def _extract_note_command(cls, text: str) -> dict[str, Any]:
+        normalized = cls._normalize(text)
+
+        list_phrases = {
+            "list notes",
+            "show notes",
+            "show my notes",
+            "list my notes",
+            "what are my notes",
+        }
+        if normalized in list_phrases:
+            return {"action": "list_notes"}
+
+        for prefix in (
+            "search notes for ",
+            "search my notes for ",
+            "find notes about ",
+            "find my notes about ",
+        ):
+            if normalized.startswith(prefix):
+                query = normalized[len(prefix):].strip()
+                if query:
+                    return {"action": "search_notes", "query": query}
+
+        for prefix in (
+            "read note ",
+            "read my note ",
+            "open note ",
+            "open my note ",
+            "show note ",
+            "show my note ",
+        ):
+            if normalized.startswith(prefix):
+                target = normalized[len(prefix):].strip()
+                if target:
+                    return {"action": "read_note", "target": target}
+
+        create_prefixes = (
+            "take a note ",
+            "take note ",
+            "write a note ",
+            "write a new note ",
+            "create a note ",
+            "create a new note ",
+            "make a note ",
+            "make a new note ",
+            "save a note ",
+        )
+        for prefix in create_prefixes:
+            if not normalized.startswith(prefix):
+                continue
+
+            payload = normalized[len(prefix):].strip(" :,-")
+            if not payload:
+                return {}
+
+            title = None
+            content = payload
+            for lead in ("titled ", "called "):
+                if payload.startswith(lead):
+                    remainder = payload[len(lead):].strip()
+                    split_at = remainder.find(" saying ")
+                    if split_at > 0:
+                        title = remainder[:split_at].strip()
+                        content = remainder[split_at + len(" saying "):].strip()
+                    else:
+                        split_at = remainder.find(" with content ")
+                        if split_at > 0:
+                            title = remainder[:split_at].strip()
+                            content = remainder[split_at + len(" with content "):].strip()
+                    break
+
+            if not content:
+                return {}
+
+            result = {"action": "create_note", "content": content}
+            if title:
+                result["title"] = title
+            return result
+
+        return {}
 
     @classmethod
     def _extract_compound_commands(cls, text: str) -> list[dict[str, Any]]:
