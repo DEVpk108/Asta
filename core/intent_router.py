@@ -217,14 +217,23 @@ class IntentRouter:
 
         create_prefixes = (
             "take a note ",
+            "take a note:",
             "take note ",
+            "take note:",
             "write a note ",
+            "write a note:",
             "write a new note ",
+            "write a new note:",
             "create a note ",
+            "create a note:",
             "create a new note ",
+            "create a new note:",
             "make a note ",
+            "make a note:",
             "make a new note ",
+            "make a new note:",
             "save a note ",
+            "save a note:",
         )
         for prefix in create_prefixes:
             if not normalized.startswith(prefix):
