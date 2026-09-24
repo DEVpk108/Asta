@@ -270,11 +270,20 @@ class SpotifyProvider:
         self._save_token(token)
         return token
 
-    def _get_access_token(self):
+    def _invalidate_access_token(self):
+        token = self._load_token()
+        if not token:
+            return
+        token = dict(token)
+        token["access_token"] = ""
+        token["expires_at"] = 0
+        self._save_token(token)
+
+    def _get_access_token(self, *, force_refresh=False):
         token = self._load_token()
         if token:
             expires_at = float(token.get("expires_at", 0) or 0)
-            if expires_at > time.time() + 60:
+            if not force_refresh and expires_at > time.time() + 60:
                 return token.get("access_token")
 
             refresh_token = token.get("refresh_token")
@@ -301,6 +310,36 @@ class SpotifyProvider:
                     return merged.get("access_token")
 
         return self._authorize().get("access_token")
+
+    def _spotify_request(self, method, path, *, params=None, json_body=None):
+        token = self._get_access_token()
+        if not token:
+            raise RuntimeError("Spotify authorization did not return an access token.")
+
+        response = requests.request(
+            method,
+            f"https://api.spotify.com/v1{path}",
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+            json=json_body,
+            timeout=15,
+        )
+
+        if response.status_code == 401:
+            self._invalidate_access_token()
+            token = self._get_access_token(force_refresh=True)
+            if not token:
+                raise RuntimeError("Spotify authorization could not be refreshed.")
+            response = requests.request(
+                method,
+                f"https://api.spotify.com/v1{path}",
+                headers={"Authorization": f"Bearer {token}"},
+                params=params,
+                json=json_body,
+                timeout=15,
+            )
+
+        return response
 
     def _api(self, method, path, *, token, params=None, json_body=None):
         response = requests.request(
@@ -460,7 +499,12 @@ class SpotifyProvider:
             return self._system.execute(MediaRequest(operation="stop"))
 
         method, path = endpoints[operation]
-        self._api(method, path, token=token)
+        response = self._spotify_request(method, path)
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Spotify playback control failed ({response.status_code}): "
+                f"{response.text.strip()[:350]}"
+            )
         messages = {
             "play": "Resumed Spotify playback.",
             "pause": "Paused Spotify playback.",
