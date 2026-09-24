@@ -184,3 +184,60 @@ def test_laya_media_recovery_routes_unknown_request_to_media_tool():
         "query": "hanuman chalisa",
         "provider": "spotify",
     }
+
+
+
+def test_recent_media_plan_recovers_clipped_command_verb():
+    from core.contracts import IntentResult, IntentType, Plan, PlanStep, PlanStepStatus
+    from core.task_manager import TaskManager
+
+    kernel = Kernel()
+    ai = AIModule(kernel)
+
+    plan = Plan(
+        goal="play hanuman chalisa on spotify",
+        steps=[
+            PlanStep(
+                id="step-1",
+                description="open Spotify",
+                status=PlanStepStatus.COMPLETED,
+                metadata={"action": "open", "target": "Spotify", "tool": "system.open_application"},
+            ),
+            PlanStep(
+                id="step-2",
+                description="play hanuman chalisa",
+                status=PlanStepStatus.READY,
+                metadata={
+                    "action": "media",
+                    "operation": "play",
+                    "query": "hanuman chalisa",
+                    "provider": "spotify",
+                    "tool": "media.control",
+                },
+            ),
+        ],
+        status="active",
+    )
+    kernel.task_manager.create(
+        "play hanuman chalisa on spotify",
+        pending_steps=["play hanuman chalisa"],
+        plan=plan,
+    )
+
+    intent = IntentResult(
+        intent=IntentType.UNKNOWN,
+        confidence=0.20,
+        normalized_text="le hanuman chalisa",
+    )
+
+    recovered = ai._recover_recent_command("Le Hanuman Chalisa", intent)
+
+    assert recovered is not None
+    assert recovered.intent is IntentType.COMMAND
+    assert recovered.entities == {
+        "action": "media",
+        "operation": "play",
+        "query": "hanuman chalisa",
+        "provider": "spotify",
+    }
+    assert recovered.classifier == "task_context"
