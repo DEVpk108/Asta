@@ -1,4 +1,6 @@
 import re
+from difflib import SequenceMatcher
+from datetime import datetime, timezone
 from core.module import Module
 from core.contracts import ActionType, IntentType, IntentResult, ToolResult
 from core.tools import ToolRequestBuilder
@@ -216,6 +218,10 @@ class AIModule(Module):
             return
 
         intent_hint = self.kernel.intent_router.analyze(text)
+        recovered_intent = self._recover_recent_command(text, intent_hint)
+        if recovered_intent is not None:
+            intent_hint = recovered_intent
+
         if self._run_system1_decision(text, intent_hint=intent_hint):
             return
 
@@ -244,6 +250,115 @@ class AIModule(Module):
             return
 
         self._generate_response(text)
+
+    def _recover_recent_command(
+        self,
+        text: str,
+        intent: IntentResult,
+    ) -> IntentResult | None:
+        """Recover a command when STT drops the action word."""
+        if intent.intent is not IntentType.UNKNOWN:
+            return None
+
+        task_manager = getattr(self.kernel, "task_manager", None)
+        if task_manager is None:
+            return None
+
+        tasks = task_manager.list()
+        if not tasks:
+            return None
+
+        recent = max(
+            tasks,
+            key=lambda task: getattr(
+                task,
+                "updated_at",
+                datetime.min.replace(tzinfo=timezone.utc),
+            ),
+        )
+
+        updated_at = getattr(recent, "updated_at", None)
+        if updated_at is None:
+            return None
+
+        try:
+            age_seconds = (
+                datetime.now(timezone.utc) - updated_at
+            ).total_seconds()
+        except TypeError:
+            return None
+
+        if age_seconds < 0 or age_seconds > 30:
+            return None
+
+        plan = getattr(recent, "plan", None)
+        if plan is None:
+            return None
+
+        transcript_tokens = re.findall(r"[a-z0-9]+", str(text).lower())
+        if not transcript_tokens:
+            return None
+
+        for step in plan.steps:
+            metadata = step.metadata or {}
+            if str(metadata.get("action") or "").strip().lower() != "media":
+                continue
+
+            query = str(metadata.get("query") or "").strip()
+            operation = str(metadata.get("operation") or "").strip().lower()
+            if not query or not operation:
+                continue
+
+            query_tokens = re.findall(r"[a-z0-9]+", query.lower())
+            if not query_tokens:
+                continue
+
+            coverage = []
+            for query_token in query_tokens:
+                best = max(
+                    (
+                        SequenceMatcher(
+                            None,
+                            query_token,
+                            transcript_token,
+                            autojunk=False,
+                        ).ratio()
+                        for transcript_token in transcript_tokens
+                    ),
+                    default=0.0,
+                )
+                coverage.append(best)
+
+            match_score = sum(coverage) / len(coverage)
+            if match_score < 0.78:
+                continue
+
+            entities = {
+                "action": "media",
+                "operation": operation,
+                "query": query,
+            }
+            provider = str(metadata.get("provider") or "").strip()
+            if provider:
+                entities["provider"] = provider
+
+            print(
+                "[AI] Recovered command from recent task context: "
+                f"media {operation} {query} (match={match_score:.2f})",
+                flush=True,
+            )
+            return IntentResult(
+                intent=IntentType.COMMAND,
+                confidence=max(0.80, min(0.98, match_score)),
+                normalized_text=" ".join(
+                    str(text).strip().lower().split()
+                ),
+                entities=entities,
+                requires_tools=True,
+                classifier="task_context",
+            )
+
+        return None
 
     def _run_system1_decision(self, text, *, intent_hint=None):
         engine = getattr(self.kernel, "decision_engine", None)
