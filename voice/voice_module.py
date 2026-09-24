@@ -68,7 +68,7 @@ class VoiceModule(Module):
                     float(
                         os.getenv(
                             "ASTA_VOICE_POST_TTS_GUARD_MS",
-                            "150",
+                            "80",
                         )
                     ) / 1000.0,
                 ),
