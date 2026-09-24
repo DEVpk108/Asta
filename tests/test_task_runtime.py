@@ -307,12 +307,17 @@ def test_task_runtime_executes_planner_generated_media_sequence():
             "open Spotify",
             "play hanuman chalisa",
         ]
-        assert [request.tool for request in requests] == [
-            "test.open",
-            "test.media",
-        ]
-        assert requests[0].arguments == {"target": "Spotify"}
-        assert requests[1].arguments == {
+        # EventBus dispatch is synchronous and the first tool result can
+        # advance the task before a later observer receives the original event.
+        # Assert semantic plan order by step id instead of observer callback order.
+        requests_by_step = {
+            request.metadata["plan_step_id"]: request
+            for request in requests
+        }
+        assert requests_by_step["step-1"].tool == "test.open"
+        assert requests_by_step["step-2"].tool == "test.media"
+        assert requests_by_step["step-1"].arguments == {"target": "Spotify"}
+        assert requests_by_step["step-2"].arguments == {
             "operation": "play",
             "query": "hanuman chalisa",
             "provider": "spotify",
