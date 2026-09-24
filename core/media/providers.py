@@ -692,6 +692,8 @@ class MediaManager:
 
     def execute(self, request: MediaRequest) -> MediaResult:
         explicit = str(request.provider or "").strip().lower()
+        if not explicit and request.query:
+            explicit = os.getenv("ASTA_MEDIA_DEFAULT_PROVIDER", "").strip().lower()
         if explicit:
             provider = self._by_name.get(explicit)
             if provider is None:
