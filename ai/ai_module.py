@@ -623,6 +623,38 @@ class AIModule(Module):
         )
 
     def _handle_command_intent(self, intent: IntentResult):
+        # Reuse the currently focused/recent media application only when the
+        # media request did not already name a provider. This keeps provider
+        # selection contextual without hardcoding individual commands.
+        if intent.entities.get("action") == "media" and not intent.entities.get("provider"):
+            manager = getattr(self.kernel, "media_manager", None)
+            applications = getattr(self.kernel, "application_manager", None)
+            recent = (
+                getattr(applications, "last_opened_application", None)
+                if applications is not None
+                else None
+            )
+            infer_provider = (
+                getattr(manager, "provider_for_application", None)
+                if manager is not None
+                else None
+            )
+            if recent is not None and callable(infer_provider):
+                recent_name = getattr(recent, "name", recent)
+                provider = infer_provider(str(recent_name))
+                if provider:
+                    entities = dict(intent.entities)
+                    entities["provider"] = provider
+                    intent = IntentResult(
+                        intent=intent.intent,
+                        confidence=intent.confidence,
+                        normalized_text=intent.normalized_text,
+                        entities=entities,
+                        requires_memory=intent.requires_memory,
+                        requires_tools=intent.requires_tools,
+                        classifier=intent.classifier,
+                    )
+
         commands = intent.entities.get("commands")
         if isinstance(commands, list) and len(commands) >= 2:
             self._handle_command_sequence(intent, commands)
