@@ -1,6 +1,7 @@
 from core import Kernel, Planner
 from core.contracts import IntentResult, IntentType, PlanStatus, ToolDefinition
 from core.tools import Tool
+from core.media import MediaManager
 
 
 class FakeTool(Tool):
@@ -130,3 +131,71 @@ def test_planner_rejects_non_command_intents():
         assert "only supports command intents" in str(exc)
     else:
         raise AssertionError("Expected planner rejection")
+
+
+
+class FakeMediaTool(Tool):
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name="test.media",
+            description="Control media for tests.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string"},
+                    "query": {"type": "string"},
+                    "provider": {"type": "string"},
+                },
+                "required": ["operation"],
+            },
+            risk_level="low",
+            requires_confirmation=False,
+            metadata={"actions": ["media"]},
+        )
+
+    def execute(self, request):
+        raise AssertionError("planner tests must not execute tools")
+
+
+def test_planner_expands_provider_media_play_into_open_and_play():
+    kernel = Kernel()
+    kernel.register_tool(FakeTool())
+    kernel.register_tool(FakeMediaTool())
+
+    planner = Planner(
+        kernel.tool_registry,
+        media_manager=MediaManager(),
+        application_manager=kernel.application_manager,
+    )
+
+    intent = IntentResult(
+        intent=IntentType.COMMAND,
+        confidence=0.98,
+        normalized_text="play hanuman chalisa on spotify",
+        entities={
+            "action": "media",
+            "operation": "play",
+            "query": "hanuman chalisa",
+            "provider": "spotify",
+        },
+        requires_tools=True,
+        classifier="rules",
+    )
+
+    plan = planner.plan(
+        "play hanuman chalisa on spotify",
+        intent=intent,
+    )
+
+    assert [step.description for step in plan.steps] == [
+        "open Spotify",
+        "play hanuman chalisa",
+    ]
+    assert [step.metadata["action"] for step in plan.steps] == [
+        "open",
+        "media",
+    ]
+    assert plan.steps[1].metadata["operation"] == "play"
+    assert plan.steps[1].metadata["query"] == "hanuman chalisa"
+    assert plan.steps[1].metadata["provider"] == "spotify"
