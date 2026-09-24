@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 from core.contracts.action import ActionDecision, ActionType
+from core.media import parse_media_request
 
 from .base import DecisionEngine
 from .contracts import DecisionSnapshot
@@ -107,6 +108,7 @@ class LayaDecisionEngine(DecisionEngine):
         text: str,
         *,
         applications=None,
+        media_providers=None,
     ) -> ActionDecision:
         """Select a computer action from a finite structured action space."""
         value = str(text or "").strip()
@@ -121,7 +123,15 @@ class LayaDecisionEngine(DecisionEngine):
                 names.append(name)
 
         names = names[:128]
-        questions = build_action_questions(names)
+        providers = []
+        for provider in media_providers or ():
+            name = getattr(provider, "name", provider)
+            name = str(name or "").strip()
+            if name and name not in providers:
+                providers.append(name)
+        providers = providers[:32]
+
+        questions = build_action_questions(names, providers)
 
         started = time.perf_counter()
         result = self._get_router().predict(
@@ -158,6 +168,27 @@ class LayaDecisionEngine(DecisionEngine):
         if target_app and target_app != "none":
             arguments["target_app"] = str(target_app)
 
+        media_operation = choice("media_operation")
+        media_request = parse_media_request(value)
+        if action is ActionType.MEDIA:
+            if media_operation and media_operation != "none":
+                arguments["operation"] = str(media_operation)
+            if media_request is not None:
+                if media_request.query:
+                    arguments["query"] = media_request.query
+                if media_request.provider:
+                    arguments["provider"] = media_request.provider
+                if "operation" not in arguments:
+                    arguments["operation"] = media_request.operation
+
+            media_provider = choice("media_provider")
+            if (
+                media_provider
+                and media_provider != "none"
+                and "provider" not in arguments
+            ):
+                arguments["provider"] = str(media_provider)
+
         addressed = probability("addressed")
         complete = probability("command_complete") >= 0.50
         compound = probability("compound") >= 0.50
@@ -174,6 +205,16 @@ class LayaDecisionEngine(DecisionEngine):
                 confidence = min(
                     confidence,
                     float(target_answer.get("confidence", confidence)),
+                )
+            except (TypeError, ValueError):
+                pass
+
+        if action is ActionType.MEDIA:
+            operation_answer = answers.get("media_operation") or {}
+            try:
+                confidence = min(
+                    confidence,
+                    float(operation_answer.get("confidence", confidence)),
                 )
             except (TypeError, ValueError):
                 pass

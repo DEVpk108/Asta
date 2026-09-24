@@ -207,3 +207,24 @@ def test_collapsed_open_command_supports_multiword_app_without_spaces():
         "action": "open",
         "target": "visualstudiocode",
     }
+
+
+
+def test_media_play_command_is_actionable():
+    result = IntentRouter().analyze("Play Hanuman Chalisa on Spotify")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "media",
+        "operation": "play",
+        "query": "hanuman chalisa",
+        "provider": "spotify",
+    }
+
+
+def test_media_control_command_is_actionable():
+    result = IntentRouter().analyze("Pause the music.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "media",
+        "operation": "pause",
+    }

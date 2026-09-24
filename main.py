@@ -137,6 +137,7 @@ def main():
         ScreenshotTool,
         StartProcessTool,
         StopProcessTool,
+        MediaControlTool,
         ToolRuntimeModule,
     )
     from speech.speech_module import SpeechModule
@@ -190,6 +191,7 @@ def main():
         ReadNoteTool(kernel.notes_manager),
         ListNotesTool(kernel.notes_manager),
         SearchNotesTool(kernel.notes_manager),
+        MediaControlTool(kernel.media_manager),
     ):
         kernel.register_tool(tool)
 

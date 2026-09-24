@@ -5,6 +5,7 @@ from .contracts.intent import (
     IntentResult,
     IntentType,
 )
+from .media import parse_media_request
 
 
 class IntentRouter:
@@ -373,6 +374,10 @@ class IntentRouter:
                     "target": target,
                 }
 
+        media = cls._extract_media_command(text)
+        if media:
+            return media
+
         if text in {"screenshot", "screen shot"}:
             return {"action": "screenshot"}
 
@@ -400,6 +405,11 @@ class IntentRouter:
             return {"action": "unmute"}
 
         return {}
+
+    @classmethod
+    def _extract_media_command(cls, text: str) -> dict[str, Any]:
+        request = parse_media_request(text)
+        return request.to_entities() if request is not None else {}
 
     @classmethod
     def _extract_memory_entities(cls, text: str) -> dict[str, Any]:

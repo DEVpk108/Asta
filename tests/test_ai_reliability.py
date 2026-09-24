@@ -129,3 +129,58 @@ def test_tool_failure_does_not_speak_raw_diagnostics():
     assert spoken == "I couldn't open VS Code."
     assert "Traceback" not in spoken
     assert "main.py" not in spoken
+
+
+
+def test_laya_media_recovery_routes_unknown_request_to_media_tool():
+    from core.contracts import ActionDecision, ActionType
+    from core.media import MediaManager
+    from core.tools import MediaControlTool
+
+    class FakeDecisionEngine:
+        name = "laya"
+
+        def decide_action(self, text, *, applications=None, media_providers=None):
+            return ActionDecision(
+                action=ActionType.MEDIA,
+                confidence=0.94,
+                addressed=0.99,
+                arguments={
+                    "operation": "play",
+                    "query": "hanuman chalisa",
+                    "provider": "spotify",
+                },
+                source="laya",
+                model="multilingual",
+            )
+
+        def analyze(self, text):
+            raise AssertionError("analyze() should not run after media recovery")
+
+        def warmup(self):
+            return True
+
+        def shutdown(self):
+            return None
+
+    kernel = Kernel()
+    kernel.decision_engine = FakeDecisionEngine()
+    kernel.register_tool(MediaControlTool(MediaManager(providers=())))
+    ai = AIModule(kernel)
+    ai.engine = StubEngine()
+
+    requests = []
+    kernel.event_bus.subscribe(
+        "tool_request",
+        lambda request: requests.append(request),
+    )
+
+    ai.on_user_message("Play Hanuman Chalisa on Spotify")
+
+    assert len(requests) == 1
+    assert requests[0].tool == "media.control"
+    assert requests[0].arguments == {
+        "operation": "play",
+        "query": "hanuman chalisa",
+        "provider": "spotify",
+    }

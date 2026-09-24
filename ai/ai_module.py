@@ -1,5 +1,6 @@
+import re
 from core.module import Module
-from core.contracts import IntentType, IntentResult, ToolResult
+from core.contracts import ActionType, IntentType, IntentResult, ToolResult
 from core.tools import ToolRequestBuilder
 
 from chat_history import ChatHistoryStore
@@ -215,7 +216,8 @@ class AIModule(Module):
             return
 
         intent_hint = self.kernel.intent_router.analyze(text)
-        self._run_system1_decision(text, intent_hint=intent_hint)
+        if self._run_system1_decision(text, intent_hint=intent_hint):
+            return
 
         context_response = self._context_response(text)
         if context_response is not None:
@@ -246,11 +248,12 @@ class AIModule(Module):
     def _run_system1_decision(self, text, *, intent_hint=None):
         engine = getattr(self.kernel, "decision_engine", None)
         if engine is None:
-            return
+            return False
 
         # Computer commands use the action-oriented System-1 path. The
-        # deterministic intent router remains an execution safety boundary and
-        # also provides candidate application names to Laya.
+        # deterministic intent router remains the first execution boundary,
+        # while System-1 can recover actionable commands that rules did not
+        # recognize, such as fuzzy media requests.
         #
         # High-confidence direct commands already have a deterministic action
         # and target, so do not make Laya inference a synchronous latency tax.
@@ -270,9 +273,16 @@ class AIModule(Module):
             )
             return
 
-        if (
+        should_try_action = (
             intent_hint is not None
-            and intent_hint.intent == IntentType.COMMAND
+            and (
+                intent_hint.intent == IntentType.COMMAND
+                or self._looks_like_action_request(text)
+            )
+        )
+
+        if (
+            should_try_action
             and getattr(engine, "name", "unknown") != "disabled"
             and callable(getattr(engine, "decide_action", None))
         ):
@@ -323,9 +333,18 @@ class AIModule(Module):
                         except Exception:
                             pass
 
+                media_manager = getattr(self.kernel, "media_manager", None)
+                media_providers = (
+                    media_manager.providers()
+                    if media_manager is not None
+                    and callable(getattr(media_manager, "providers", None))
+                    else ()
+                )
+
                 action_decision = engine.decide_action(
                     text,
                     applications=candidates,
+                    media_providers=media_providers,
                 )
             except Exception as exc:
                 print(
@@ -349,7 +368,35 @@ class AIModule(Module):
                     "action_decision",
                     decision=action_decision,
                 )
-                return
+
+                if (
+                    action_decision.is_actionable
+                    and action_decision.action is ActionType.MEDIA
+                    and action_decision.arguments.get("operation")
+                ):
+                    media_entities = {
+                        "action": "media",
+                        **dict(action_decision.arguments),
+                    }
+                    media_intent = IntentResult(
+                        intent=IntentType.COMMAND,
+                        confidence=action_decision.confidence,
+                        normalized_text=" ".join(
+                            str(text).strip().lower().split()
+                        ),
+                        entities=media_entities,
+                        requires_tools=True,
+                        classifier="laya_system1",
+                    )
+                    print(
+                        "[AI] System 1 recovered a media command; "
+                        "routing through the normal ToolSelector/Authority path.",
+                        flush=True,
+                    )
+                    self._handle_command_intent(media_intent)
+                    return True
+
+                return False
 
         try:
             snapshot = engine.analyze(text)
@@ -362,7 +409,7 @@ class AIModule(Module):
             return
 
         if snapshot.engine == "disabled":
-            return
+            return False
 
         print(
             f"[AI] System 1: engine={snapshot.engine} "
@@ -371,6 +418,18 @@ class AIModule(Module):
             flush=True,
         )
         self.event_bus.emit("decision_result", decision=snapshot)
+        return False
+
+    @staticmethod
+    def _looks_like_action_request(text):
+        normalized = " ".join(str(text).strip().lower().split())
+        return bool(
+            re.search(
+                r"\b(?:open|launch|start|close|run|stop|play|pause|resume|skip|next|previous|"
+                r"back|screenshot|capture|mute|unmute|scroll|press|type)\b",
+                normalized,
+            )
+        )
 
     def _context_response(self, text):
         normalized = self._normalize_question(text)
@@ -654,6 +713,11 @@ class AIModule(Module):
                 return f"Launched {target}."
             if result.tool == "system.close_application" and target:
                 return f"Closed {target}."
+            if result.tool == "media.control":
+                message = output.get("message")
+                if message:
+                    return str(message)
+                return "Media action completed."
             if result.tool == "system.stop_process" and output.get("pid"):
                 return f"Stopped process {output['pid']}."
             if result.tool == "system.start_process" and target:
@@ -712,6 +776,9 @@ class AIModule(Module):
         if result.tool == "system.start_process":
             target = output.get("target")
             return f"I couldn't start {target}." if target else "I couldn't start the process."
+
+        if result.tool == "media.control":
+            return "I couldn't control media playback."
 
         if result.tool == "system.stop_process":
             return "I couldn't stop that process."

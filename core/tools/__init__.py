@@ -24,6 +24,7 @@ from .selector import ToolSelector
 from .screenshot import OpenScreenshotTool
 from .system import OpenApplicationTool
 from .notes import CreateNoteTool, ListNotesTool, ReadNoteTool, SearchNotesTool
+from .media import MediaControlTool
 from .test_tool import EchoTool
 
 __all__ = [
@@ -35,4 +36,5 @@ __all__ = [
     "StartProcessTool", "RunCommandTool", "StopProcessTool", "CloseApplicationTool",
     "ScreenshotTool", "OpenScreenshotTool", "AudioControlTool", "EchoTool",
     "CreateNoteTool", "ReadNoteTool", "ListNotesTool", "SearchNotesTool",
+    "MediaControlTool",
 ]

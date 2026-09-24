@@ -6,6 +6,7 @@ from .decision import create_decision_engine
 from .event_bus import EventBus
 from .intent_router import IntentRouter
 from .notes_manager import NotesManager
+from .media import MediaManager
 from .planner import Planner
 from .skill_manager import SkillManager
 from .task_manager import TaskManager
@@ -36,6 +37,7 @@ class Kernel:
         self.application_manager = ApplicationManager()
         self.skill_manager = SkillManager(event_bus=self.event_bus)
         self.notes_manager = NotesManager()
+        self.media_manager = MediaManager()
 
         self.tool_registry = ToolRegistry()
         self.planner = Planner(self.tool_registry)
