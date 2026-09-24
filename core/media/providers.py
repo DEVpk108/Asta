@@ -366,16 +366,21 @@ class SpotifyProvider:
         return response.json()
 
     def _search_track(self, token, query):
-        payload = self._api(
+        response = self._spotify_request(
             "GET",
             "/search",
-            token=token,
             params={
                 "q": query,
                 "type": "track",
                 "limit": 5,
             },
         )
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Spotify search failed ({response.status_code}): "
+                f"{response.text.strip()[:350]}"
+            )
+        payload = response.json()
         tracks = ((payload or {}).get("tracks") or {}).get("items") or []
         if not tracks:
             raise LookupError(f"No Spotify track matched '{query}'.")
@@ -416,11 +421,22 @@ class SpotifyProvider:
         }
 
     def _select_device(self, token):
-        state = self._api("GET", "/me/player", token=token)
-        if state and state.get("device", {}).get("id"):
-            return state["device"]["id"]
+        state_response = self._spotify_request("GET", "/me/player")
+        if state_response.status_code == 200:
+            state = state_response.json()
+            if state and state.get("device", {}).get("id"):
+                return state["device"]["id"]
 
-        payload = self._api("GET", "/me/player/devices", token=token) or {}
+        devices_response = self._spotify_request(
+            "GET",
+            "/me/player/devices",
+        )
+        if devices_response.status_code >= 400:
+            raise RuntimeError(
+                f"Spotify device lookup failed ({devices_response.status_code}): "
+                f"{devices_response.text.strip()[:350]}"
+            )
+        payload = devices_response.json() or {}
         devices = payload.get("devices") or []
         active = next(
             (device for device in devices if device.get("is_active") and device.get("id")),
