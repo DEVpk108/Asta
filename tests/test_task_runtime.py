@@ -2,6 +2,7 @@ from core import Kernel
 from core.contracts import ToolDefinition, ToolRequest, ToolResult, TaskStatus
 from core.task_runtime import TaskRuntimeModule
 from core.tools import Tool, ToolRuntimeModule
+from core.media import MediaManager
 
 
 class FakeCapabilityTool(Tool):
@@ -206,3 +207,114 @@ def test_task_runtime_remembers_successful_opened_application():
         kernel.application_manager.remember_opened = original_remember
 
     assert captured == [record]
+
+
+
+class FakeOpenTool(Tool):
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name="test.open",
+            description="Open an application for tests.",
+            input_schema={
+                "type": "object",
+                "properties": {"target": {"type": "string"}},
+                "required": ["target"],
+            },
+            risk_level="low",
+            requires_confirmation=False,
+            metadata={"actions": ["open"]},
+        )
+
+    def execute(self, request):
+        return ToolResult(
+            success=True,
+            tool=self.definition.name,
+            output={"target": request.arguments["target"]},
+        )
+
+
+class FakeMediaPlayTool(Tool):
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name="test.media",
+            description="Play media for tests.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string"},
+                    "query": {"type": "string"},
+                    "provider": {"type": "string"},
+                },
+                "required": ["operation"],
+            },
+            risk_level="low",
+            requires_confirmation=False,
+            metadata={"actions": ["media"]},
+        )
+
+    def execute(self, request):
+        return ToolResult(
+            success=True,
+            tool=self.definition.name,
+            output={"operation": request.arguments["operation"]},
+        )
+
+
+def test_task_runtime_executes_planner_generated_media_sequence():
+    kernel = Kernel()
+    kernel.register_tool(FakeOpenTool())
+    kernel.register_tool(FakeMediaPlayTool())
+
+    # Keep the real media-provider registry so the planner can derive the
+    # application preparation step from the provider name.
+    kernel.media_manager = MediaManager()
+    kernel.planner = __import__(
+        "core.planner",
+        fromlist=["Planner"],
+    ).Planner(
+        kernel.tool_registry,
+        media_manager=kernel.media_manager,
+        application_manager=kernel.application_manager,
+    )
+
+    tasks = TaskRuntimeModule(kernel)
+    tools = ToolRuntimeModule(kernel)
+    ai = __import__("ai.ai_module", fromlist=["AIModule"]).AIModule(kernel)
+    ai.engine = RecordingEngine()
+
+    tasks.initialize()
+    ai.initialize()
+    tools.initialize()
+
+    requests = []
+    kernel.event_bus.subscribe(
+        "tool_request",
+        lambda request: requests.append(request),
+    )
+
+    try:
+        kernel.event_bus.emit(
+            "user_message",
+            "play hanuman chalisa on spotify",
+        )
+
+        task = kernel.task_manager.list()[0]
+        assert task.status is TaskStatus.COMPLETED
+        assert [step.description for step in task.plan.steps] == [
+            "open Spotify",
+            "play hanuman chalisa",
+        ]
+        assert [request.tool for request in requests] == [
+            "test.open",
+            "test.media",
+        ]
+        assert requests[0].arguments == {"target": "Spotify"}
+        assert requests[1].arguments == {
+            "operation": "play",
+            "query": "hanuman chalisa",
+            "provider": "spotify",
+        }
+    finally:
+        _shutdown(tasks, ai, tools)
