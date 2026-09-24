@@ -694,6 +694,18 @@ class MediaManager:
         explicit = str(request.provider or "").strip().lower()
         if not explicit and request.query:
             explicit = os.getenv("ASTA_MEDIA_DEFAULT_PROVIDER", "").strip().lower()
+        if not explicit and request.query:
+            return MediaResult(
+                success=False,
+                provider="",
+                operation=request.operation,
+                query=request.query,
+                message="",
+                error=(
+                    "A media provider is required for catalog playback. "
+                    "Specify one or set ASTA_MEDIA_DEFAULT_PROVIDER."
+                ),
+            )
         if explicit:
             provider = self._by_name.get(explicit)
             if provider is None:
