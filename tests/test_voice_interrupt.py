@@ -118,6 +118,9 @@ def test_vad_starts_from_speech_contained_in_initial_preroll():
 
     class Microphone:
         def get_chunk(self):
+            import time
+
+            time.sleep(0.04)
             return np.zeros(512, dtype=np.float32)
 
     vad = object.__new__(VADEngine)
