@@ -169,6 +169,7 @@ def test_task_runtime_controls_compound_plan_execution():
         second = requests_by_step["step-2"]
 
         assert first.metadata["sequence_index"] == 0
+        assert second.metadata["sequence_index"] == 1
         assert second.metadata["planner"] == "task_runtime"
         assert "sequence" not in second.metadata
     finally:
