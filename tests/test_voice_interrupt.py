@@ -104,8 +104,14 @@ def test_vad_starts_from_speech_contained_in_initial_preroll():
     import numpy as np
 
     class FakeVadIterator:
+        def __init__(self):
+            self.calls = 0
+
         def __call__(self, _tensor):
-            return {"end": 1}
+            self.calls += 1
+            if self.calls >= 12:
+                return {"end": 1}
+            return None
 
         def reset_states(self):
             return None
