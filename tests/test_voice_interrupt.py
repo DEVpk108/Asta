@@ -146,7 +146,11 @@ def test_vad_starts_from_speech_contained_in_initial_preroll():
     # simulated VAD end condition, so whole-buffer RMS is diluted. Verify the
     # actual contract: the speech preroll survived intact at the beginning.
     assert np.array_equal(audio[:seed.size], seed)
-    assert float(np.max(np.abs(audio[:seed.size]))) >= 0.08
+    assert np.isclose(
+        float(np.max(np.abs(audio[:seed.size]))),
+        0.08,
+        atol=1e-6,
+    )
 
 
 
