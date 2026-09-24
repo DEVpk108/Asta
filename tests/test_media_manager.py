@@ -1,5 +1,11 @@
 from core.contracts import ToolRequest
-from core.media import MediaManager, MediaRequest, MediaResult, parse_media_request
+from core.media import (
+    MediaManager,
+    MediaRequest,
+    MediaResult,
+    SpotifyProvider,
+    parse_media_request,
+)
 from core.tools import MediaControlTool
 
 
@@ -69,3 +75,24 @@ def test_media_tool_builds_generic_media_capability():
     result = tool.execute(request)
     assert result.success is False
     assert "Unknown media provider" in (result.error or "")
+
+
+
+def test_media_manager_infers_provider_from_application_context():
+    manager = MediaManager(providers=(
+        SpotifyProvider(),
+    ))
+
+    assert manager.provider_for_application("Spotify") == "spotify"
+
+
+def test_spotify_query_play_requires_authenticated_configuration(monkeypatch):
+    monkeypatch.delenv("ASTA_SPOTIFY_CLIENT_ID", raising=False)
+    provider = SpotifyProvider()
+
+    result = provider.execute(
+        MediaRequest(operation="play", query="hanuman chalisa")
+    )
+
+    assert result.success is False
+    assert "ASTA_SPOTIFY_CLIENT_ID" in (result.error or "")
