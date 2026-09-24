@@ -96,3 +96,31 @@ def test_spotify_query_play_requires_authenticated_configuration(monkeypatch):
 
     assert result.success is False
     assert "ASTA_SPOTIFY_CLIENT_ID" in (result.error or "")
+
+
+
+def test_parse_media_recovers_dropped_play_verb_before_known_provider():
+    from core.media import parse_media_request
+
+    request = parse_media_request(
+        "Only Hanuman Chalisa on Spotify",
+        known_providers=("spotify", "system"),
+    )
+
+    assert request == MediaRequest(
+        operation="play",
+        query="hanuman chalisa",
+        provider="spotify",
+    )
+
+
+def test_media_manager_does_not_silently_default_query_playback_to_spotify(monkeypatch):
+    monkeypatch.delenv("ASTA_MEDIA_DEFAULT_PROVIDER", raising=False)
+    manager = MediaManager(providers=(SpotifyProvider(),))
+
+    result = manager.execute(
+        MediaRequest(operation="play", query="hanuman chalisa")
+    )
+
+    assert result.success is False
+    assert "provider" in (result.error or "").lower()
