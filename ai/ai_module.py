@@ -623,6 +623,16 @@ class AIModule(Module):
         )
 
     def _handle_command_intent(self, intent: IntentResult):
+        planned_request = self._planned_request_for_intent(intent)
+        if planned_request is not None:
+            print(
+                f"[AI] Executing planned step: {planned_request.tool} "
+                f"(request_id={planned_request.request_id})",
+                flush=True,
+            )
+            self.event_bus.emit("tool_request", request=planned_request)
+            return
+
         # Reuse the currently focused/recent media application only when the
         # media request did not already name a provider. This keeps provider
         # selection contextual without hardcoding individual commands.
@@ -674,6 +684,41 @@ class AIModule(Module):
             flush=True,
         )
         self.event_bus.emit("tool_request", request=request)
+
+    def _planned_request_for_intent(self, intent: IntentResult):
+        """Return the next task-plan request when TaskRuntime owns this command."""
+        task_manager = getattr(self.kernel, "task_manager", None)
+        task_runtime = getattr(self.kernel, "task_runtime", None)
+        if task_manager is None or task_runtime is None:
+            return None
+
+        task = task_manager.current()
+        if task is None or task.plan is None:
+            return None
+
+        if task.status.value != "active":
+            return None
+
+        if task.goal != intent.normalized_text:
+            return None
+
+        plan = task.plan
+        next_step = next(
+            (
+                step
+                for step in plan.steps
+                if step.status.value == "ready"
+            ),
+            None,
+        )
+        if next_step is None:
+            return None
+
+        builder = getattr(task_runtime, "build_plan_request", None)
+        if not callable(builder):
+            return None
+
+        return builder(task, next_step)
 
     def _handle_command_sequence(self, intent: IntentResult, commands):
         first = commands[0]
