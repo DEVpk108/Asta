@@ -79,7 +79,11 @@ def _strip_polite_leads(value: str) -> str:
     return text
 
 
-def parse_media_request(text: str) -> MediaRequest | None:
+def parse_media_request(
+    text: str,
+    *,
+    known_providers=None,
+) -> MediaRequest | None:
     normalized = _strip_polite_leads(_normalize(text))
     if not normalized:
         return None
@@ -97,6 +101,31 @@ def parse_media_request(text: str) -> MediaRequest | None:
             provider = None
 
     compact = normalized
+    if provider and known_providers:
+        normalized_providers = {
+            _normalize(str(name))
+            for name in known_providers
+            if str(name).strip()
+        }
+
+        # Whisper can replace or drop the short command verb. When the
+        # utterance has a known media provider suffix, treat the remaining
+        # phrase as a play query. This is intentionally provider-agnostic:
+        # the provider registry decides what names are recognized.
+        if provider in normalized_providers and compact:
+            cleaned_query = re.sub(
+                r"^(?:only|just|please|okay|ok)\s+",
+                "",
+                compact,
+                flags=re.IGNORECASE,
+            ).strip(" ,.-")
+            if cleaned_query:
+                return MediaRequest(
+                    operation="play",
+                    query=cleaned_query,
+                    provider=provider,
+                )
+
     if compact in _MEDIA_OPERATION_ALIASES:
         return MediaRequest(
             operation=_MEDIA_OPERATION_ALIASES[compact],
