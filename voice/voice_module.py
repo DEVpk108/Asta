@@ -87,6 +87,10 @@ class VoiceModule(Module):
         self._barge_rms_ratio = 1.35
         self._barge_peak_ratio = 1.20
         self._barge_confirmation_frames = 2
+        self._barge_echo_warmup_seconds = 0.22
+        self._barge_echo_rms = None
+        self._barge_echo_peak = None
+        self._barge_tts_warmup_until = 0.0
 
         # A pending high-risk tool approval needs a more sensitive listener
         # because responses like "yes" and "no" are intentionally very short.
@@ -218,12 +222,20 @@ class VoiceModule(Module):
     def _on_speech_started(self, *args, **kwargs):
         self._tts_active = True
         self._tts_guard_until = time.monotonic() + 0.20
+        self._barge_echo_rms = None
+        self._barge_echo_peak = None
+        self._barge_tts_warmup_until = (
+            time.monotonic() + self._barge_echo_warmup_seconds
+        )
         self.microphone.clear_buffer()
         self._start_barge_listener()
         print("[Voice] Barge-in listening: ENABLED", flush=True)
 
     def _on_speech_finished(self, *args, **kwargs):
         self._tts_active = False
+        self._barge_echo_rms = None
+        self._barge_echo_peak = None
+        self._barge_tts_warmup_until = 0.0
         self._tts_guard_until = (
             time.monotonic() + self._post_tts_guard_seconds
         )
@@ -352,27 +364,61 @@ class VoiceModule(Module):
                 continue
 
             recent = np.asarray(audio[-window_samples:], dtype=np.float32)
-            rms = float(np.sqrt(np.mean(np.square(recent)))) if recent.size else 0.0
-            peak = float(np.max(np.abs(recent))) if recent.size else 0.0
-
-            if baseline_rms is None:
-                baseline_rms = rms
-                baseline_peak = peak
-                continue
-
-            baseline_rms = 0.92 * baseline_rms + 0.08 * rms
-            baseline_peak = 0.92 * baseline_peak + 0.08 * peak
-
-            rms_gate = max(
-                self._barge_min_rms,
-                baseline_rms * self._barge_rms_ratio,
+            rms = (
+                float(np.sqrt(np.mean(np.square(recent))))
+                if recent.size
+                else 0.0
             )
-            peak_gate = max(
-                self._barge_min_peak,
-                baseline_peak * self._barge_peak_ratio,
+            peak = (
+                float(np.max(np.abs(recent)))
+                if recent.size
+                else 0.0
             )
 
-            speech_onset = rms >= rms_gate and peak >= peak_gate
+            # During TTS, the microphone also hears the speaker output. Learn
+            # that playback/room baseline before declaring a user barge-in.
+            # A sudden rise well above the learned echo floor is much safer
+            # than treating raw microphone energy as user speech.
+            if self._tts_active:
+                if now < self._barge_tts_warmup_until:
+                    consecutive_hits = 0
+                    continue
+
+                if baseline_rms is None:
+                    baseline_rms = rms
+                    baseline_peak = peak
+                    consecutive_hits = 0
+                    continue
+
+                gate_rms = max(
+                    self._barge_min_rms,
+                    baseline_rms * 1.70,
+                )
+                gate_peak = max(
+                    self._barge_min_peak,
+                    baseline_peak * 1.45,
+                )
+
+                speech_onset = rms >= gate_rms and peak >= gate_peak
+
+                if not speech_onset:
+                    baseline_rms = 0.94 * baseline_rms + 0.06 * rms
+                    baseline_peak = 0.94 * baseline_peak + 0.06 * peak
+            else:
+                rms_gate = max(
+                    self._barge_min_rms,
+                    baseline_rms * self._barge_rms_ratio
+                    if baseline_rms is not None
+                    else 0.0,
+                )
+                peak_gate = max(
+                    self._barge_min_peak,
+                    baseline_peak * self._barge_peak_ratio
+                    if baseline_peak is not None
+                    else 0.0,
+                )
+                speech_onset = rms >= rms_gate and peak >= peak_gate
+
             consecutive_hits = consecutive_hits + 1 if speech_onset else 0
 
             if consecutive_hits < self._barge_confirmation_frames:
