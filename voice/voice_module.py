@@ -58,6 +58,22 @@ class VoiceModule(Module):
         self._last_interaction = 0.0
         self._tts_active = False
         self._tts_guard_until = 0.0
+        self._post_tts_seed_pending = False
+        try:
+            self._post_tts_guard_seconds = max(
+                0.05,
+                min(
+                    0.40,
+                    float(
+                        __import__("os").getenv(
+                            "ASTA_VOICE_POST_TTS_GUARD_MS",
+                            "150",
+                        )
+                    ) / 1000.0,
+                ),
+            )
+        except (TypeError, ValueError):
+            self._post_tts_guard_seconds = 0.15
         self._microphone_paused_for_tts = False
 
         # Barge-in is a cheap acoustic onset detector. Whisper should never run
@@ -207,10 +223,22 @@ class VoiceModule(Module):
 
     def _on_speech_finished(self, *args, **kwargs):
         self._tts_active = False
-        self._tts_guard_until = time.monotonic() + 0.60
+        self._tts_guard_until = (
+            time.monotonic() + self._post_tts_guard_seconds
+        )
+        self._post_tts_seed_pending = True
         self._stop_barge_listener()
+
+        # Clear the playback tail, but leave the ring buffer running. Speech
+        # that starts during the short post-TTS settle window is retained there
+        # and fed into VAD as preroll instead of being dropped by the old
+        # 600 ms blind listening guard.
         self.microphone.clear_buffer()
-        print("[Voice] Barge-in listening: DISABLED", flush=True)
+        print(
+            "[Voice] Barge-in listening: DISABLED "
+            f"(post-TTS settle={self._post_tts_guard_seconds * 1000:.0f}ms)",
+            flush=True,
+        )
 
         if self._conversation_active and not self._manual_conversation:
             self._last_interaction = time.monotonic()
@@ -516,7 +544,16 @@ class VoiceModule(Module):
                     self._interrupted_audio = None
                     self._speech_interrupted.clear()
 
-                self.microphone.clear_buffer()
+                if interrupted_audio is None and self._post_tts_seed_pending:
+                    interrupted_audio = self.microphone.get_buffer()
+                    self._post_tts_seed_pending = False
+                    if interrupted_audio.size:
+                        print(
+                            "[VAD] Using post-TTS microphone preroll.",
+                            flush=True,
+                        )
+
+                self.microphone.flush()
 
                 audio = self._collect_command_audio(
                     initial_audio=interrupted_audio
