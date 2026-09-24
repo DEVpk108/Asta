@@ -188,7 +188,7 @@ def test_laya_media_recovery_routes_unknown_request_to_media_tool():
 
 
 def test_recent_media_plan_recovers_clipped_command_verb():
-    from core.contracts import IntentResult, IntentType, Plan, PlanStep, PlanStepStatus
+    from core.contracts import IntentResult, IntentType, Plan, PlanStatus, PlanStep, PlanStepStatus
     from core.task_manager import TaskManager
 
     kernel = Kernel()
@@ -216,7 +216,7 @@ def test_recent_media_plan_recovers_clipped_command_verb():
                 },
             ),
         ],
-        status="active",
+        status=PlanStatus.ACTIVE,
     )
     kernel.task_manager.create(
         "play hanuman chalisa on spotify",
