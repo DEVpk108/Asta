@@ -20,6 +20,12 @@ import requests
 from .request import MediaRequest
 
 
+def _normalize_media_text(value: str) -> str:
+    return " ".join(
+        re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).split()
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class MediaResult:
     success: bool
@@ -46,6 +52,7 @@ class MediaProvider(Protocol):
 class WindowsMediaProvider:
     name = "system"
     aliases = ("windows", "global", "media keys")
+    application_name = None
     priority = 10
 
     _VIRTUAL_KEYS = {
@@ -112,6 +119,7 @@ class WindowsMediaProvider:
 class SpotifyProvider:
     name = "spotify"
     aliases = ("spoti",)
+    application_name = "Spotify"
     priority = 20
 
     def __init__(self):
@@ -143,10 +151,9 @@ class SpotifyProvider:
         } and not request.query
 
     @staticmethod
+    @staticmethod
     def _normalize_search_text(value: str) -> str:
-        return " ".join(
-            re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).split()
-        )
+        return _normalize_media_text(value)
 
     def _load_token(self):
         try:
@@ -645,16 +652,16 @@ class MediaManager:
         return tuple(provider.name for provider in self._providers)
 
     def provider_for_application(self, application_name: str):
-        normalized = SpotifyProvider._normalize_search_text(application_name)
+        normalized = _normalize_media_text(application_name)
         if not normalized:
             return None
 
         tokens = set(normalized.split())
         for provider in self._providers:
             aliases = {
-                self._normalize_search_text(provider.name),
+                _normalize_media_text(provider.name),
                 *(
-                    self._normalize_search_text(alias)
+                    _normalize_media_text(alias)
                     for alias in getattr(provider, "aliases", ())
                 ),
             }
@@ -665,6 +672,23 @@ class MediaManager:
                     or alias in normalized
                 ):
                     return provider.name
+        return None
+
+    def application_for_provider(self, provider_name: str):
+        normalized = _normalize_media_text(provider_name)
+        if not normalized:
+            return None
+
+        for provider in self._providers:
+            names = {
+                _normalize_media_text(provider.name),
+                *(
+                    _normalize_media_text(alias)
+                    for alias in getattr(provider, "aliases", ())
+                ),
+            }
+            if normalized in names:
+                return getattr(provider, "application_name", None)
         return None
 
     def execute(self, request: MediaRequest) -> MediaResult:
