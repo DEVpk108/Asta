@@ -26,8 +26,16 @@ class Planner:
     implement that planning surface without changing the Plan contract.
     """
 
-    def __init__(self, registry):
+    def __init__(
+        self,
+        registry,
+        *,
+        media_manager=None,
+        application_manager=None,
+    ):
         self.selector = ToolSelector(registry)
+        self.media_manager = media_manager
+        self.application_manager = application_manager
 
     def plan(
         self,
@@ -53,6 +61,8 @@ class Planner:
         if not commands:
             raise PlanningError("command intent contains no executable commands")
 
+        commands = self._expand_media_commands(commands)
+
         steps: list[PlanStep] = []
         previous_id: str | None = None
 
@@ -73,9 +83,19 @@ class Planner:
 
             action = str(command.get("action") or "").strip()
             target = str(command.get("target") or "").strip()
-            description = " ".join(
-                part for part in (action, target) if part
-            )
+
+            description_parts = []
+            if action == "media":
+                operation = str(command.get("operation") or "media").strip()
+                query = str(command.get("query") or "").strip()
+                description_parts.extend(
+                    part for part in (operation, query) if part
+                )
+            else:
+                description_parts.extend(
+                    part for part in (action, target) if part
+                )
+            description = " ".join(description_parts)
 
             step_id = f"step-{index}"
             steps.append(
@@ -92,6 +112,12 @@ class Planner:
                         "target": target,
                         "tool": definition.name,
                         "sequence_index": index - 1,
+                        **{
+                            key: value
+                            for key, value in command.items()
+                            if key not in {"action", "target"}
+                            and value not in {None, ""}
+                        },
                     },
                 )
             )
@@ -110,6 +136,65 @@ class Planner:
             },
         )
         return plan
+
+    def _expand_media_commands(
+        self,
+        commands: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Expand provider-backed media play into setup + playback steps."""
+        expanded: list[dict[str, Any]] = []
+
+        for command in commands:
+            normalized = dict(command)
+            if str(normalized.get("action") or "").strip().lower() != "media":
+                expanded.append(normalized)
+                continue
+
+            operation = str(normalized.get("operation") or "").strip().lower()
+            query = str(normalized.get("query") or "").strip()
+            provider = str(normalized.get("provider") or "").strip()
+
+            if not provider and self.application_manager is not None:
+                recent = getattr(
+                    self.application_manager,
+                    "last_opened_application",
+                    None,
+                )
+                recent_name = getattr(recent, "name", recent)
+                infer_provider = getattr(
+                    self.media_manager,
+                    "provider_for_application",
+                    None,
+                )
+                if recent_name and callable(infer_provider):
+                    provider = str(
+                        infer_provider(str(recent_name)) or ""
+                    ).strip()
+
+            application = None
+            if provider and self.media_manager is not None:
+                resolve_app = getattr(
+                    self.media_manager,
+                    "application_for_provider",
+                    None,
+                )
+                if callable(resolve_app):
+                    application = resolve_app(provider)
+
+            if operation == "play" and query and application:
+                expanded.append(
+                    {
+                        "action": "open",
+                        "target": str(application),
+                    }
+                )
+
+            if provider:
+                normalized["provider"] = provider
+
+            expanded.append(normalized)
+
+        return expanded
 
     @staticmethod
     def _commands_from_intent(intent: IntentResult) -> list[dict[str, Any]]:
