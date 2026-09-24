@@ -645,7 +645,7 @@ class MediaManager:
         return tuple(provider.name for provider in self._providers)
 
     def provider_for_application(self, application_name: str):
-        normalized = self._normalize_search_text(application_name)
+        normalized = SpotifyProvider._normalize_search_text(application_name)
         if not normalized:
             return None
 
