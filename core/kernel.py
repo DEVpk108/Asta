@@ -30,14 +30,16 @@ class Kernel:
         authority_path=None,
     ):
         self.event_bus = EventBus()
-        self.intent_router = IntentRouter()
+        self.media_manager = MediaManager()
+        self.intent_router = IntentRouter(
+            media_providers=self.media_manager.providers(),
+        )
         self.decision_engine = create_decision_engine()
         self.task_manager = TaskManager(event_bus=self.event_bus)
         self.workspace_manager = WorkspaceManager(event_bus=self.event_bus)
         self.application_manager = ApplicationManager()
         self.skill_manager = SkillManager(event_bus=self.event_bus)
         self.notes_manager = NotesManager()
-        self.media_manager = MediaManager()
 
         self.tool_registry = ToolRegistry()
         self.planner = Planner(
