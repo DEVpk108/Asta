@@ -256,14 +256,13 @@ class AIModule(Module):
         text: str,
         intent: IntentResult,
     ) -> IntentResult | None:
-        """Recover a command when STT drops the action word."""
-        if intent.intent is not IntentType.UNKNOWN:
-            return None
-
+        """Recover a clipped/garbled media command from a very recent plan."""
         task_manager = getattr(self.kernel, "task_manager", None)
         if task_manager is None:
             return None
 
+        # Only use very recent task context. This is context recovery, not a
+        # general command override.
         tasks = task_manager.list()
         if not tasks:
             return None
@@ -276,7 +275,6 @@ class AIModule(Module):
                 datetime.min.replace(tzinfo=timezone.utc),
             ),
         )
-
         updated_at = getattr(recent, "updated_at", None)
         if updated_at is None:
             return None
@@ -288,12 +286,21 @@ class AIModule(Module):
         except TypeError:
             return None
 
-        if age_seconds < 0 or age_seconds > 30:
+        if age_seconds < 0 or age_seconds > 20:
             return None
 
         plan = getattr(recent, "plan", None)
         if plan is None:
             return None
+
+        current_query = ""
+        current_media = (
+            intent.intent is IntentType.COMMAND
+            and intent.entities.get("action") == "media"
+            and str(intent.entities.get("operation") or "").lower() == "play"
+        )
+        if current_media:
+            current_query = str(intent.entities.get("query") or "").strip()
 
         transcript_tokens = re.findall(r"[a-z0-9]+", str(text).lower())
         if not transcript_tokens:
@@ -306,11 +313,16 @@ class AIModule(Module):
 
             query = str(metadata.get("query") or "").strip()
             operation = str(metadata.get("operation") or "").strip().lower()
-            if not query or not operation:
+            if operation != "play" or not query:
                 continue
 
             query_tokens = re.findall(r"[a-z0-9]+", query.lower())
             if not query_tokens:
+                continue
+
+            comparison_text = current_query or str(text)
+            comparison_tokens = re.findall(r"[a-z0-9]+", comparison_text.lower())
+            if not comparison_tokens:
                 continue
 
             coverage = []
@@ -320,17 +332,32 @@ class AIModule(Module):
                         SequenceMatcher(
                             None,
                             query_token,
-                            transcript_token,
+                            candidate,
                             autojunk=False,
                         ).ratio()
-                        for transcript_token in transcript_tokens
+                        for candidate in comparison_tokens
                     ),
                     default=0.0,
                 )
                 coverage.append(best)
 
             match_score = sum(coverage) / len(coverage)
-            if match_score < 0.78:
+
+            # Unknown/STT-fragment input can recover from a reasonably strong
+            # match. A recognized media command is only replaced when it looks
+            # like a noisy continuation of the same request.
+            if intent.intent is IntentType.UNKNOWN:
+                acceptable = match_score >= 0.68
+            else:
+                noisy_tokens = {"and", "the", "a", "an", "sir", "please", "okay", "ok"}
+                acceptable = (
+                    current_media
+                    and match_score >= 0.38
+                    and any(token in noisy_tokens for token in comparison_tokens)
+                    and current_query != query
+                )
+
+            if not acceptable:
                 continue
 
             entities = {
@@ -343,8 +370,8 @@ class AIModule(Module):
                 entities["provider"] = provider
 
             print(
-                "[AI] Recovered command from recent task context: "
-                f"media {operation} {query} (match={match_score:.2f})",
+                "[AI] Recovered media command from recent task context: "
+                f"{operation} {query} (match={match_score:.2f})",
                 flush=True,
             )
             return IntentResult(
