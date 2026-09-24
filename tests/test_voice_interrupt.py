@@ -154,7 +154,7 @@ def test_barge_echo_baseline_requires_energy_rise_during_tts():
 
     # The first TTS window establishes the room/speaker echo floor.
     voice._barge_echo_rms = 0.020
-    voice._barge_echo_peak = 0.100
+    voice._barge_echo_peak = 0.120
 
     echo_rms_gate = max(
         voice._barge_min_rms,
