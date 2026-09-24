@@ -810,6 +810,8 @@ class AIModule(Module):
             return f"I couldn't start {target}." if target else "I couldn't start the process."
 
         if result.tool == "media.control":
+            if "ASTA_SPOTIFY_CLIENT_ID" in str(result.error or ""):
+                return "Spotify playback needs one-time authorization."
             return "I couldn't control media playback."
 
         if result.tool == "system.stop_process":
