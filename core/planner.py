@@ -136,6 +136,11 @@ class Planner:
                 **dict(metadata or {}),
             },
         )
+        print(
+            "[Tasks] Plan: "
+            + " -> ".join(step.description for step in steps),
+            flush=True,
+        )
         return plan
 
     def _expand_media_commands(
