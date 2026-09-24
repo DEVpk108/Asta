@@ -118,14 +118,23 @@ class RecognitionEngine:
 
     @staticmethod
     def _normalize(text):
-        normalized = re.sub(r"\s+", " ", text.strip().lower())
-        return normalized.rstrip(" .!?;:,")
+        normalized = re.sub(r"[^a-z0-9]+", " ", str(text or "").strip().lower())
+        return re.sub(r"\s+", " ", normalized).strip()
+
 
     def _is_hallucination(self, text):
         normalized = self._normalize(text)
         if not normalized:
             return True
         if normalized in self.HALLUCINATION_PHRASES:
+            return True
+
+        if normalized in {
+            "okay thank you",
+            "ok thank you",
+            "okay thanks",
+            "ok thanks",
+        }:
             return True
 
         alnum = re.sub(r"[^a-z0-9]+", "", normalized)
@@ -138,6 +147,7 @@ class RecognitionEngine:
 
         return False
 
+
     @staticmethod
     def _segment_is_unreliable(segment, *, strict=False):
         """Reject segments that strongly look like silence/noise transcription."""
@@ -147,74 +157,128 @@ class RecognitionEngine:
             getattr(segment, "compression_ratio", 0.0) or 0.0
         )
 
-        # Normal recognition uses multiple weak signals before dropping a
-        # segment so quiet legitimate speech is not discarded too aggressively.
         if no_speech_prob >= 0.80 and avg_logprob <= -1.0:
             return True
 
-        # Barge-in is a special-purpose recognizer: its only useful outputs are
-        # explicit interruption phrases. Speaker playback commonly leaks into
-        # the microphone as high-no_speech Whisper segments such as
-        # "Thank you." Reject those aggressively before they reach the
-        # interruption matcher.
         if strict and no_speech_prob >= 0.80:
             return True
         if compression_ratio >= 3.0 and avg_logprob <= -1.0:
             return True
         return False
 
+
     def _transcribe_whisper(self, audio, *, strict=False):
         if self.model is None:
             raise RuntimeError("Whisper backend is not initialized.")
 
-        # A.S.T.A. already extracts speech with streaming Silero VAD. Do not run
-        # a second VAD pass here, and do not bias transcription with a prompt that
-        # can leak literal prompt text into hallucinated transcripts.
-        segments, info = self.model.transcribe(
-            audio,
-            language=getattr(self, "language", "en"),
-            beam_size=getattr(self, "beam_size", 5),
-            vad_filter=False,
-            condition_on_previous_text=False,
-            temperature=0.0,
-            compression_ratio_threshold=2.4,
-            log_prob_threshold=-1.0,
-            no_speech_threshold=0.80,
-        )
-
-        parts = []
-        segment_stats = []
-        rejected_segments = 0
-        for segment in segments:
-            if not segment.text or not segment.text.strip():
-                continue
-
-            avg_logprob = float(getattr(segment, "avg_logprob", 0.0) or 0.0)
-            no_speech_prob = float(getattr(segment, "no_speech_prob", 0.0) or 0.0)
-            compression_ratio = float(
-                getattr(segment, "compression_ratio", 0.0) or 0.0
+        def decode(temperature):
+            segments, info = self.model.transcribe(
+                audio,
+                language=getattr(self, "language", "en"),
+                beam_size=getattr(self, "beam_size", 5),
+                vad_filter=False,
+                condition_on_previous_text=False,
+                temperature=temperature,
+                compression_ratio_threshold=2.4,
+                log_prob_threshold=-1.0,
+                no_speech_threshold=0.80,
             )
-            segment_stats.append((avg_logprob, no_speech_prob, compression_ratio))
 
-            if self._segment_is_unreliable(segment, strict=strict):
-                rejected_segments += 1
-                if not strict:
-                    print(
-                        "[STT] Rejected low-confidence segment: "
-                    f"text={segment.text!r} "
-                    f"avg_logprob={avg_logprob:.2f} "
-                    f"no_speech={no_speech_prob:.2f} "
-                    f"compression={compression_ratio:.2f}",
-                        flush=True,
-                    )
-                continue
+            parts = []
+            segment_stats = []
+            rejected_segments = 0
 
-            parts.append(segment.text.strip())
+            for segment in segments:
+                if not segment.text or not segment.text.strip():
+                    continue
 
-        self.last_language = getattr(info, "language", None)
-        self.last_language_probability = float(
-            getattr(info, "language_probability", 0.0) or 0.0
+                avg_logprob = float(getattr(segment, "avg_logprob", 0.0) or 0.0)
+                no_speech_prob = float(getattr(segment, "no_speech_prob", 0.0) or 0.0)
+                compression_ratio = float(
+                    getattr(segment, "compression_ratio", 0.0) or 0.0
+                )
+                segment_stats.append(
+                    (avg_logprob, no_speech_prob, compression_ratio)
+                )
+
+                if self._segment_is_unreliable(segment, strict=strict):
+                    rejected_segments += 1
+                    if not strict:
+                        print(
+                            "[STT] Rejected low-confidence segment: "
+                            f"text={segment.text!r} "
+                            f"avg_logprob={avg_logprob:.2f} "
+                            f"no_speech={no_speech_prob:.2f} "
+                            f"compression={compression_ratio:.2f}",
+                            flush=True,
+                        )
+                    continue
+
+                parts.append(segment.text.strip())
+
+            language = getattr(info, "language", None)
+            language_probability = float(
+                getattr(info, "language_probability", 0.0) or 0.0
+            )
+
+            return (
+                " ".join(parts).strip(),
+                segment_stats,
+                rejected_segments,
+                language,
+                language_probability,
+            )
+
+        text, segment_stats, rejected_segments, language, language_probability = decode(
+            0.0
         )
+
+        # A low-confidence first pass is commonly caused by a clipped onset
+        # rather than a genuinely silent utterance. Retry the same captured
+        # audio with a small amount of decoding temperature so Whisper can
+        # escape a poor first-token choice without changing the normal fast
+        # path for healthy utterances.
+        if (
+            text
+            and segment_stats
+            and not strict
+            and (
+                sum(item[1] for item in segment_stats) / len(segment_stats) >= 0.55
+                or sum(item[0] for item in segment_stats) / len(segment_stats) <= -0.70
+            )
+        ):
+            retry_text, retry_stats, retry_rejected, retry_language, retry_probability = decode(
+                0.2
+            )
+
+            def quality(stats):
+                if not stats:
+                    return float("-inf")
+                return sum(
+                    avg + (1.0 - no_speech) * 0.5
+                    for avg, no_speech, _compression in stats
+                ) / len(stats)
+
+            if retry_text and quality(retry_stats) > quality(segment_stats):
+                print(
+                    "[STT] Low-confidence retry selected "
+                    f"(base={quality(segment_stats):.3f}, "
+                    f"retry={quality(retry_stats):.3f}).",
+                    flush=True,
+                )
+                text = retry_text
+                segment_stats = retry_stats
+                rejected_segments = retry_rejected
+                language = retry_language
+                language_probability = retry_probability
+            else:
+                print(
+                    "[STT] Low-confidence retry did not improve the decode.",
+                    flush=True,
+                )
+
+        self.last_language = language
+        self.last_language_probability = language_probability
 
         if self.debug and segment_stats:
             formatted_stats = [
@@ -225,7 +289,9 @@ class RecognitionEngine:
             unique_stats = []
             for stats in dict.fromkeys(formatted_stats):
                 count = counts[stats]
-                unique_stats.append(f"{stats} (x{count})" if count > 1 else stats)
+                unique_stats.append(
+                    f"{stats} (x{count})" if count > 1 else stats
+                )
 
             print(
                 f"[STT] Segment confidence ({len(segment_stats)} segment(s)): "
@@ -233,10 +299,13 @@ class RecognitionEngine:
                 flush=True,
             )
 
-        if rejected_segments and not parts:
-            print("[STT] All Whisper segments rejected as unreliable.", flush=True)
+        if rejected_segments and not text:
+            print(
+                "[STT] All Whisper segments rejected as unreliable.",
+                flush=True,
+            )
 
-        return " ".join(parts).strip()
+        return text
 
     def _use_indic(self, audio, whisper_text):
         indic = self._load_indic()
