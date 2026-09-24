@@ -644,6 +644,29 @@ class MediaManager:
     def providers(self) -> tuple[str, ...]:
         return tuple(provider.name for provider in self._providers)
 
+    def provider_for_application(self, application_name: str):
+        normalized = self._normalize_search_text(application_name)
+        if not normalized:
+            return None
+
+        tokens = set(normalized.split())
+        for provider in self._providers:
+            aliases = {
+                self._normalize_search_text(provider.name),
+                *(
+                    self._normalize_search_text(alias)
+                    for alias in getattr(provider, "aliases", ())
+                ),
+            }
+            for alias in aliases:
+                if alias and (
+                    alias == normalized
+                    or alias in tokens
+                    or alias in normalized
+                ):
+                    return provider.name
+        return None
+
     def execute(self, request: MediaRequest) -> MediaResult:
         explicit = str(request.provider or "").strip().lower()
         if explicit:
