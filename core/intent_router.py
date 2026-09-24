@@ -357,6 +357,22 @@ class IntentRouter:
                         "target": target,
                     }
 
+        # Whisper/STT can occasionally collapse an action and its target
+        # into one token, for example "OpenSpotify" -> "openspotify".
+        # Accept that form conservatively without depending on any
+        # specific application name.
+        compact_match = re.fullmatch(
+            r"(open|launch|start|close|run|stop)([a-z0-9][a-z0-9._-]*)",
+            text,
+        )
+        if compact_match:
+            action, target = compact_match.groups()
+            if len(target) >= 3 or target in {"it", "this", "that"}:
+                return {
+                    "action": action,
+                    "target": target,
+                }
+
         if text in {"screenshot", "screen shot"}:
             return {"action": "screenshot"}
 
