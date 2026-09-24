@@ -116,7 +116,8 @@ class Planner:
                             key: value
                             for key, value in command.items()
                             if key not in {"action", "target"}
-                            and value not in {None, ""}
+                            and value is not None
+                            and value != ""
                         },
                     },
                 )
