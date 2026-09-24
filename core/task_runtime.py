@@ -59,14 +59,21 @@ class TaskRuntimeModule(Module):
         if intent.intent is not IntentType.COMMAND:
             return
 
+        self.start_plan(
+            intent.normalized_text,
+            intent,
+        )
+
+    def start_plan(self, goal: str, intent: IntentResult):
+        """Create an executable task plan from any structured command intent."""
         try:
             plan = self.kernel.planner.plan(
-                text,
+                goal,
                 intent=intent,
             )
         except PlanningError as exc:
             print(f"[Tasks] Planning failed: {exc}", flush=True)
-            return
+            return None
 
         pending_steps = [step.description for step in plan.steps]
 
@@ -85,6 +92,7 @@ class TaskRuntimeModule(Module):
             f"[Tasks] Started task {task.id}: {task.goal}",
             flush=True,
         )
+        return task
 
     def on_tool_request(self, request):
         if not isinstance(request, ToolRequest):
