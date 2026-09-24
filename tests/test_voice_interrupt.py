@@ -140,3 +140,30 @@ def test_vad_starts_from_speech_contained_in_initial_preroll():
     assert audio is not None
     assert audio.size >= seed.size
     assert float(np.sqrt(np.mean(np.square(audio)))) >= 0.05
+
+
+
+def test_barge_echo_baseline_requires_energy_rise_during_tts():
+    voice = object.__new__(VoiceModule)
+    voice._tts_active = True
+    voice._barge_tts_warmup_until = 0.0
+    voice._barge_echo_rms = None
+    voice._barge_echo_peak = None
+    voice._barge_min_rms = 0.012
+    voice._barge_min_peak = 0.045
+
+    # The first TTS window establishes the room/speaker echo floor.
+    voice._barge_echo_rms = 0.020
+    voice._barge_echo_peak = 0.100
+
+    echo_rms_gate = max(
+        voice._barge_min_rms,
+        voice._barge_echo_rms * 1.70,
+    )
+    echo_peak_gate = max(
+        voice._barge_min_peak,
+        voice._barge_echo_peak * 1.45,
+    )
+
+    assert 0.022 < echo_rms_gate
+    assert 0.1483 < echo_peak_gate
