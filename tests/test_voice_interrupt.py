@@ -1,4 +1,5 @@
 from voice.voice_module import VoiceModule
+from voice.vad_engine import VADEngine
 
 
 def test_barge_in_stop_phrase_is_detected():
@@ -96,3 +97,40 @@ def test_speech_finished_uses_short_post_tts_settle_window():
     assert voice._post_tts_seed_pending is True
     assert 0.05 <= voice._tts_guard_until - before <= 0.30
     assert voice.microphone.cleared is True
+
+
+
+def test_vad_starts_from_speech_contained_in_initial_preroll():
+    import numpy as np
+
+    class FakeVadIterator:
+        def __call__(self, _tensor):
+            return {"end": 1}
+
+        def reset_states(self):
+            return None
+
+    class Microphone:
+        def get_chunk(self):
+            return np.zeros(512, dtype=np.float32)
+
+    vad = object.__new__(VADEngine)
+    vad.sample_rate = 16000
+    vad.min_speech_duration = 0.10
+    vad.min_rms = 0.012
+    vad.min_peak = 0.04
+    vad.start_chunk_rms = 0.005
+    vad.pre_roll_samples = 12800
+    vad.vad = FakeVadIterator()
+    vad.debug = False
+
+    seed = np.full(1600, 0.08, dtype=np.float32)
+    audio = vad.collect_utterance(
+        Microphone(),
+        initial_audio=seed,
+        speech_timeout=1.0,
+    )
+
+    assert audio is not None
+    assert audio.size >= seed.size
+    assert float(np.sqrt(np.mean(np.square(audio)))) >= 0.05
