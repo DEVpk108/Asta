@@ -151,7 +151,6 @@ class SpotifyProvider:
         } and not request.query
 
     @staticmethod
-    @staticmethod
     def _normalize_search_text(value: str) -> str:
         return _normalize_media_text(value)
 
