@@ -50,7 +50,11 @@ def test_media_manager_prefers_provider_that_supports_query():
 
     manager = MediaManager(providers=(FakeProvider(),))
     result = manager.execute(
-        MediaRequest(operation="play", query="test song")
+        MediaRequest(
+            operation="play",
+            query="test song",
+            provider="fake",
+        )
     )
 
     assert result.success is True
