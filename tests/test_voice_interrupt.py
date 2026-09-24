@@ -142,7 +142,11 @@ def test_vad_starts_from_speech_contained_in_initial_preroll():
 
     assert audio is not None
     assert audio.size >= seed.size
-    assert float(np.sqrt(np.mean(np.square(audio)))) >= 0.05
+    # The capture also contains the subsequent silence used to satisfy the
+    # simulated VAD end condition, so whole-buffer RMS is diluted. Verify the
+    # actual contract: the speech preroll survived intact at the beginning.
+    assert np.array_equal(audio[:seed.size], seed)
+    assert float(np.max(np.abs(audio[:seed.size]))) >= 0.08
 
 
 
