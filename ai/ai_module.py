@@ -686,20 +686,26 @@ class AIModule(Module):
         self.event_bus.emit("tool_request", request=request)
 
     def _planned_request_for_intent(self, intent: IntentResult):
-        """Return the next task-plan request when TaskRuntime owns this command."""
+        """Return the next plan step, creating a plan for recovered commands."""
         task_manager = getattr(self.kernel, "task_manager", None)
         task_runtime = getattr(self.kernel, "task_runtime", None)
         if task_manager is None or task_runtime is None:
             return None
 
         task = task_manager.current()
+
+        if (
+            task is None
+            or task.plan is None
+            or task.status.value != "active"
+            or task.goal != intent.normalized_text
+        ):
+            starter = getattr(task_runtime, "start_plan", None)
+            if not callable(starter):
+                return None
+            task = starter(intent.normalized_text, intent)
+
         if task is None or task.plan is None:
-            return None
-
-        if task.status.value != "active":
-            return None
-
-        if task.goal != intent.normalized_text:
             return None
 
         plan = task.plan
