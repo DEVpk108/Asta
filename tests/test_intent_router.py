@@ -228,3 +228,18 @@ def test_media_control_command_is_actionable():
         "action": "media",
         "operation": "pause",
     }
+
+
+
+def test_intent_router_recovers_media_command_when_stt_drops_play():
+    router = IntentRouter(media_providers=("spotify", "system"))
+
+    result = router.analyze("Only Hanuman Chalisa on Spotify")
+
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "media",
+        "operation": "play",
+        "query": "hanuman chalisa",
+        "provider": "spotify",
+    }
