@@ -1,3 +1,4 @@
+import os
 import re
 import threading
 import time
@@ -65,7 +66,7 @@ class VoiceModule(Module):
                 min(
                     0.40,
                     float(
-                        __import__("os").getenv(
+                        os.getenv(
                             "ASTA_VOICE_POST_TTS_GUARD_MS",
                             "150",
                         )
