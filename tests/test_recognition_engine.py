@@ -135,4 +135,4 @@ def test_low_confidence_whisper_decode_can_retry_and_select_better_result():
     engine = make_engine(RetryWhisper(), language="en")
 
     assert engine.transcribe("audio") == "Play Hanuman Chalisa on Spotify."
-    assert len(engine.model.calls) == 2
+    assert engine.model.calls == 2
