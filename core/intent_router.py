@@ -149,6 +149,17 @@ class IntentRouter:
                 classifier="rules",
             )
 
+        recovered_media = self._recover_media_command(normalized)
+        if recovered_media:
+            return IntentResult(
+                intent=IntentType.COMMAND,
+                confidence=0.94,
+                normalized_text=normalized,
+                entities=recovered_media,
+                requires_tools=True,
+                classifier="rules",
+            )
+
         conversation_phrases = (
             "who are you",
             "what are you",
@@ -415,6 +426,10 @@ class IntentRouter:
 
     @classmethod
     def _extract_media_command(cls, text: str) -> dict[str, Any]:
+        request = parse_media_request(text)
+        return request.to_entities() if request is not None else {}
+
+    def _recover_media_command(self, text: str) -> dict[str, Any]:
         request = parse_media_request(
             text,
             known_providers=self._media_providers,
