@@ -241,3 +241,82 @@ def test_recent_media_plan_recovers_clipped_command_verb():
         "provider": "spotify",
     }
     assert recovered.classifier == "task_context"
+
+
+
+def test_recent_failed_media_task_recovers_noisy_play_query():
+    from core.contracts import (
+        IntentResult,
+        IntentType,
+        Plan,
+        PlanStatus,
+        PlanStep,
+        PlanStepStatus,
+    )
+
+    kernel = Kernel()
+    ai = AIModule(kernel)
+
+    plan = Plan(
+        goal="play hanuman chalisa on spotify",
+        steps=[
+            PlanStep(
+                id="step-1",
+                description="open Spotify",
+                status=PlanStepStatus.COMPLETED,
+                metadata={
+                    "action": "open",
+                    "target": "Spotify",
+                    "tool": "system.open_application",
+                },
+            ),
+            PlanStep(
+                id="step-2",
+                description="play hanuman chalisa",
+                status=PlanStepStatus.READY,
+                metadata={
+                    "action": "media",
+                    "operation": "play",
+                    "query": "hanuman chalisa",
+                    "provider": "spotify",
+                    "tool": "media.control",
+                },
+            ),
+        ],
+        status=PlanStatus.ACTIVE,
+    )
+
+    task = kernel.task_manager.create(
+        "play hanuman chalisa on spotify",
+        pending_steps=["play hanuman chalisa"],
+        plan=plan,
+    )
+
+    task.fail("simulated playback setup failure")
+
+    intent = IntentResult(
+        intent=IntentType.COMMAND,
+        confidence=0.98,
+        normalized_text="play and manjali sir",
+        entities={
+            "action": "media",
+            "operation": "play",
+            "query": "and manjali sir",
+        },
+        requires_tools=True,
+        classifier="rules",
+    )
+
+    recovered = ai._recover_recent_command(
+        "play and manjali sir",
+        intent,
+    )
+
+    assert recovered is not None
+    assert recovered.entities == {
+        "action": "media",
+        "operation": "play",
+        "query": "hanuman chalisa",
+        "provider": "spotify",
+    }
+    assert recovered.classifier == "task_context"
