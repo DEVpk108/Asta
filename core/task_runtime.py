@@ -29,6 +29,7 @@ class TaskRuntimeModule(Module):
             kernel=kernel,
         )
         self.tool_request_builder = ToolRequestBuilder(kernel.tool_registry)
+        kernel.task_runtime = self
 
     def initialize(self):
         self.event_bus.subscribe("user_message", self.on_user_message)
@@ -180,7 +181,7 @@ class TaskRuntimeModule(Module):
         if next_step is None:
             return
 
-        next_request = self._build_plan_request(refreshed, next_step)
+        next_request = self.build_plan_request(refreshed, next_step)
         if next_request is None:
             self.kernel.task_manager.fail(
                 f"Unable to build a tool request for plan step '{next_step.id}'.",
@@ -272,7 +273,7 @@ class TaskRuntimeModule(Module):
 
         return None
 
-    def _build_plan_request(self, task, step) -> ToolRequest | None:
+    def build_plan_request(self, task, step) -> ToolRequest | None:
         action = str(step.metadata.get("action") or "").strip()
         target = str(step.metadata.get("target") or "").strip()
         if not action:
@@ -287,6 +288,12 @@ class TaskRuntimeModule(Module):
             entities={
                 "action": action,
                 **({"target": target} if target else {}),
+                **{
+                    key: value
+                    for key, value in step.metadata.items()
+                    if key in {"operation", "query", "provider"}
+                    and value not in {None, ""}
+                },
             },
             requires_tools=True,
             classifier=str(task.metadata.get("classifier", "rules")),
