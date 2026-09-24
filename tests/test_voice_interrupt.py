@@ -62,3 +62,37 @@ def test_post_tts_preroll_is_consumed_only_once():
     voice._post_tts_seed_pending = False
 
     assert voice._take_post_tts_seed() is None
+
+
+
+def test_speech_finished_uses_short_post_tts_settle_window():
+    import threading
+    import time
+
+    class Microphone:
+        def __init__(self):
+            self.cleared = False
+
+        def clear_buffer(self):
+            self.cleared = True
+
+    voice = object.__new__(VoiceModule)
+    voice.microphone = Microphone()
+    voice._tts_active = True
+    voice._tts_guard_until = 0.0
+    voice._post_tts_seed_pending = False
+    voice._post_tts_guard_seconds = 0.15
+    voice._conversation_active = True
+    voice._manual_conversation = False
+    voice._last_interaction = 0.0
+    voice._barge_stop = threading.Event()
+    voice._barge_thread = None
+    voice._stop_barge_listener = lambda: None
+
+    before = time.monotonic()
+    voice._on_speech_finished()
+
+    assert voice._tts_active is False
+    assert voice._post_tts_seed_pending is True
+    assert 0.05 <= voice._tts_guard_until - before <= 0.30
+    assert voice.microphone.cleared is True
