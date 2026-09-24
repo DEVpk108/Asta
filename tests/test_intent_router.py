@@ -186,3 +186,24 @@ def test_search_notes_command_is_actionable():
         "action": "search_notes",
         "query": "interruption",
     }
+
+
+def test_collapsed_open_command_is_actionable():
+    result = IntentRouter().analyze("OpenSpotify")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {"action": "open", "target": "spotify"}
+
+
+def test_collapsed_close_pronoun_is_actionable():
+    result = IntentRouter().analyze("Closeit")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {"action": "close", "target": "it"}
+
+
+def test_collapsed_open_command_supports_multiword_app_without_spaces():
+    result = IntentRouter().analyze("OpenVisualStudioCode")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "open",
+        "target": "visualstudiocode",
+    }
