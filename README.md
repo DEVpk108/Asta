@@ -171,7 +171,7 @@ yet, so export these before starting A.S.T.A.
 | `ASTA_HUD_PORT` | `18765` | HUD transport port |
 | `ASTA_STT_BACKEND` | `whisper` | `whisper`, `indic` or `hybrid` |
 | `ASTA_CHAT_HISTORY_DB` | `data/chat_history.db` | SQLite chat history location |
-| `ASTA_VOICE_POST_TTS_GUARD_MS` | `150` | Short post-TTS settle window; speech during it is retained as VAD preroll |
+| `ASTA_VOICE_POST_TTS_GUARD_MS` | `80` | Short post-TTS settle window; speech during it is retained as VAD preroll |
 | `ASTA_SPOTIFY_CLIENT_ID` | - | Spotify developer app client ID for authenticated track playback |
 | `ASTA_SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8765/callback` | Loopback URI used by Spotify PKCE authorization |
 | `ASTA_SPOTIFY_TOKEN_PATH` | `data/spotify_token.json` | Local Spotify OAuth token cache |
