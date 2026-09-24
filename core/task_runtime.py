@@ -312,6 +312,8 @@ class TaskRuntimeModule(Module):
         request.metadata["task_step"] = step.description
         request.metadata["plan_step_id"] = step.id
         request.metadata["planner"] = "task_runtime"
+        if "sequence_index" in step.metadata:
+            request.metadata["sequence_index"] = step.metadata["sequence_index"]
         return request
 
     @staticmethod
@@ -347,6 +349,10 @@ class TaskRuntimeModule(Module):
         if isinstance(sequence, list) and isinstance(index, int):
             if 0 <= index < len(sequence):
                 return cls._describe_command(sequence[index])
+
+        planned_step = request.metadata.get("task_step")
+        if isinstance(planned_step, str) and planned_step.strip():
+            return planned_step.strip()
 
         action = request.metadata.get("action") or request.arguments.get("action")
         target = request.arguments.get("target")
