@@ -390,6 +390,23 @@ class VoiceModule(Module):
             self.event_bus.emit("speech_interrupt")
             break
 
+    def _take_post_tts_seed(self):
+        if not self._post_tts_seed_pending:
+            return None
+
+        self._post_tts_seed_pending = False
+        try:
+            seed = np.asarray(
+                self.microphone.get_buffer(),
+                dtype=np.float32,
+            ).flatten()
+        except Exception:
+            return None
+
+        if seed.size:
+            print("[VAD] Using post-TTS microphone preroll.", flush=True)
+        return seed if seed.size else None
+
     def _on_tool_confirmation_required(self, *args, **kwargs):
         self._awaiting_confirmation = True
         self._last_transcript = ""
@@ -545,14 +562,8 @@ class VoiceModule(Module):
                     self._interrupted_audio = None
                     self._speech_interrupted.clear()
 
-                if interrupted_audio is None and self._post_tts_seed_pending:
-                    interrupted_audio = self.microphone.get_buffer()
-                    self._post_tts_seed_pending = False
-                    if interrupted_audio.size:
-                        print(
-                            "[VAD] Using post-TTS microphone preroll.",
-                            flush=True,
-                        )
+                if interrupted_audio is None:
+                    interrupted_audio = self._take_post_tts_seed()
 
                 self.microphone.flush()
 
