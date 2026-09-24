@@ -10,6 +10,13 @@ from .media import parse_media_request
 
 class IntentRouter:
 
+    def __init__(self, *, media_providers=None):
+        self._media_providers = tuple(
+            str(name).strip().lower()
+            for name in (media_providers or ())
+            if str(name).strip()
+        )
+
     _COMMAND_PREFIXES = (
         ("open ", "open"),
         ("launch ", "launch"),
@@ -408,7 +415,10 @@ class IntentRouter:
 
     @classmethod
     def _extract_media_command(cls, text: str) -> dict[str, Any]:
-        request = parse_media_request(text)
+        request = parse_media_request(
+            text,
+            known_providers=self._media_providers,
+        )
         return request.to_entities() if request is not None else {}
 
     @classmethod
