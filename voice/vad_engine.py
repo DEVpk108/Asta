@@ -23,7 +23,7 @@ class VADEngine:
         min_rms=0.012,
         min_peak=0.04,
         start_chunk_rms=0.005,
-        pre_roll_ms=450,
+        pre_roll_ms=None,
     ):
 
         if silence_ms is None:
@@ -38,6 +38,12 @@ class VADEngine:
         self.min_rms = min_rms
         self.min_peak = min_peak
         self.start_chunk_rms = start_chunk_rms
+        if pre_roll_ms is None:
+            try:
+                pre_roll_ms = int(os.getenv("ASTA_VAD_PRE_ROLL_MS", "800"))
+            except ValueError:
+                pre_roll_ms = 800
+        pre_roll_ms = max(250, min(1600, int(pre_roll_ms)))
         self.pre_roll_samples = max(1, int(sample_rate * pre_roll_ms / 1000))
 
         self.model = load_silero_vad()
@@ -75,6 +81,34 @@ class VADEngine:
             seed = np.asarray(initial_audio, dtype=np.float32).flatten()
             if seed.size:
                 initial_seed = seed[-self.pre_roll_samples :].copy()
+
+        # Post-TTS speech can begin before the live VAD iterator receives its
+        # first chunk. When the handoff seed already contains speech energy,
+        # start the utterance from that seed instead of waiting for a fresh
+        # Silero start event and losing the first word.
+        if initial_seed is not None:
+            seed_rms = float(np.sqrt(np.mean(np.square(initial_seed))))
+            seed_peak = (
+                float(np.max(np.abs(initial_seed)))
+                if initial_seed.size
+                else 0.0
+            )
+            seed_gate_rms = max(
+                self.start_chunk_rms * 1.5,
+                self.min_rms * 0.55,
+            )
+            seed_gate_peak = max(
+                self.min_peak * 0.70,
+                0.028,
+            )
+            if seed_rms >= seed_gate_rms and seed_peak >= seed_gate_peak:
+                recording = True
+                audio_buffer.append(initial_seed)
+                initial_seed = None
+                print(
+                    "[VAD] Seed contains speech; preserving the full post-TTS onset.",
+                    flush=True,
+                )
 
         # The wake-word detector's ring buffer is intentionally not reused for
         # command recognition. The command gets a fresh, live pre-roll instead.
