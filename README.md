@@ -171,6 +171,10 @@ yet, so export these before starting A.S.T.A.
 | `ASTA_HUD_PORT` | `18765` | HUD transport port |
 | `ASTA_STT_BACKEND` | `whisper` | `whisper`, `indic` or `hybrid` |
 | `ASTA_CHAT_HISTORY_DB` | `data/chat_history.db` | SQLite chat history location |
+| `ASTA_VOICE_POST_TTS_GUARD_MS` | `150` | Short post-TTS settle window; speech during it is retained as VAD preroll |
+| `ASTA_SPOTIFY_CLIENT_ID` | - | Spotify developer app client ID for authenticated track playback |
+| `ASTA_SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8765/callback` | Loopback URI used by Spotify PKCE authorization |
+| `ASTA_SPOTIFY_TOKEN_PATH` | `data/spotify_token.json` | Local Spotify OAuth token cache |
 | `ASTA_MEMPALACE_PATH` | MemPalace default | Long-term memory store path |
 | `HF_TOKEN` / `HUGGINGFACE_HUB_TOKEN` | - | Needed for the gated IndicConformer model |
 
@@ -223,6 +227,34 @@ never terminated by A.S.T.A.
 Laya is not a replacement for the main local LLM. It is intended as a System 1
 routing/classification layer that can later feed model selection, planning
 strategy, multilingual intent classification, and guardrails.
+
+## Media control
+
+A.S.T.A. exposes media playback through a provider abstraction rather than
+hardcoding a single application.
+
+- `media.control` handles play, pause, toggle, next, previous and stop.
+- Windows transport controls use the global media keys when a provider API is
+  not required.
+- Spotify track playback uses the Spotify Web API when `ASTA_SPOTIFY_CLIENT_ID`
+  is configured. A.S.T.A. uses Authorization Code with PKCE and stores the
+  refresh token under `data/spotify_token.json`.
+
+For Spotify track playback, create a Spotify developer app and allowlist the
+loopback redirect URI `http://127.0.0.1:8765/callback`, then set:
+
+```powershell
+$env:ASTA_SPOTIFY_CLIENT_ID="your_client_id"
+$env:ASTA_SPOTIFY_REDIRECT_URI="http://127.0.0.1:8765/callback"
+```
+
+The first Spotify play request opens the browser for authorization. After the
+one-time authorization, a command such as **Play Hanuman Chalisa on Spotify**
+can search the Spotify catalog, select a matching track deterministically, and
+start playback on the active Spotify device.
+
+Spotify currently requires Premium for playback-control APIs, and Spotify's
+Development Mode also requires the app owner to have Premium.
 
 ## Tools and approvals
 
