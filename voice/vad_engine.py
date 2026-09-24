@@ -78,6 +78,7 @@ class VADEngine:
         recording_started_at = None
 
         initial_seed = None
+        used_initial_seed = False
         if initial_audio is not None:
             seed = np.asarray(initial_audio, dtype=np.float32).flatten()
             if seed.size:
@@ -107,6 +108,7 @@ class VADEngine:
                 recording_started_at = time.monotonic()
                 audio_buffer.append(initial_seed)
                 initial_seed = None
+                used_initial_seed = True
                 print(
                     "[VAD] Seed contains speech; preserving the full post-TTS onset.",
                     flush=True,
@@ -196,7 +198,7 @@ class VADEngine:
         print(
             f"[VAD] Capture: duration={duration:.3f}s "
             f"rms={rms:.4f} peak={peak:.4f} "
-            f"seed={'yes' if initial_seed is None and bool(initial_audio is not None) else 'no'}",
+            f"seed={'yes' if used_initial_seed else 'no'}",
             flush=True,
         )
         if self.debug:
