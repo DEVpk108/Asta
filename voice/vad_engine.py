@@ -17,9 +17,9 @@ class VADEngine:
         self,
         sample_rate=16000,
         min_speech_duration=0.30,
-        threshold=0.55,
+        threshold=0.50,
         silence_ms=None,
-        speech_pad_ms=350,
+        speech_pad_ms=500,
         min_rms=0.012,
         min_peak=0.04,
         start_chunk_rms=0.005,
@@ -40,7 +40,7 @@ class VADEngine:
         self.start_chunk_rms = start_chunk_rms
         if pre_roll_ms is None:
             try:
-                pre_roll_ms = int(os.getenv("ASTA_VAD_PRE_ROLL_MS", "800"))
+                pre_roll_ms = int(os.getenv("ASTA_VAD_PRE_ROLL_MS", "900"))
             except ValueError:
                 pre_roll_ms = 800
         pre_roll_ms = max(250, min(1600, int(pre_roll_ms)))
@@ -75,6 +75,7 @@ class VADEngine:
         audio_buffer = []
         pre_roll = deque(maxlen=self.pre_roll_samples)
         recording = False
+        recording_started_at = None
 
         initial_seed = None
         if initial_audio is not None:
@@ -103,6 +104,7 @@ class VADEngine:
             )
             if seed_rms >= seed_gate_rms and seed_peak >= seed_gate_peak:
                 recording = True
+                recording_started_at = time.monotonic()
                 audio_buffer.append(initial_seed)
                 initial_seed = None
                 print(
@@ -150,6 +152,7 @@ class VADEngine:
                 if not recording and self.is_speech_started(event):
                     print("[VAD] Command started.")
                     recording = True
+                    recording_started_at = time.monotonic()
 
                     if initial_seed is not None:
                         audio_buffer.append(initial_seed)
@@ -163,8 +166,21 @@ class VADEngine:
                     pre_roll.extend(chunk)
 
                 if recording and self.is_speech_ended(event):
-                    print("[VAD] Command finished.")
-                    break
+                    elapsed = (
+                        time.monotonic() - recording_started_at
+                        if recording_started_at is not None
+                        else 0.0
+                    )
+                    minimum_recording_seconds = max(
+                        self.min_speech_duration,
+                        0.35,
+                    )
+                    if elapsed >= minimum_recording_seconds:
+                        print(
+                            f"[VAD] Command finished "
+                            f"(capture={elapsed:.2f}s)."
+                        )
+                        break
 
         finally:
             self.vad.reset_states()
@@ -177,6 +193,12 @@ class VADEngine:
         peak = float(np.max(np.abs(audio))) if audio.size else 0.0
         duration = len(audio) / self.sample_rate
 
+        print(
+            f"[VAD] Capture: duration={duration:.3f}s "
+            f"rms={rms:.4f} peak={peak:.4f} "
+            f"seed={'yes' if initial_seed is None and bool(initial_audio is not None) else 'no'}",
+            flush=True,
+        )
         if self.debug:
             print(
                 f"[VAD] RMS={rms:.4f} peak={peak:.4f} "
