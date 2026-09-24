@@ -40,7 +40,11 @@ class Kernel:
         self.media_manager = MediaManager()
 
         self.tool_registry = ToolRegistry()
-        self.planner = Planner(self.tool_registry)
+        self.planner = Planner(
+            self.tool_registry,
+            media_manager=self.media_manager,
+            application_manager=self.application_manager,
+        )
         self.capability_discovery = CapabilityDiscovery(
             self.tool_registry,
             event_bus=self.event_bus,
