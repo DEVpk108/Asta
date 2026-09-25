@@ -548,8 +548,71 @@ class SpotifyProvider:
         expected_uri: str | None = None,
     ) -> dict:
         """Observe Spotify's current playback state without changing it."""
+        token = self._load_token()
+        if not token:
+            return {
+                "status": "unknown",
+                "summary": (
+                    "Spotify playback cannot be observed because no local "
+                    "authorization token is available."
+                ),
+            }
+
         try:
-            response = self._spotify_request("GET", "/me/player")
+            access_token = token.get("access_token")
+            expires_at = float(token.get("expires_at", 0) or 0)
+            refresh_token = token.get("refresh_token")
+
+            if not access_token or expires_at <= time.time() + 30:
+                if not refresh_token or not self.client_id:
+                    return {
+                        "status": "unknown",
+                        "summary": (
+                            "Spotify authorization is unavailable for "
+                            "read-only playback observation."
+                        ),
+                    }
+
+                response = requests.post(
+                    "https://accounts.spotify.com/api/token",
+                    data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                        "client_id": self.client_id,
+                    },
+                    timeout=15,
+                )
+                if not response.ok:
+                    return {
+                        "status": "unknown",
+                        "summary": (
+                            "Spotify access-token refresh failed during "
+                            "read-only playback observation."
+                        ),
+                    }
+
+                refreshed = response.json()
+                token = dict(token)
+                token.update(refreshed)
+                token["expires_at"] = (
+                    time.time() + int(refreshed.get("expires_in", 3600))
+                )
+                if not token.get("refresh_token"):
+                    token["refresh_token"] = refresh_token
+                self._save_token(token)
+                access_token = token.get("access_token")
+
+            if not access_token:
+                return {
+                    "status": "unknown",
+                    "summary": "Spotify returned no access token for observation.",
+                }
+
+            response = requests.get(
+                "https://api.spotify.com/v1/me/player",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=15,
+            )
         except Exception as exc:
             return {
                 "status": "unknown",
@@ -557,6 +620,12 @@ class SpotifyProvider:
                     f"Spotify playback observation failed: "
                     f"{type(exc).__name__}: {exc}"
                 ),
+            }
+
+        if response.status_code == 401:
+            return {
+                "status": "unknown",
+                "summary": "Spotify rejected the playback observation token.",
             }
 
         if response.status_code == 204:
