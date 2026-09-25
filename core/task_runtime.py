@@ -5,6 +5,7 @@ from typing import Any
 from .contracts import (
     IntentResult,
     IntentType,
+    PlanStatus,
     PlanStepStatus,
     TaskStatus,
     ToolRequest,
@@ -85,6 +86,8 @@ class TaskRuntimeModule(Module):
                 "intent_type": intent.intent.value,
                 "confidence": intent.confidence,
                 "classifier": intent.classifier,
+                "intent_entities": dict(intent.entities),
+                "replan_attempts": 0,
             },
         )
 
@@ -165,16 +168,23 @@ class TaskRuntimeModule(Module):
                 step_id=plan_step_id,
             )
             evidence["recovery"] = decision.to_dict()
-            self.kernel.task_manager.add_evidence(
-                evidence,
-                task.id,
-            )
 
-            self.event_bus.emit(
-                "task_recovery_required",
-                task_id=task.id,
-                decision=decision.to_dict(),
-            )
+            diagnosis = None
+            if decision.action.value == "replan":
+                diagnosis_engine = getattr(self.kernel, "diagnosis_engine", None)
+                if diagnosis_engine is not None:
+                    diagnosis = diagnosis_engine.diagnose(
+                        task,
+                        result,
+                        recovery=decision,
+                        step_id=plan_step_id,
+                    )
+                    evidence["diagnosis"] = diagnosis.to_dict()
+                    self.event_bus.emit(
+                        "task_diagnosed",
+                        task_id=task.id,
+                        diagnosis=diagnosis.to_dict(),
+                    )
 
             if decision.action.value == "retry":
                 retry_step = (
@@ -189,6 +199,16 @@ class TaskRuntimeModule(Module):
                         retry_step,
                     )
                     if retry_request is not None:
+                        self.kernel.task_manager.add_evidence(
+                            evidence,
+                            task.id,
+                        )
+                        self.event_bus.emit(
+                            "task_recovery_required",
+                            task_id=task.id,
+                            decision=decision.to_dict(),
+                            diagnosis=None,
+                        )
                         print(
                             f"[Tasks] Recovery retry: {retry_step.id} -> "
                             f"{retry_request.tool}",
@@ -201,11 +221,130 @@ class TaskRuntimeModule(Module):
                         return
 
             if decision.action.value == "wait_for_user":
+                self.kernel.task_manager.add_evidence(
+                    evidence,
+                    task.id,
+                )
+                self.event_bus.emit(
+                    "task_recovery_required",
+                    task_id=task.id,
+                    decision=decision.to_dict(),
+                    diagnosis=None,
+                )
                 self.kernel.task_manager.pause(task.id)
                 return
 
             if decision.action.value == "replan":
-                self.kernel.task_manager.pause(task.id)
+                replan_engine = getattr(self.kernel, "replan_engine", None)
+                if replan_engine is None or diagnosis is None:
+                    self.kernel.task_manager.pause(task.id)
+                    return
+
+                step = (
+                    task.plan.get_step(plan_step_id)
+                    if task.plan is not None and plan_step_id
+                    else None
+                )
+                replan_decision = replan_engine.choose(
+                    diagnosis,
+                    plan_step=step,
+                )
+                evidence["replan"] = replan_decision.to_dict()
+                self.event_bus.emit(
+                    "task_recovery_required",
+                    task_id=task.id,
+                    decision=decision.to_dict(),
+                    diagnosis=diagnosis.to_dict(),
+                )
+
+                attempts = int(task.metadata.get("replan_attempts", 0)) + 1
+                task.metadata["replan_attempts"] = attempts
+                max_replans = 3
+
+                if replan_decision.strategy.value == "wait_for_user":
+                    self.kernel.task_manager.add_evidence(evidence, task.id)
+                    self.event_bus.emit(
+                        "task_replan_required",
+                        task_id=task.id,
+                        decision=replan_decision.to_dict(),
+                    )
+                    self.kernel.task_manager.pause(task.id)
+                    return
+
+                if replan_decision.strategy.value == "fail" or attempts > max_replans:
+                    evidence["replan_guard"] = {
+                        "max_replans": max_replans,
+                        "attempt": attempts,
+                    }
+                    self.kernel.task_manager.add_evidence(evidence, task.id)
+                    self.event_bus.emit(
+                        "task_replan_required",
+                        task_id=task.id,
+                        decision=replan_decision.to_dict(),
+                    )
+                    self.kernel.task_manager.fail(
+                        "Autonomous replanning exhausted its safe recovery budget.",
+                        task.id,
+                    )
+                    return
+
+                try:
+                    new_plan = self.kernel.planner.replan(
+                        task,
+                        diagnosis,
+                        replan_decision.strategy,
+                    )
+                except PlanningError as exc:
+                    evidence["replan_error"] = str(exc)
+                    self.kernel.task_manager.add_evidence(evidence, task.id)
+                    self.event_bus.emit(
+                        "task_replan_required",
+                        task_id=task.id,
+                        decision=replan_decision.to_dict(),
+                        error=str(exc),
+                    )
+                    self.kernel.task_manager.pause(task.id)
+                    return
+
+                task.plan = new_plan
+                task.pending_steps = [step.description for step in new_plan.steps]
+                task.current_step = None
+                task.error = None
+                self.kernel.task_manager.add_evidence(evidence, task.id)
+                self.event_bus.emit(
+                    "task_replanned",
+                    task_id=task.id,
+                    decision=replan_decision.to_dict(),
+                    plan=new_plan.to_dict(),
+                )
+
+                # The task remains ACTIVE throughout an autonomous replan;
+                # only its structured plan is replaced.
+                task.plan.status = PlanStatus.ACTIVE
+                task.plan.mark_ready_steps()
+
+                next_step = self._next_ready_plan_step(task)
+                if next_step is None:
+                    self.kernel.task_manager.fail(
+                        "Replanned task has no executable ready step.",
+                        task.id,
+                    )
+                    return
+
+                next_request = self.build_plan_request(task, next_step)
+                if next_request is None:
+                    self.kernel.task_manager.fail(
+                        f"Unable to build a tool request for replanned step '{next_step.id}'.",
+                        task.id,
+                    )
+                    return
+
+                print(
+                    f"[Tasks] Autonomous replan: {next_step.id} -> "
+                    f"{next_request.tool}",
+                    flush=True,
+                )
+                self.event_bus.emit("tool_request", request=next_request)
                 return
 
             self.kernel.task_manager.fail(
