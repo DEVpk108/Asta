@@ -91,7 +91,16 @@ Optional extras:
 pip install -r requirements-laya.txt          # Laya System 1 decision layer
 pip install -r requirements-mempalace.txt     # long-term memory
 pip install -r voice/requirements-indic.txt   # IndicConformer STT backend
+pip install -r requirements-browser.txt       # browser automation for capability setup
 ```
+
+For autonomous browser setup on Windows, the Spotify setup operator uses a
+dedicated persistent browser profile. If the optional browser package is
+installed, A.S.T.A. can open the Spotify Developer Dashboard, wait for the
+user-only login boundary when necessary, create/configure the A.S.T.A. app,
+capture its Client ID, persist it to the local ignored `.env`, refresh the
+Spotify provider, and resume the original task. Browser automation never
+handles the user's Spotify password, MFA codes, or CAPTCHA.
 
 ## Run
 

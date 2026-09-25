@@ -128,3 +128,20 @@ def test_media_manager_does_not_silently_default_query_playback_to_spotify(monke
 
     assert result.success is False
     assert "provider" in (result.error or "").lower()
+
+def test_media_manager_refreshes_spotify_configuration(monkeypatch):
+    monkeypatch.delenv("ASTA_SPOTIFY_CLIENT_ID", raising=False)
+    monkeypatch.setenv(
+        "ASTA_SPOTIFY_REDIRECT_URI",
+        "http://127.0.0.1:8765/callback",
+    )
+
+    provider = SpotifyProvider()
+    manager = MediaManager(providers=(provider,))
+    assert provider.configured is False
+
+    monkeypatch.setenv("ASTA_SPOTIFY_CLIENT_ID", "refreshedclientid123456789012345678")
+    manager.refresh_configuration()
+
+    assert provider.configured is True
+    assert provider.client_id == "refreshedclientid123456789012345678"

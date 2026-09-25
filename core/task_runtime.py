@@ -40,6 +40,10 @@ class TaskRuntimeModule(Module):
             "tool_confirmation_response",
             self.on_confirmation_response,
         )
+        self.event_bus.subscribe(
+            "capability_setup_completed",
+            self.on_capability_setup_completed,
+        )
         print("[Tasks] Ready", flush=True)
 
     def shutdown(self):
@@ -49,6 +53,10 @@ class TaskRuntimeModule(Module):
         self.event_bus.unsubscribe(
             "tool_confirmation_response",
             self.on_confirmation_response,
+        )
+        self.event_bus.unsubscribe(
+            "capability_setup_completed",
+            self.on_capability_setup_completed,
         )
         print("[Tasks] Stopped", flush=True)
 
@@ -221,6 +229,90 @@ class TaskRuntimeModule(Module):
                         return
 
             if decision.action.value == "wait_for_user":
+                diagnosis = None
+                diagnosis_engine = getattr(self.kernel, "diagnosis_engine", None)
+                if diagnosis_engine is not None:
+                    try:
+                        diagnosis = diagnosis_engine.diagnose(
+                            task,
+                            result,
+                            recovery=decision,
+                            step_id=plan_step_id,
+                        )
+                        evidence["diagnosis"] = diagnosis.to_dict()
+                        self.event_bus.emit(
+                            "task_diagnosed",
+                            task_id=task.id,
+                            diagnosis=diagnosis.to_dict(),
+                        )
+                    except Exception as exc:
+                        evidence["diagnosis_error"] = str(exc)
+
+                setup_manager = getattr(
+                    self.kernel,
+                    "capability_setup_manager",
+                    None,
+                )
+                category = (
+                    getattr(
+                        getattr(diagnosis, "category", None),
+                        "value",
+                        "",
+                    )
+                    .strip()
+                    .lower()
+                    if diagnosis is not None
+                    else ""
+                )
+                if category == "setup_required" and setup_manager is not None:
+                    provider = self._setup_provider_for_step(
+                        task,
+                        plan_step_id,
+                        result,
+                    )
+                    if provider and setup_manager.supports(provider):
+                        self.kernel.task_manager.pause(task.id)
+                        started = setup_manager.start(
+                            task,
+                            capability=provider,
+                            step_id=plan_step_id,
+                        )
+                        evidence["capability_setup"] = {
+                            "capability": provider,
+                            "started": bool(started),
+                            "step_id": plan_step_id,
+                        }
+                        if started:
+                            task.metadata["capability_setup"] = {
+                                "capability": provider,
+                                "step_id": plan_step_id,
+                                "status": "running",
+                            }
+                            self.kernel.task_manager.add_evidence(
+                                evidence,
+                                task.id,
+                            )
+                            self.event_bus.emit(
+                                "task_recovery_required",
+                                task_id=task.id,
+                                decision=decision.to_dict(),
+                                diagnosis=diagnosis.to_dict(),
+                            )
+                            return
+
+                        evidence["capability_setup"]["status"] = "unavailable"
+                        self.kernel.task_manager.add_evidence(
+                            evidence,
+                            task.id,
+                        )
+                        self.event_bus.emit(
+                            "task_recovery_required",
+                            task_id=task.id,
+                            decision=decision.to_dict(),
+                            diagnosis=diagnosis.to_dict(),
+                        )
+                        return
+
                 self.kernel.task_manager.add_evidence(
                     evidence,
                     task.id,
@@ -229,7 +321,7 @@ class TaskRuntimeModule(Module):
                     "task_recovery_required",
                     task_id=task.id,
                     decision=decision.to_dict(),
-                    diagnosis=None,
+                    diagnosis=diagnosis.to_dict() if diagnosis is not None else None,
                 )
                 self.kernel.task_manager.pause(task.id)
                 return
@@ -493,6 +585,92 @@ class TaskRuntimeModule(Module):
             remember_opened(application)
         except Exception:
             return
+
+    def on_capability_setup_completed(self, event):
+        if not isinstance(event, dict):
+            return
+
+        task_id = str(event.get("task_id") or "").strip()
+        task = self.kernel.task_manager.get(task_id) if task_id else None
+        if task is None:
+            return
+
+        status = str(event.get("status") or "").strip().lower()
+        setup_evidence = {
+            "type": "capability_setup",
+            "capability": event.get("capability"),
+            "status": status,
+            "summary": event.get("summary"),
+            "step_id": event.get("step_id"),
+            "requires_user": bool(event.get("requires_user")),
+        }
+        self.kernel.task_manager.add_evidence(setup_evidence, task.id)
+        task.metadata["capability_setup"] = {
+            "capability": event.get("capability"),
+            "step_id": event.get("step_id"),
+            "status": status,
+        }
+
+        if status != "completed":
+            return
+
+        step_id = str(event.get("step_id") or "").strip()
+        if task.plan is None or not step_id:
+            return
+
+        try:
+            step = task.plan.get_step(step_id)
+        except KeyError:
+            return
+
+        step.status = PlanStepStatus.READY
+        task.current_step = None
+        task.error = None
+        task.plan.status = PlanStatus.ACTIVE
+
+        try:
+            self.kernel.task_manager.resume(task.id)
+        except ValueError:
+            if task.status.value != "active":
+                return
+
+        self.kernel.task_manager.refresh_ready_plan_steps(task.id)
+
+        next_step = self._next_ready_plan_step(task)
+        if next_step is None:
+            return
+
+        next_request = self.build_plan_request(task, next_step)
+        if next_request is None:
+            self.kernel.task_manager.fail(
+                f"Unable to resume task step '{next_step.id}' after capability setup.",
+                task.id,
+            )
+            return
+
+        print(
+            f"[Tasks] Capability setup complete; resuming {next_step.id} -> "
+            f"{next_request.tool}",
+            flush=True,
+        )
+        self.event_bus.emit("tool_request", request=next_request)
+
+    @staticmethod
+    def _setup_provider_for_step(task, plan_step_id, result):
+        if task.plan is not None and plan_step_id:
+            try:
+                step = task.plan.get_step(plan_step_id)
+            except KeyError:
+                step = None
+            if step is not None:
+                provider = str(step.metadata.get("provider") or "").strip().lower()
+                if provider:
+                    return provider
+
+        error = str(result.error or "").lower()
+        if result.tool == "media.control" and "spotify" in error:
+            return "spotify"
+        return ""
 
     def on_confirmation_response(self, request_id, approved):
         if not isinstance(request_id, str) or not isinstance(approved, bool):

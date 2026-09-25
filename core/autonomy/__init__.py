@@ -1,5 +1,10 @@
 """Autonomous task orchestration primitives for A.S.T.A."""
 
+from .capability_setup import (
+    CapabilitySetupEvent,
+    CapabilitySetupManager,
+    CapabilitySetupStatus,
+)
 from .diagnosis import DiagnosisCategory, DiagnosisEngine, FailureDiagnosis
 from .recovery import RecoveryAction, RecoveryDecision, RecoveryManager
 from .replanning import ReplanDecision, ReplanEngine, ReplanStrategy

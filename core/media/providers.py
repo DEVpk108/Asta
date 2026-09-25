@@ -134,6 +134,18 @@ class SpotifyProvider:
             "data/spotify_token.json",
         ).strip()
 
+    def configure(
+        self,
+        *,
+        client_id: str,
+        redirect_uri: str | None = None,
+    ) -> None:
+        self.client_id = str(client_id or "").strip()
+        if redirect_uri is not None:
+            self.redirect_uri = str(redirect_uri).strip()
+        os.environ["ASTA_SPOTIFY_CLIENT_ID"] = self.client_id
+        os.environ["ASTA_SPOTIFY_REDIRECT_URI"] = self.redirect_uri
+
     @property
     def configured(self) -> bool:
         return bool(self.client_id)
@@ -827,6 +839,26 @@ class MediaManager:
 
     def providers(self) -> tuple[str, ...]:
         return tuple(provider.name for provider in self._providers)
+
+    def refresh_configuration(self) -> None:
+        """Reload provider configuration after a local setup operation."""
+        for provider in self._providers:
+            refresh = getattr(provider, "refresh_configuration", None)
+            if callable(refresh):
+                refresh()
+            else:
+                configure = getattr(provider, "configure", None)
+                if callable(configure):
+                    client_id = os.getenv("ASTA_SPOTIFY_CLIENT_ID", "").strip()
+                    redirect_uri = os.getenv(
+                        "ASTA_SPOTIFY_REDIRECT_URI",
+                        "http://127.0.0.1:8765/callback",
+                    ).strip()
+                    if getattr(provider, "name", "") == "spotify":
+                        configure(
+                            client_id=client_id,
+                            redirect_uri=redirect_uri,
+                        )
 
     def provider_for_application(self, application_name: str):
         normalized = _normalize_media_text(application_name)
