@@ -647,7 +647,7 @@ class TaskRuntimeModule(Module):
                     return provider
 
         error = str(result.error or "").lower()
-        if "spotify" in error:
+        if result.tool == "media.control" and "spotify" in error:
             return "spotify"
         return ""
 
