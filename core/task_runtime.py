@@ -145,6 +145,8 @@ class TaskRuntimeModule(Module):
             "request_id": result.metadata.get("request_id"),
         }
         plan_step_id = result.metadata.get("plan_step_id")
+        if plan_step_id:
+            evidence["plan_step_id"] = plan_step_id
         if not result.success:
             if plan_step_id:
                 self.kernel.task_manager.set_plan_step_status(
@@ -214,6 +216,10 @@ class TaskRuntimeModule(Module):
 
         step = result.metadata.get("task_step") or task.current_step or result.tool
         self.kernel.task_manager.complete_step(step, task.id)
+
+        # Preserve successful tool results in the task journal as well as
+        # failures. Recovery relies on the evidence stream as its history.
+        self.kernel.task_manager.add_evidence(evidence, task.id)
 
         if plan_step_id:
             self.kernel.task_manager.set_plan_step_status(
