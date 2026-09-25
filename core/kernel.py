@@ -30,7 +30,9 @@ class Kernel:
         authority_path=None,
     ):
         self.event_bus = EventBus()
-        self.media_manager = MediaManager()
+        self.media_manager = MediaManager(
+            notify_user=self._announce_media_message,
+        )
         self.intent_router = IntentRouter(
             media_providers=self.media_manager.providers(),
         )
@@ -79,6 +81,12 @@ class Kernel:
         self._shutdown_started = False
         self._shutdown_owner = None
         self._shutdown_complete = threading.Event()
+
+    def _announce_media_message(self, text):
+        if not text:
+            return
+        self.event_bus.emit("assistant_sentence", text=text)
+        self.event_bus.emit("assistant_response", text=text)
 
     def create_task(self, goal, **kwargs):
         return self.task_manager.create(goal, **kwargs)
