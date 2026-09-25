@@ -11,6 +11,9 @@ from .replanning import ReplanDecision, ReplanEngine, ReplanStrategy
 from .verification import VerificationEngine, VerificationResult, VerificationStatus
 
 __all__ = [
+    "CapabilitySetupEvent",
+    "CapabilitySetupManager",
+    "CapabilitySetupStatus",
     "DiagnosisCategory",
     "DiagnosisEngine",
     "FailureDiagnosis",
