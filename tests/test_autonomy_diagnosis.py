@@ -99,3 +99,23 @@ def test_provider_failure_falls_back():
     assert diagnosis.category is DiagnosisCategory.TRANSIENT
     assert diagnosis.recommended_action == "retry"
     assert "provider unavailable" in diagnosis.metadata["provider_error"]
+
+
+def test_fallback_diagnoses_missing_spotify_setup():
+    engine = DiagnosisEngine()
+
+    diagnosis = engine.diagnose(
+        _task(),
+        _result(
+            error=(
+                "Spotify playback requires one-time setup. "
+                "Set ASTA_SPOTIFY_CLIENT_ID and authorize A.S.T.A."
+            )
+        ),
+        step_id="step-1",
+    )
+
+    assert diagnosis.category is DiagnosisCategory.SETUP_REQUIRED
+    assert diagnosis.recommended_action == "wait_for_user"
+    assert diagnosis.requires_user is True
+    assert diagnosis.metadata["setup_required"] is True
