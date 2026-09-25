@@ -154,6 +154,56 @@ class TaskRuntimeModule(Module):
                     PlanStepStatus.FAILED,
                     task.id,
                 )
+
+            decision = self.kernel.recovery_manager.decide(
+                task,
+                result,
+                step_id=plan_step_id,
+            )
+            evidence["recovery"] = decision.to_dict()
+            self.kernel.task_manager.add_evidence(
+                evidence,
+                task.id,
+            )
+
+            self.event_bus.emit(
+                "task_recovery_required",
+                task_id=task.id,
+                decision=decision.to_dict(),
+            )
+
+            if decision.action.value == "retry":
+                retry_step = (
+                    task.plan.get_step(plan_step_id)
+                    if task.plan is not None and plan_step_id
+                    else None
+                )
+                if retry_step is not None:
+                    retry_step.status = PlanStepStatus.READY
+                    retry_request = self.build_plan_request(
+                        task,
+                        retry_step,
+                    )
+                    if retry_request is not None:
+                        print(
+                            f"[Tasks] Recovery retry: {retry_step.id} -> "
+                            f"{retry_request.tool}",
+                            flush=True,
+                        )
+                        self.event_bus.emit(
+                            "tool_request",
+                            request=retry_request,
+                        )
+                        return
+
+            if decision.action.value == "wait_for_user":
+                self.kernel.task_manager.pause(task.id)
+                return
+
+            if decision.action.value == "replan":
+                self.kernel.task_manager.pause(task.id)
+                return
+
             self.kernel.task_manager.fail(
                 result.error or "Tool execution failed.",
                 task.id,
