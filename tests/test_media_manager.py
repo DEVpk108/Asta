@@ -94,12 +94,19 @@ def test_spotify_query_play_requires_authenticated_configuration(monkeypatch):
     monkeypatch.delenv("ASTA_SPOTIFY_CLIENT_ID", raising=False)
     provider = SpotifyProvider()
 
+    opened = []
+    monkeypatch.setattr(
+        "core.media.providers.webbrowser.open",
+        lambda url, **_kwargs: opened.append(url),
+    )
+
     result = provider.execute(
         MediaRequest(operation="play", query="hanuman chalisa")
     )
 
     assert result.success is False
     assert "ASTA_SPOTIFY_CLIENT_ID" in (result.error or "")
+    assert opened == ["https://developer.spotify.com/dashboard"]
 
 
 
@@ -116,6 +123,19 @@ def test_parse_media_recovers_dropped_play_verb_before_known_provider():
         query="hanuman chalisa",
         provider="spotify",
     )
+
+
+def test_spotify_provider_announces_authentication(monkeypatch):
+    announcements = []
+    provider = SpotifyProvider(notify_user=announcements.append)
+
+    provider._announce(
+        "Spotify isn't authorized yet. I'll open the Spotify authentication page."
+    )
+
+    assert announcements == [
+        "Spotify isn't authorized yet. I'll open the Spotify authentication page."
+    ]
 
 
 def test_media_manager_does_not_silently_default_query_playback_to_spotify(monkeypatch):
