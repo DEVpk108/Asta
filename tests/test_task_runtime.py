@@ -113,7 +113,7 @@ def test_command_task_is_created_from_a_plan():
         _shutdown(tasks, ai, tools)
 
 
-def test_failed_tool_marks_plan_step_failed():
+def test_failed_tool_exhausts_replan_budget_without_looping_forever():
     kernel, tasks, ai, tools = _build_runtime()
     try:
         original = kernel.tool_dispatcher.dispatch
@@ -129,12 +129,54 @@ def test_failed_tool_marks_plan_step_failed():
         kernel.event_bus.emit("user_message", "open calculator")
 
         task = kernel.task_manager.list()[0]
-        assert task.status is TaskStatus.PAUSED
-        assert task.plan.status.value == "active"
+        assert task.status is TaskStatus.FAILED
+        assert task.plan.status.value == "failed"
         assert task.plan.steps[0].status.value == "failed"
         assert task.evidence[-1]["recovery"]["action"] == "replan"
-        assert "diagnosis" in task.evidence[-1]
-        assert task.evidence[-1]["diagnosis"]["source"] == "fallback"
+        assert task.evidence[-1]["replan_guard"]["max_replans"] == 3
+        assert task.evidence[-1]["replan_guard"]["attempt"] == 4
+
+        kernel.tool_dispatcher.dispatch = original
+    finally:
+        _shutdown(tasks, ai, tools)
+
+
+def test_failed_tool_can_complete_after_autonomous_replan():
+    kernel, tasks, ai, tools = _build_runtime()
+    calls = 0
+    try:
+        original = kernel.tool_dispatcher.dispatch
+
+        def recover_on_replan(request, *, confirmed=False):
+            nonlocal calls
+            calls += 1
+            if calls <= 2:
+                return ToolResult(
+                    success=False,
+                    tool=request.tool,
+                    error="simulated state failure",
+                )
+            return ToolResult(
+                success=True,
+                tool=request.tool,
+                output={"target": request.arguments.get("target")},
+            )
+
+        kernel.tool_dispatcher.dispatch = recover_on_replan
+        kernel.event_bus.emit("user_message", "open calculator")
+
+        task = kernel.task_manager.list()[0]
+        assert task.status is TaskStatus.COMPLETED
+        assert task.plan.status.value == "completed"
+        assert task.metadata["replan_attempts"] == 1
+        assert calls == 3
+        replans = [
+            item
+            for item in task.evidence
+            if "replan" in item
+        ]
+        assert replans
+        assert replans[-1]["replan"]["strategy"] == "rebuild_plan"
 
         kernel.tool_dispatcher.dispatch = original
     finally:
