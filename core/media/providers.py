@@ -541,6 +541,184 @@ class SpotifyProvider:
             output={"provider": self.name, "operation": operation},
         )
 
+    def verify_playback(
+        self,
+        query: str,
+        *,
+        expected_uri: str | None = None,
+    ) -> dict:
+        """Observe Spotify's current playback state without changing it."""
+        token = self._load_token()
+        if not token:
+            return {
+                "status": "unknown",
+                "summary": (
+                    "Spotify playback cannot be observed because no local "
+                    "authorization token is available."
+                ),
+            }
+
+        try:
+            access_token = token.get("access_token")
+            expires_at = float(token.get("expires_at", 0) or 0)
+            refresh_token = token.get("refresh_token")
+
+            if not access_token or expires_at <= time.time() + 30:
+                if not refresh_token or not self.client_id:
+                    return {
+                        "status": "unknown",
+                        "summary": (
+                            "Spotify authorization is unavailable for "
+                            "read-only playback observation."
+                        ),
+                    }
+
+                response = requests.post(
+                    "https://accounts.spotify.com/api/token",
+                    data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                        "client_id": self.client_id,
+                    },
+                    timeout=15,
+                )
+                if not response.ok:
+                    return {
+                        "status": "unknown",
+                        "summary": (
+                            "Spotify access-token refresh failed during "
+                            "read-only playback observation."
+                        ),
+                    }
+
+                refreshed = response.json()
+                token = dict(token)
+                token.update(refreshed)
+                token["expires_at"] = (
+                    time.time() + int(refreshed.get("expires_in", 3600))
+                )
+                if not token.get("refresh_token"):
+                    token["refresh_token"] = refresh_token
+                self._save_token(token)
+                access_token = token.get("access_token")
+
+            if not access_token:
+                return {
+                    "status": "unknown",
+                    "summary": "Spotify returned no access token for observation.",
+                }
+
+            response = requests.get(
+                "https://api.spotify.com/v1/me/player",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=15,
+            )
+        except Exception as exc:
+            return {
+                "status": "unknown",
+                "summary": (
+                    f"Spotify playback observation failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            }
+
+        if response.status_code == 401:
+            return {
+                "status": "unknown",
+                "summary": "Spotify rejected the playback observation token.",
+            }
+
+        if response.status_code == 204:
+            return {
+                "status": "failed",
+                "summary": "Spotify has no active playback state.",
+            }
+
+        if response.status_code >= 400:
+            return {
+                "status": "unknown",
+                "summary": (
+                    f"Spotify playback observation returned "
+                    f"{response.status_code}: {response.text.strip()[:300]}"
+                ),
+            }
+
+        try:
+            payload = response.json() or {}
+        except ValueError:
+            return {
+                "status": "unknown",
+                "summary": "Spotify returned invalid playback state.",
+            }
+
+        item = payload.get("item") or {}
+        uri = str(item.get("uri") or "").strip()
+        name = str(item.get("name") or "").strip()
+        artists = ", ".join(
+            str(artist.get("name") or "").strip()
+            for artist in (item.get("artists") or [])
+            if artist.get("name")
+        )
+
+        if not payload.get("is_playing"):
+            return {
+                "status": "failed",
+                "summary": "Spotify is not currently playing.",
+                "observed": {
+                    "uri": uri,
+                    "track": name,
+                    "artists": artists,
+                },
+            }
+
+        if expected_uri and uri and uri != expected_uri:
+            return {
+                "status": "failed",
+                "summary": (
+                    f"Spotify is playing a different track: "
+                    f"{name or 'unknown track'}."
+                ),
+                "observed": {
+                    "uri": uri,
+                    "track": name,
+                    "artists": artists,
+                },
+            }
+
+        expected = self._normalize_search_text(query)
+        observed = self._normalize_search_text(f"{name} {artists}")
+        expected_tokens = set(expected.split())
+        observed_tokens = set(observed.split())
+
+        if expected_tokens and not expected_tokens.issubset(observed_tokens):
+            return {
+                "status": "failed",
+                "summary": (
+                    f"Spotify is playing '{name or 'an unknown track'}', "
+                    f"not the requested '{query}'."
+                ),
+                "observed": {
+                    "uri": uri,
+                    "track": name,
+                    "artists": artists,
+                },
+            }
+
+        return {
+            "status": "verified",
+            "summary": (
+                f"Observed Spotify playing {name}"
+                + (f" by {artists}" if artists else "")
+                + "."
+            ),
+            "observed": {
+                "uri": uri,
+                "track": name,
+                "artists": artists,
+                "is_playing": True,
+            },
+        }
+
     def execute(self, request: MediaRequest) -> MediaResult:
         if request.operation == "play" and request.query:
             try:
@@ -689,6 +867,37 @@ class MediaManager:
             if normalized in names:
                 return getattr(provider, "application_name", None)
         return None
+
+    def verify_playback(
+        self,
+        provider_name: str,
+        query: str,
+        *,
+        expected_uri: str | None = None,
+    ) -> dict:
+        """Observe playback state through a provider-specific observer."""
+        normalized = str(provider_name or "").strip().lower()
+        provider = self._by_name.get(normalized)
+        if provider is None:
+            return {
+                "status": "unknown",
+                "summary": f"Unknown media provider '{provider_name}'.",
+            }
+
+        observer = getattr(provider, "verify_playback", None)
+        if not callable(observer):
+            return {
+                "status": "unknown",
+                "summary": (
+                    f"Media provider '{provider.name}' does not expose "
+                    "playback observation."
+                ),
+            }
+
+        return observer(
+            query,
+            expected_uri=expected_uri,
+        )
 
     def execute(self, request: MediaRequest) -> MediaResult:
         explicit = str(request.provider or "").strip().lower()

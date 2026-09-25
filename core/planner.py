@@ -112,6 +112,16 @@ class Planner:
                         "target": target,
                         "tool": definition.name,
                         "sequence_index": index - 1,
+                        **(
+                            {"verification": "media.playback"}
+                            if (
+                                action == "media"
+                                and str(command.get("operation") or "").strip().lower() == "play"
+                                and str(command.get("query") or "").strip()
+                                and str(command.get("provider") or "").strip().lower() == "spotify"
+                            )
+                            else {}
+                        ),
                         **{
                             key: value
                             for key, value in command.items()

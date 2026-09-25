@@ -1,7 +1,7 @@
 import threading
 
 from .applications import ApplicationManager
-from .autonomy import DiagnosisEngine, ReplanEngine, RecoveryManager
+from .autonomy import DiagnosisEngine, ReplanEngine, RecoveryManager, VerificationEngine
 from .capability_discovery import CapabilityDiscovery
 from .decision import create_decision_engine
 from .event_bus import EventBus
@@ -40,6 +40,7 @@ class Kernel:
         self.recovery_manager = RecoveryManager()
         self.diagnosis_engine = DiagnosisEngine(self.decision_engine)
         self.replan_engine = ReplanEngine(self.decision_engine)
+        self.verification_engine = VerificationEngine(self.media_manager)
         self.workspace_manager = WorkspaceManager(event_bus=self.event_bus)
         self.application_manager = ApplicationManager()
         self.skill_manager = SkillManager(event_bus=self.event_bus)

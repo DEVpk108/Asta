@@ -354,6 +354,69 @@ class TaskRuntimeModule(Module):
             return
 
         step = result.metadata.get("task_step") or task.current_step or result.tool
+        structured_step = (
+            task.plan.get_step(plan_step_id)
+            if task.plan is not None and plan_step_id
+            else None
+        )
+
+        # A successful tool call is not automatically a successful real-world
+        # outcome for capabilities that declare an external verifier.
+        verification_key = (
+            str((structured_step.metadata or {}).get("verification") or "").strip()
+            if structured_step is not None
+            else ""
+        )
+        verification_engine = getattr(self.kernel, "verification_engine", None)
+        if verification_key and verification_engine is not None and structured_step is not None:
+            verification = verification_engine.verify(
+                task,
+                structured_step,
+                result,
+            )
+            evidence["verification"] = verification.to_dict()
+
+            if verification.status.value == "failed":
+                self.kernel.task_manager.set_plan_step_status(
+                    structured_step.id,
+                    PlanStepStatus.FAILED,
+                    task.id,
+                )
+                self.kernel.task_manager.add_evidence(evidence, task.id)
+                self.event_bus.emit(
+                    "task_verification_failed",
+                    task_id=task.id,
+                    verification=verification.to_dict(),
+                )
+                synthetic_failure = ToolResult(
+                    success=False,
+                    tool=result.tool,
+                    error=verification.summary,
+                    metadata={
+                        "task_id": task.id,
+                        "task_step": step,
+                        "plan_step_id": structured_step.id,
+                        "verification_failure": True,
+                    },
+                )
+                self.event_bus.emit("tool_result", result=synthetic_failure)
+                return
+
+            if verification_key and verification.status.value == "unknown":
+                self.kernel.task_manager.set_plan_step_status(
+                    structured_step.id,
+                    PlanStepStatus.BLOCKED,
+                    task.id,
+                )
+                self.kernel.task_manager.add_evidence(evidence, task.id)
+                self.event_bus.emit(
+                    "task_verification_required",
+                    task_id=task.id,
+                    verification=verification.to_dict(),
+                )
+                self.kernel.task_manager.pause(task.id)
+                return
+
         self.kernel.task_manager.complete_step(step, task.id)
 
         # Preserve successful tool results in the task journal as well as
