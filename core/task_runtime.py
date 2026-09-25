@@ -263,6 +263,7 @@ class TaskRuntimeModule(Module):
                         result,
                     )
                     if provider and setup_manager.supports(provider):
+                        self.kernel.task_manager.pause(task.id)
                         started = setup_manager.start(
                             task,
                             capability=provider,
@@ -289,7 +290,6 @@ class TaskRuntimeModule(Module):
                                 decision=decision.to_dict(),
                                 diagnosis=diagnosis.to_dict(),
                             )
-                            self.kernel.task_manager.pause(task.id)
                             return
 
                 self.kernel.task_manager.add_evidence(
