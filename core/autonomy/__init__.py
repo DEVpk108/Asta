@@ -3,6 +3,7 @@
 from .diagnosis import DiagnosisCategory, DiagnosisEngine, FailureDiagnosis
 from .recovery import RecoveryAction, RecoveryDecision, RecoveryManager
 from .replanning import ReplanDecision, ReplanEngine, ReplanStrategy
+from .verification import VerificationEngine, VerificationResult, VerificationStatus
 
 __all__ = [
     "DiagnosisCategory",
@@ -14,4 +15,7 @@ __all__ = [
     "ReplanDecision",
     "ReplanEngine",
     "ReplanStrategy",
-]
+    "VerificationEngine",
+    "VerificationResult",
+    "VerificationStatus",
+  ]
