@@ -365,11 +365,17 @@ class _PlaywrightSpotifyBrowser:
     def _login_visible(self, page) -> bool:
         url = str(page.url).lower()
         body = page.locator("body").inner_text().lower()
+        try:
+            credential_fields = page.locator(
+                "input[type='email'], input[type='password']"
+            ).count()
+        except Exception:
+            credential_fields = 0
+
         return (
-            "login" in url
-            or "sign in" in body
-            or "log in" in body
+            "accounts.spotify.com/login" in url
             or "log in to spotify" in body
+            or credential_fields > 0
         )
 
     def _terms_gate_visible(self, page) -> bool:
