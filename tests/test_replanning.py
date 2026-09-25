@@ -124,3 +124,10 @@ def test_restore_state_replan_builds_restore_and_retry_steps():
     assert plan.steps[0].description == "open Spotify"
     assert plan.steps[1].depends_on == ["replan-restore"]
     assert plan.steps[1].metadata["replanned"] is True
+
+
+def test_setup_required_diagnosis_is_guarded_from_replanning():
+    decision = ReplanEngine().choose(_diagnosis("setup_required"))
+
+    assert decision.strategy is ReplanStrategy.WAIT_FOR_USER
+    assert decision.source == "guard"
