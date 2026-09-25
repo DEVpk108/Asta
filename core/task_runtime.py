@@ -221,6 +221,77 @@ class TaskRuntimeModule(Module):
                         return
 
             if decision.action.value == "wait_for_user":
+                diagnosis = None
+                diagnosis_engine = getattr(self.kernel, "diagnosis_engine", None)
+                if diagnosis_engine is not None:
+                    try:
+                        diagnosis = diagnosis_engine.diagnose(
+                            task,
+                            result,
+                            recovery=decision,
+                            step_id=plan_step_id,
+                        )
+                        evidence["diagnosis"] = diagnosis.to_dict()
+                        self.event_bus.emit(
+                            "task_diagnosed",
+                            task_id=task.id,
+                            diagnosis=diagnosis.to_dict(),
+                        )
+                    except Exception as exc:
+                        evidence["diagnosis_error"] = str(exc)
+
+                setup_manager = getattr(
+                    self.kernel,
+                    "capability_setup_manager",
+                    None,
+                )
+                category = (
+                    getattr(
+                        getattr(diagnosis, "category", None),
+                        "value",
+                        "",
+                    )
+                    .strip()
+                    .lower()
+                    if diagnosis is not None
+                    else ""
+                )
+                if category == "setup_required" and setup_manager is not None:
+                    provider = self._setup_provider_for_step(
+                        task,
+                        plan_step_id,
+                        result,
+                    )
+                    if provider and setup_manager.supports(provider):
+                        started = setup_manager.start(
+                            task,
+                            capability=provider,
+                            step_id=plan_step_id,
+                        )
+                        if started:
+                            task.metadata["capability_setup"] = {
+                                "capability": provider,
+                                "step_id": plan_step_id,
+                                "status": "running",
+                            }
+                            evidence["capability_setup"] = {
+                                "capability": provider,
+                                "started": True,
+                                "step_id": plan_step_id,
+                            }
+                            self.kernel.task_manager.add_evidence(
+                                evidence,
+                                task.id,
+                            )
+                            self.event_bus.emit(
+                                "task_recovery_required",
+                                task_id=task.id,
+                                decision=decision.to_dict(),
+                                diagnosis=diagnosis.to_dict(),
+                            )
+                            self.kernel.task_manager.pause(task.id)
+                            return
+
                 self.kernel.task_manager.add_evidence(
                     evidence,
                     task.id,
@@ -229,7 +300,7 @@ class TaskRuntimeModule(Module):
                     "task_recovery_required",
                     task_id=task.id,
                     decision=decision.to_dict(),
-                    diagnosis=None,
+                    diagnosis=diagnosis.to_dict() if diagnosis is not None else None,
                 )
                 self.kernel.task_manager.pause(task.id)
                 return
