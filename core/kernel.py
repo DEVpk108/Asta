@@ -1,7 +1,7 @@
 import threading
 
 from .applications import ApplicationManager
-from .autonomy import DiagnosisEngine, ReplanEngine, RecoveryManager, VerificationEngine
+from .autonomy import (\n    CapabilitySetupManager,\n    DiagnosisEngine,\n    ReplanEngine,\n    RecoveryManager,\n    VerificationEngine,\n)
 from .capability_discovery import CapabilityDiscovery
 from .decision import create_decision_engine
 from .event_bus import EventBus
