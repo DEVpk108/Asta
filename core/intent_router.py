@@ -5,9 +5,17 @@ from .contracts.intent import (
     IntentResult,
     IntentType,
 )
+from .media import parse_media_request
 
 
 class IntentRouter:
+
+    def __init__(self, *, media_providers=None):
+        self._media_providers = tuple(
+            str(name).strip().lower()
+            for name in (media_providers or ())
+            if str(name).strip()
+        )
 
     _COMMAND_PREFIXES = (
         ("open ", "open"),
@@ -108,6 +116,17 @@ class IntentRouter:
                     classifier="rules",
                 )
 
+        note_entities = self._extract_note_command(normalized)
+        if note_entities:
+            return IntentResult(
+                intent=IntentType.COMMAND,
+                confidence=0.98,
+                normalized_text=normalized,
+                entities=note_entities,
+                requires_tools=True,
+                classifier="rules",
+            )
+
         compound_commands = self._extract_compound_commands(normalized)
         if compound_commands:
             return IntentResult(
@@ -126,6 +145,17 @@ class IntentRouter:
                 confidence=0.98,
                 normalized_text=normalized,
                 entities=command_entities,
+                requires_tools=True,
+                classifier="rules",
+            )
+
+        recovered_media = self._recover_media_command(normalized)
+        if recovered_media:
+            return IntentResult(
+                intent=IntentType.COMMAND,
+                confidence=0.94,
+                normalized_text=normalized,
+                entities=recovered_media,
                 requires_tools=True,
                 classifier="rules",
             )
@@ -165,6 +195,98 @@ class IntentRouter:
         text = re.sub(r"\s+", " ", text)
         text = re.sub(r"[.!?,;:]+$", "", text)
         return text.strip()
+
+    @classmethod
+    def _extract_note_command(cls, text: str) -> dict[str, Any]:
+        normalized = cls._normalize(text)
+
+        list_phrases = {
+            "list notes",
+            "show notes",
+            "show my notes",
+            "list my notes",
+            "what are my notes",
+        }
+        if normalized in list_phrases:
+            return {"action": "list_notes"}
+
+        for prefix in (
+            "search notes for ",
+            "search my notes for ",
+            "find notes about ",
+            "find my notes about ",
+        ):
+            if normalized.startswith(prefix):
+                query = normalized[len(prefix):].strip()
+                if query:
+                    return {"action": "search_notes", "query": query}
+
+        for prefix in (
+            "read note ",
+            "read my note ",
+            "open note ",
+            "open my note ",
+            "show note ",
+            "show my note ",
+        ):
+            if normalized.startswith(prefix):
+                target = normalized[len(prefix):].strip()
+                if target:
+                    return {"action": "read_note", "target": target}
+
+        create_prefixes = (
+            "take a note ",
+            "take a note:",
+            "take note ",
+            "take note:",
+            "write a note ",
+            "write a note:",
+            "write a new note ",
+            "write a new note:",
+            "create a note ",
+            "create a note:",
+            "create a new note ",
+            "create a new note:",
+            "make a note ",
+            "make a note:",
+            "make a new note ",
+            "make a new note:",
+            "save a note ",
+            "save a note:",
+        )
+        for prefix in create_prefixes:
+            if not normalized.startswith(prefix):
+                continue
+
+            payload = normalized[len(prefix):].strip(" :,-")
+            if not payload:
+                return {}
+
+            title = None
+            content = payload
+            for lead in ("titled ", "called "):
+                if payload.startswith(lead):
+                    remainder = payload[len(lead):].strip()
+                    split_at = remainder.find(" saying ")
+                    if split_at > 0:
+                        title = remainder[:split_at].strip()
+                        content = remainder[split_at + len(" saying "):].strip()
+                    else:
+                        split_at = remainder.find(" with content ")
+                        if split_at > 0:
+                            title = remainder[:split_at].strip()
+                            content = remainder[split_at + len(" with content "):].strip()
+                    break
+
+            if not content:
+                return {}
+
+            result = {"action": "create_note", "content": content}
+            if title:
+                result["title"] = title
+            return result
+
+        return {}
 
     @classmethod
     def _extract_compound_commands(cls, text: str) -> list[dict[str, Any]]:
@@ -254,6 +376,26 @@ class IntentRouter:
                         "target": target,
                     }
 
+        # Whisper/STT can occasionally collapse an action and its target
+        # into one token, for example "OpenSpotify" -> "openspotify".
+        # Accept that form conservatively without depending on any
+        # specific application name.
+        compact_match = re.fullmatch(
+            r"(open|launch|start|close|run|stop)([a-z0-9][a-z0-9._-]*)",
+            text,
+        )
+        if compact_match:
+            action, target = compact_match.groups()
+            if len(target) >= 3 or target in {"it", "this", "that"}:
+                return {
+                    "action": action,
+                    "target": target,
+                }
+
+        media = cls._extract_media_command(text)
+        if media:
+            return media
+
         if text in {"screenshot", "screen shot"}:
             return {"action": "screenshot"}
 
@@ -281,6 +423,18 @@ class IntentRouter:
             return {"action": "unmute"}
 
         return {}
+
+    @classmethod
+    def _extract_media_command(cls, text: str) -> dict[str, Any]:
+        request = parse_media_request(text)
+        return request.to_entities() if request is not None else {}
+
+    def _recover_media_command(self, text: str) -> dict[str, Any]:
+        request = parse_media_request(
+            text,
+            known_providers=self._media_providers,
+        )
+        return request.to_entities() if request is not None else {}
 
     @classmethod
     def _extract_memory_entities(cls, text: str) -> dict[str, Any]:

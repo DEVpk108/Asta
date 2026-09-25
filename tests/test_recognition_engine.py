@@ -79,3 +79,60 @@ def test_obvious_whisper_hallucination_phrase_is_rejected():
 
     assert engine._is_hallucination("The speaker is using English.") is True
     assert engine._is_hallucination("open camera") is False
+
+
+def test_strict_recognition_rejects_high_no_speech_segments():
+    engine = object.__new__(RecognitionEngine)
+
+    noisy = SimpleNamespace(
+        text="Thank you.",
+        avg_logprob=-0.92,
+        no_speech_prob=0.83,
+        compression_ratio=0.56,
+    )
+
+    assert engine._segment_is_unreliable(noisy, strict=True) is True
+    assert engine._segment_is_unreliable(noisy, strict=False) is False
+
+
+
+def test_hallucination_filter_rejects_punctuated_acknowledgement():
+    engine = object.__new__(RecognitionEngine)
+
+    assert engine._is_hallucination("Okay. Thank you.") is True
+
+
+def test_low_confidence_whisper_decode_can_retry_and_select_better_result():
+    first = [
+        SimpleNamespace(
+            text="Only Hanuman Chalisa on Spotify.",
+            avg_logprob=-0.75,
+            no_speech_prob=0.67,
+            compression_ratio=0.80,
+        )
+    ]
+    retry = [
+        SimpleNamespace(
+            text="Play Hanuman Chalisa on Spotify.",
+            avg_logprob=-0.30,
+            no_speech_prob=0.08,
+            compression_ratio=0.75,
+        )
+    ]
+
+    class RetryWhisper:
+        def __init__(self):
+            self.calls = 0
+
+        def transcribe(self, audio, **kwargs):
+            self.calls += 1
+            segments = first if self.calls == 1 else retry
+            return segments, SimpleNamespace(
+                language="en",
+                language_probability=0.99,
+            )
+
+    engine = make_engine(RetryWhisper(), language="en")
+
+    assert engine.transcribe("audio") == "Play Hanuman Chalisa on Spotify."
+    assert engine.model.calls == 2

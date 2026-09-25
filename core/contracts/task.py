@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from .plan import Plan, PlanStatus, PlanStepStatus
+
 
 class TaskStatus(str, Enum):
     """Lifecycle states for an A.S.T.A. agent task."""
@@ -34,6 +36,7 @@ class AgentTask:
     completed_steps: list[str] = field(default_factory=list)
     pending_steps: list[str] = field(default_factory=list)
     current_step: str | None = None
+    plan: Plan | None = None
 
     evidence: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -55,6 +58,9 @@ class AgentTask:
         }:
             raise ValueError(f"cannot activate task in {self.status.value} state")
         self.status = TaskStatus.ACTIVE
+        if self.plan is not None:
+            self.plan.status = PlanStatus.ACTIVE
+            self.plan.mark_ready_steps()
         self._touch()
 
     def pause(self) -> None:
@@ -76,6 +82,15 @@ class AgentTask:
         self.result = result
         self.current_step = None
         self.error = None
+        if self.plan is not None:
+            self.plan.status = PlanStatus.COMPLETED
+            for step in self.plan.steps:
+                if step.status not in {
+                    PlanStepStatus.COMPLETED,
+                    PlanStepStatus.SKIPPED,
+                }:
+                    step.status = step.status.SKIPPED
+            self.plan.updated_at = datetime.now(timezone.utc)
         self._touch()
 
     def fail(self, error: str) -> None:
@@ -84,6 +99,9 @@ class AgentTask:
         self.status = TaskStatus.FAILED
         self.error = str(error)
         self.current_step = None
+        if self.plan is not None:
+            self.plan.status = PlanStatus.FAILED
+            self.plan.updated_at = datetime.now(timezone.utc)
         self._touch()
 
     def cancel(self, reason: str | None = None) -> None:
@@ -92,6 +110,9 @@ class AgentTask:
         self.status = TaskStatus.CANCELLED
         self.error = str(reason) if reason else self.error
         self.current_step = None
+        if self.plan is not None:
+            self.plan.status = PlanStatus.CANCELLED
+            self.plan.updated_at = datetime.now(timezone.utc)
         self._touch()
 
     def set_current_step(self, step: str | None) -> None:
@@ -133,6 +154,7 @@ class AgentTask:
             "completed_steps": list(self.completed_steps),
             "pending_steps": list(self.pending_steps),
             "current_step": self.current_step,
+            "plan": self.plan.to_dict() if self.plan is not None else None,
             "evidence": [dict(item) for item in self.evidence],
             "metadata": dict(self.metadata),
             "result": self.result,

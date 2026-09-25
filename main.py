@@ -126,6 +126,10 @@ def main():
     from core.tools import (
         AudioControlTool,
         CloseApplicationTool,
+        CreateNoteTool,
+        ListNotesTool,
+        ReadNoteTool,
+        SearchNotesTool,
         LaunchApplicationTool,
         OpenApplicationTool,
         OpenScreenshotTool,
@@ -133,6 +137,7 @@ def main():
         ScreenshotTool,
         StartProcessTool,
         StopProcessTool,
+        MediaControlTool,
         ToolRuntimeModule,
     )
     from speech.speech_module import SpeechModule
@@ -182,6 +187,11 @@ def main():
         OpenScreenshotTool(),
         AudioControlTool("mute"),
         AudioControlTool("unmute"),
+        CreateNoteTool(kernel.notes_manager),
+        ReadNoteTool(kernel.notes_manager),
+        ListNotesTool(kernel.notes_manager),
+        SearchNotesTool(kernel.notes_manager),
+        MediaControlTool(kernel.media_manager),
     ):
         kernel.register_tool(tool)
 

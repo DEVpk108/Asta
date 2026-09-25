@@ -29,7 +29,7 @@ npm run dist:linux   # AppImage
 | `preload.js` | Secure `contextBridge` API (`window.asta`) — no Node in the renderer |
 | `renderer/engine.js` | Humanoid cross-section model + WebGL2 particle system + custom bloom pipeline |
 | `renderer/fallback2d.js` | Canvas2D renderer used only if WebGL2 is unavailable |
-| `renderer/app.js` | State machine, assembly sequence, HUD, Web Audio drone, voice cue, telemetry |
+| `renderer/app.js` | State machine, assembly sequence, HUD, voice cue, telemetry |
 | `renderer/index.html`, `renderer/styles.css` | Desktop shell: titlebar, stage, HUD overlay, status bar |
 
 ## The figure
@@ -70,9 +70,8 @@ The figure sways gently instead of spinning, so it stays face-on to the viewer.
 | `1` `2` `3` `4` | Idle / Listening / Thinking / Speaking |
 | `R` | Re-assemble from the orb |
 | `F` | Toggle fullscreen |
-| `M` | Mute / unmute the ambient drone |
 
-Menu equivalents live under **Core** and **View** (`Cmd/Ctrl+1..4`, `Cmd/Ctrl+R`, `Cmd/Ctrl+M`).
+Menu equivalents live under **Core** and **View** (`Cmd/Ctrl+1..4`, `Cmd/Ctrl+R`).
 
 ## Notes
 

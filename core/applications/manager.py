@@ -33,6 +33,7 @@ class RunningProcessRecord:
     name: str
     executable_path: str | None = None
     window_title: str | None = None
+    parent_pid: int | None = None
 
 
 class ApplicationResolutionError(RuntimeError):
@@ -48,6 +49,7 @@ class ApplicationManager:
         self._applications: tuple[ApplicationRecord, ...] = ()
         self._last_refresh = 0.0
         self._last_error: str | None = None
+        self._last_opened_application: ApplicationRecord | None = None
 
     def refresh(self):
         if os.name != "nt":
@@ -123,7 +125,7 @@ class ApplicationManager:
         if not query or not str(query).strip():
             return tuple(processes[: max(1, int(limit))])
 
-        query = str(query).strip()
+        query = self.resolve_reference(str(query).strip())
         comparison_names = [query]
         try:
             comparison_names.append(self.resolve(query).name)
@@ -149,8 +151,68 @@ class ApplicationManager:
         ranked.sort(key=lambda item: (-item[0], item[1].pid))
         return tuple(process for _, process in ranked[: max(1, int(limit))])
 
+    def discover_running_application_processes(
+        self,
+        query: str,
+        *,
+        limit: int = 64,
+    ):
+        """Return a broader set of running processes matching an application."""
+        return self.discover_running_processes(query, limit=max(1, int(limit)))
+
+    def is_application_running(self, query: str) -> bool:
+        try:
+            return bool(self.discover_running_application_processes(query, limit=64))
+        except ApplicationResolutionError:
+            return False
+    def discover_running_process_roots(self, query: str, *, minimum_score: float = 0.80, limit: int = 64):
+        """Return independent root processes for all matching application trees."""
+        if os.name != "nt":
+            return ()
+
+        query = self.resolve_reference(str(query).strip())
+        if not query:
+            raise ApplicationResolutionError("Application name cannot be empty.")
+
+        processes = self._discover_windows_processes()
+        if not processes:
+            raise ApplicationResolutionError(f"No running application matched '{query}'.")
+
+        comparison_names = [query]
+        try:
+            comparison_names.append(self.resolve(query).name)
+        except ApplicationResolutionError:
+            pass
+
+        ranked = []
+        for process in processes:
+            score = max(
+                _score_running_process(candidate, process)
+                for candidate in comparison_names
+            )
+            if score >= minimum_score:
+                ranked.append((score, process))
+
+        if not ranked:
+            raise ApplicationResolutionError(
+                f"No running application matched '{query}' confidently."
+            )
+
+        matched = {process.pid for _, process in ranked}
+        roots = [
+            (score, process)
+            for score, process in ranked
+            if process.parent_pid is None or process.parent_pid not in matched
+        ]
+
+        if not roots:
+            roots = [max(ranked, key=lambda item: (item[0], -item[1].pid))]
+
+        roots.sort(key=lambda item: (-item[0], item[1].pid))
+        return tuple(process for _, process in roots[:max(1, int(limit))])
+
     def resolve_running_process(self, query: str) -> RunningProcessRecord:
-        query = str(query).strip()
+        query = self.resolve_reference(str(query).strip())
         if not query:
             raise ApplicationResolutionError("Application name cannot be empty.")
 
@@ -173,7 +235,7 @@ class ApplicationManager:
             ),
             default=0.0,
         )
-        if top < 0.60:
+        if top < 0.80:
             raise ApplicationResolutionError(
                 f"No running application matched '{query}' confidently."
             )
@@ -182,14 +244,17 @@ class ApplicationManager:
 
     def _discover_windows_processes(self):
         output = self._powershell_runner(
+            "$windowTitles = @{}; "
             "Get-Process | ForEach-Object { "
-            "$path = $null; "
-            "try { $path = $_.Path } catch {} "
+            "try { $windowTitles[[int]$_.Id] = [string]$_.MainWindowTitle } catch {} "
+            "}; "
+            "Get-CimInstance Win32_Process | ForEach-Object { "
             "[pscustomobject]@{ "
-            "ProcessId = [int]$_.Id; "
-            "Name = [string]$_.ProcessName; "
-            "Path = [string]$path; "
-            "WindowTitle = [string]$_.MainWindowTitle "
+            "ProcessId = [int]$_.ProcessId; "
+            "ParentProcessId = [int]$_.ParentProcessId; "
+            "Name = [string]$_.Name; "
+            "Path = [string]$_.ExecutablePath; "
+            "WindowTitle = [string]$windowTitles[[int]$_.ProcessId] "
             "} "
             "} | ConvertTo-Json -Compress"
         )
@@ -210,6 +275,13 @@ class ApplicationManager:
             if pid <= 0:
                 continue
 
+            try:
+                parent_pid = int(item.get("ParentProcessId"))
+            except (TypeError, ValueError):
+                parent_pid = None
+            if parent_pid is not None and parent_pid <= 0:
+                parent_pid = None
+
             name = str(item.get("Name") or "").strip()
             path = str(item.get("Path") or "").strip() or None
             window_title = str(item.get("WindowTitle") or "").strip() or None
@@ -222,6 +294,7 @@ class ApplicationManager:
                     name=name,
                     executable_path=path,
                     window_title=window_title,
+                    parent_pid=parent_pid,
                 )
             )
         return records
@@ -230,6 +303,35 @@ class ApplicationManager:
     @property
     def last_error(self):
         return self._last_error
+
+    @property
+    def last_opened_application(self) -> ApplicationRecord | None:
+        return self._last_opened_application
+
+    def remember_opened(self, application: ApplicationRecord) -> None:
+        if not isinstance(application, ApplicationRecord):
+            raise TypeError("application must be an ApplicationRecord")
+        self._last_opened_application = application
+
+    def resolve_reference(self, query: str) -> str:
+        value = str(query).strip()
+        normalized = normalize_application_name(value)
+        if normalized in {
+            "it",
+            "this",
+            "that",
+            "this app",
+            "that app",
+            "the app",
+            "the application",
+        }:
+            application = self._last_opened_application
+            if application is None:
+                raise ApplicationResolutionError(
+                    f"No recent application reference is available for '{value}'."
+                )
+            return application.name
+        return value
 
     def _discover_start_apps(self):
         output = self._powershell_runner(

@@ -35,3 +35,26 @@ def test_coalescer_marks_consumed_items_done():
     # queue.join() returns immediately only when every consumed item was
     # accounted for with task_done().
     module._queue.join()
+
+
+def test_prepare_for_speech_removes_code_and_keeps_prose():
+    text = """The error is in the parser.
+
+    ```python
+    raise ValueError("bad input")
+    ```
+
+    Try the validation step again.
+    """
+    prepared = speech_module.SpeechModule._prepare_for_speech(text)
+
+    assert "The error is in the parser." in prepared
+    assert "Try the validation step again." in prepared
+    assert "raise ValueError" not in prepared
+
+
+def test_prepare_for_speech_removes_raw_diagnostics():
+    text = 'Error: boom\nFile "main.py", line 12\nThe application can be restarted.'
+    prepared = speech_module.SpeechModule._prepare_for_speech(text)
+
+    assert prepared == "The application can be restarted."

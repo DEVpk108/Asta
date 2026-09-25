@@ -101,3 +101,222 @@ def test_grounded_prompt_contains_only_registered_capabilities():
 
     assert "REGISTERED CAPABILITIES:" in ai.engine.system_prompt
     assert "system.open_application" not in ai.engine.system_prompt
+
+
+def test_tool_failure_is_concise_for_close_application():
+    from core.contracts import ToolResult
+    result = ToolResult(
+        success=False,
+        tool="system.close_application",
+        output={"target": "Spotify", "closed": False},
+        error="Application 'Spotify' was not fully closed. The process is still running.",
+    )
+
+    assert AIModule._format_tool_failure(result) == "I couldn't close Spotify."
+
+
+def test_tool_failure_does_not_speak_raw_diagnostics():
+    from core.contracts import ToolResult
+    result = ToolResult(
+        success=False,
+        tool="system.open_application",
+        output={"target": "VS Code"},
+        error='Traceback (most recent call last): File "main.py", line 10',
+    )
+
+    spoken = AIModule._format_tool_failure(result)
+
+    assert spoken == "I couldn't open VS Code."
+    assert "Traceback" not in spoken
+    assert "main.py" not in spoken
+
+
+
+def test_laya_media_recovery_routes_unknown_request_to_media_tool():
+    from core.contracts import ActionDecision, ActionType
+    from core.media import MediaManager
+    from core.tools import MediaControlTool
+
+    class FakeDecisionEngine:
+        name = "laya"
+
+        def decide_action(self, text, *, applications=None, media_providers=None):
+            return ActionDecision(
+                action=ActionType.MEDIA,
+                confidence=0.94,
+                addressed=0.99,
+                arguments={
+                    "operation": "play",
+                    "query": "hanuman chalisa",
+                    "provider": "spotify",
+                },
+                source="laya",
+                model="multilingual",
+            )
+
+        def analyze(self, text):
+            raise AssertionError("analyze() should not run after media recovery")
+
+        def warmup(self):
+            return True
+
+        def shutdown(self):
+            return None
+
+    kernel = Kernel()
+    kernel.decision_engine = FakeDecisionEngine()
+    kernel.register_tool(MediaControlTool(MediaManager(providers=())))
+    ai = AIModule(kernel)
+    ai.engine = StubEngine()
+
+    requests = []
+    kernel.event_bus.subscribe(
+        "tool_request",
+        lambda request: requests.append(request),
+    )
+
+    ai.on_user_message("Play Hanuman Chalisa on Spotify")
+
+    assert len(requests) == 1
+    assert requests[0].tool == "media.control"
+    assert requests[0].arguments == {
+        "operation": "play",
+        "query": "hanuman chalisa",
+        "provider": "spotify",
+    }
+
+
+
+def test_recent_media_plan_recovers_clipped_command_verb():
+    from core.contracts import IntentResult, IntentType, Plan, PlanStatus, PlanStep, PlanStepStatus
+    from core.task_manager import TaskManager
+
+    kernel = Kernel()
+    ai = AIModule(kernel)
+
+    plan = Plan(
+        goal="play hanuman chalisa on spotify",
+        steps=[
+            PlanStep(
+                id="step-1",
+                description="open Spotify",
+                status=PlanStepStatus.COMPLETED,
+                metadata={"action": "open", "target": "Spotify", "tool": "system.open_application"},
+            ),
+            PlanStep(
+                id="step-2",
+                description="play hanuman chalisa",
+                status=PlanStepStatus.READY,
+                metadata={
+                    "action": "media",
+                    "operation": "play",
+                    "query": "hanuman chalisa",
+                    "provider": "spotify",
+                    "tool": "media.control",
+                },
+            ),
+        ],
+        status=PlanStatus.ACTIVE,
+    )
+    kernel.task_manager.create(
+        "play hanuman chalisa on spotify",
+        pending_steps=["play hanuman chalisa"],
+        plan=plan,
+    )
+
+    intent = IntentResult(
+        intent=IntentType.UNKNOWN,
+        confidence=0.20,
+        normalized_text="le hanuman chalisa",
+    )
+
+    recovered = ai._recover_recent_command("Le Hanuman Chalisa", intent)
+
+    assert recovered is not None
+    assert recovered.intent is IntentType.COMMAND
+    assert recovered.entities == {
+        "action": "media",
+        "operation": "play",
+        "query": "hanuman chalisa",
+        "provider": "spotify",
+    }
+    assert recovered.classifier == "task_context"
+
+
+
+def test_recent_failed_media_task_recovers_noisy_play_query():
+    from core.contracts import (
+        IntentResult,
+        IntentType,
+        Plan,
+        PlanStatus,
+        PlanStep,
+        PlanStepStatus,
+    )
+
+    kernel = Kernel()
+    ai = AIModule(kernel)
+
+    plan = Plan(
+        goal="play hanuman chalisa on spotify",
+        steps=[
+            PlanStep(
+                id="step-1",
+                description="open Spotify",
+                status=PlanStepStatus.COMPLETED,
+                metadata={
+                    "action": "open",
+                    "target": "Spotify",
+                    "tool": "system.open_application",
+                },
+            ),
+            PlanStep(
+                id="step-2",
+                description="play hanuman chalisa",
+                status=PlanStepStatus.READY,
+                metadata={
+                    "action": "media",
+                    "operation": "play",
+                    "query": "hanuman chalisa",
+                    "provider": "spotify",
+                    "tool": "media.control",
+                },
+            ),
+        ],
+        status=PlanStatus.ACTIVE,
+    )
+
+    task = kernel.task_manager.create(
+        "play hanuman chalisa on spotify",
+        pending_steps=["play hanuman chalisa"],
+        plan=plan,
+    )
+
+    task.fail("simulated playback setup failure")
+
+    intent = IntentResult(
+        intent=IntentType.COMMAND,
+        confidence=0.98,
+        normalized_text="play and manjali sir",
+        entities={
+            "action": "media",
+            "operation": "play",
+            "query": "and manjali sir",
+        },
+        requires_tools=True,
+        classifier="rules",
+    )
+
+    recovered = ai._recover_recent_command(
+        "play and manjali sir",
+        intent,
+    )
+
+    assert recovered is not None
+    assert recovered.entities == {
+        "action": "media",
+        "operation": "play",
+        "query": "hanuman chalisa",
+        "provider": "spotify",
+    }
+    assert recovered.classifier == "task_context"

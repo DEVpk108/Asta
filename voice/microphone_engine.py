@@ -25,7 +25,9 @@ class MicrophoneEngine:
             dtype="float32",
         )
         self.audio_queue = queue.Queue(maxsize=50)
-        self.ring_buffer = deque(maxlen=16000)
+        # Keep a little more recent audio so speech that starts immediately
+        # after TTS can be handed to VAD without losing its first words.
+        self.ring_buffer = deque(maxlen=32000)
 
     def audio_callback(self, indata, frames, time, status):
         if status:

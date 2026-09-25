@@ -1,3 +1,4 @@
+import os
 import queue
 import time
 from collections import deque
@@ -16,20 +17,33 @@ class VADEngine:
         self,
         sample_rate=16000,
         min_speech_duration=0.30,
-        threshold=0.55,
-        silence_ms=1100,
-        speech_pad_ms=350,
+        threshold=0.50,
+        silence_ms=None,
+        speech_pad_ms=500,
         min_rms=0.012,
         min_peak=0.04,
         start_chunk_rms=0.005,
-        pre_roll_ms=450,
+        pre_roll_ms=None,
     ):
+
+        if silence_ms is None:
+            try:
+                silence_ms = int(os.getenv("ASTA_VAD_SILENCE_MS", "700"))
+            except ValueError:
+                silence_ms = 700
+        silence_ms = max(250, min(2000, int(silence_ms)))
 
         self.sample_rate = sample_rate
         self.min_speech_duration = min_speech_duration
         self.min_rms = min_rms
         self.min_peak = min_peak
         self.start_chunk_rms = start_chunk_rms
+        if pre_roll_ms is None:
+            try:
+                pre_roll_ms = int(os.getenv("ASTA_VAD_PRE_ROLL_MS", "900"))
+            except ValueError:
+                pre_roll_ms = 800
+        pre_roll_ms = max(250, min(1600, int(pre_roll_ms)))
         self.pre_roll_samples = max(1, int(sample_rate * pre_roll_ms / 1000))
 
         self.model = load_silero_vad()
@@ -61,6 +75,44 @@ class VADEngine:
         audio_buffer = []
         pre_roll = deque(maxlen=self.pre_roll_samples)
         recording = False
+        recording_started_at = None
+
+        initial_seed = None
+        used_initial_seed = False
+        if initial_audio is not None:
+            seed = np.asarray(initial_audio, dtype=np.float32).flatten()
+            if seed.size:
+                initial_seed = seed[-self.pre_roll_samples :].copy()
+
+        # Post-TTS speech can begin before the live VAD iterator receives its
+        # first chunk. When the handoff seed already contains speech energy,
+        # start the utterance from that seed instead of waiting for a fresh
+        # Silero start event and losing the first word.
+        if initial_seed is not None:
+            seed_rms = float(np.sqrt(np.mean(np.square(initial_seed))))
+            seed_peak = (
+                float(np.max(np.abs(initial_seed)))
+                if initial_seed.size
+                else 0.0
+            )
+            seed_gate_rms = max(
+                self.start_chunk_rms * 1.5,
+                self.min_rms * 0.55,
+            )
+            seed_gate_peak = max(
+                self.min_peak * 0.70,
+                0.028,
+            )
+            if seed_rms >= seed_gate_rms and seed_peak >= seed_gate_peak:
+                recording = True
+                recording_started_at = time.monotonic()
+                audio_buffer.append(initial_seed)
+                initial_seed = None
+                used_initial_seed = True
+                print(
+                    "[VAD] Seed contains speech; preserving the full post-TTS onset.",
+                    flush=True,
+                )
 
         # The wake-word detector's ring buffer is intentionally not reused for
         # command recognition. The command gets a fresh, live pre-roll instead.
@@ -102,11 +154,12 @@ class VADEngine:
                 if not recording and self.is_speech_started(event):
                     print("[VAD] Command started.")
                     recording = True
+                    recording_started_at = time.monotonic()
 
-                    # Keep a larger amount of fresh live audio before VAD start.
-                    # This reduces first-word truncation without reusing the
-                    # wake-word detector's stale ring buffer.
-                    if pre_roll:
+                    if initial_seed is not None:
+                        audio_buffer.append(initial_seed)
+                        initial_seed = None
+                    elif pre_roll:
                         audio_buffer.append(np.asarray(pre_roll, dtype=np.float32))
 
                 if recording:
@@ -115,8 +168,21 @@ class VADEngine:
                     pre_roll.extend(chunk)
 
                 if recording and self.is_speech_ended(event):
-                    print("[VAD] Command finished.")
-                    break
+                    elapsed = (
+                        time.monotonic() - recording_started_at
+                        if recording_started_at is not None
+                        else 0.0
+                    )
+                    minimum_recording_seconds = max(
+                        self.min_speech_duration,
+                        0.35,
+                    )
+                    if elapsed >= minimum_recording_seconds:
+                        print(
+                            f"[VAD] Command finished "
+                            f"(capture={elapsed:.2f}s)."
+                        )
+                        break
 
         finally:
             self.vad.reset_states()
@@ -129,6 +195,12 @@ class VADEngine:
         peak = float(np.max(np.abs(audio))) if audio.size else 0.0
         duration = len(audio) / self.sample_rate
 
+        print(
+            f"[VAD] Capture: duration={duration:.3f}s "
+            f"rms={rms:.4f} peak={peak:.4f} "
+            f"seed={'yes' if used_initial_seed else 'no'}",
+            flush=True,
+        )
         if self.debug:
             print(
                 f"[VAD] RMS={rms:.4f} peak={peak:.4f} "

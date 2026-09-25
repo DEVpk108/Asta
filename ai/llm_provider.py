@@ -17,6 +17,9 @@ class LLMProvider(Protocol):
     def reset_conversation(self) -> None:
         ...
 
+    def shutdown(self) -> None:
+        ...
+
     def generate_response(
         self,
         text: str,

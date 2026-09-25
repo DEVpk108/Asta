@@ -1,5 +1,8 @@
+import re
+from difflib import SequenceMatcher
+from datetime import datetime, timezone
 from core.module import Module
-from core.contracts import IntentType, IntentResult, ToolResult
+from core.contracts import ActionType, IntentType, IntentResult, ToolResult
 from core.tools import ToolRequestBuilder
 
 from chat_history import ChatHistoryStore
@@ -98,6 +101,10 @@ class AIModule(Module):
         self._ground_engine_in_capabilities()
         self.chat_history.initialize()
 
+        decision_warmup = getattr(self.kernel.decision_engine, "warmup", None)
+        if callable(decision_warmup):
+            decision_warmup()
+
         warmup = getattr(self.engine, "warmup", None)
         if callable(warmup):
             warmup()
@@ -117,6 +124,15 @@ class AIModule(Module):
             self.on_tool_confirmation_required,
         )
         self.chat_history.close()
+
+        engine_shutdown = getattr(self.engine, "shutdown", None)
+        if callable(engine_shutdown):
+            engine_shutdown()
+
+        decision_shutdown = getattr(self.kernel.decision_engine, "shutdown", None)
+        if callable(decision_shutdown):
+            decision_shutdown()
+
         print("[AI] Stopped", flush=True)
 
     def _ground_engine_in_capabilities(self):
@@ -201,13 +217,21 @@ class AIModule(Module):
             )
             return
 
+        intent_hint = self.kernel.intent_router.analyze(text)
+        recovered_intent = self._recover_recent_command(text, intent_hint)
+        if recovered_intent is not None:
+            intent_hint = recovered_intent
+
+        if self._run_system1_decision(text, intent_hint=intent_hint):
+            return
+
         context_response = self._context_response(text)
         if context_response is not None:
             print("[AI] Answering from recent chat context.", flush=True)
             self._emit_assistant_text(context_response)
             return
 
-        result: IntentResult = self.kernel.intent_router.analyze(text)
+        result: IntentResult = intent_hint
         print(
             f"[AI] Intent: {result.intent.value} "
             f"(confidence={result.confidence:.2f}, classifier={result.classifier})",
@@ -226,6 +250,328 @@ class AIModule(Module):
             return
 
         self._generate_response(text)
+
+    def _recover_recent_command(
+        self,
+        text: str,
+        intent: IntentResult,
+    ) -> IntentResult | None:
+        """Recover a clipped/garbled media command from a very recent plan."""
+        task_manager = getattr(self.kernel, "task_manager", None)
+        if task_manager is None:
+            return None
+
+        # Only use very recent task context. This is context recovery, not a
+        # general command override.
+        tasks = task_manager.list()
+        if not tasks:
+            return None
+
+        recent = max(
+            tasks,
+            key=lambda task: getattr(
+                task,
+                "updated_at",
+                datetime.min.replace(tzinfo=timezone.utc),
+            ),
+        )
+        updated_at = getattr(recent, "updated_at", None)
+        if updated_at is None:
+            return None
+
+        try:
+            age_seconds = (
+                datetime.now(timezone.utc) - updated_at
+            ).total_seconds()
+        except TypeError:
+            return None
+
+        if age_seconds < 0 or age_seconds > 20:
+            return None
+
+        plan = getattr(recent, "plan", None)
+        if plan is None:
+            return None
+
+        current_query = ""
+        current_media = (
+            intent.intent is IntentType.COMMAND
+            and intent.entities.get("action") == "media"
+            and str(intent.entities.get("operation") or "").lower() == "play"
+        )
+        if current_media:
+            current_query = str(intent.entities.get("query") or "").strip()
+
+        transcript_tokens = re.findall(r"[a-z0-9]+", str(text).lower())
+        if not transcript_tokens:
+            return None
+
+        for step in plan.steps:
+            metadata = step.metadata or {}
+            if str(metadata.get("action") or "").strip().lower() != "media":
+                continue
+
+            query = str(metadata.get("query") or "").strip()
+            operation = str(metadata.get("operation") or "").strip().lower()
+            if operation != "play" or not query:
+                continue
+
+            query_tokens = re.findall(r"[a-z0-9]+", query.lower())
+            if not query_tokens:
+                continue
+
+            comparison_text = current_query or str(text)
+            comparison_tokens = re.findall(r"[a-z0-9]+", comparison_text.lower())
+            if not comparison_tokens:
+                continue
+
+            coverage = []
+            for query_token in query_tokens:
+                best = max(
+                    (
+                        SequenceMatcher(
+                            None,
+                            query_token,
+                            candidate,
+                            autojunk=False,
+                        ).ratio()
+                        for candidate in comparison_tokens
+                    ),
+                    default=0.0,
+                )
+                coverage.append(best)
+
+            match_score = sum(coverage) / len(coverage)
+
+            # Unknown/STT-fragment input can recover from a reasonably strong
+            # match. A recognized media command is only replaced when it looks
+            # like a noisy continuation of the same request.
+            if intent.intent is IntentType.UNKNOWN:
+                acceptable = match_score >= 0.68
+            else:
+                noisy_tokens = {"and", "the", "a", "an", "sir", "please", "okay", "ok"}
+                acceptable = (
+                    current_media
+                    and match_score >= 0.38
+                    and any(token in noisy_tokens for token in comparison_tokens)
+                    and current_query != query
+                )
+
+            if not acceptable:
+                continue
+
+            entities = {
+                "action": "media",
+                "operation": operation,
+                "query": query,
+            }
+            provider = str(metadata.get("provider") or "").strip()
+            if provider:
+                entities["provider"] = provider
+
+            print(
+                "[AI] Recovered media command from recent task context: "
+                f"{operation} {query} (match={match_score:.2f})",
+                flush=True,
+            )
+            return IntentResult(
+                intent=IntentType.COMMAND,
+                confidence=max(0.80, min(0.98, match_score)),
+                normalized_text=" ".join(
+                    str(text).strip().lower().split()
+                ),
+                entities=entities,
+                requires_tools=True,
+                classifier="task_context",
+            )
+
+        return None
+
+    def _run_system1_decision(self, text, *, intent_hint=None):
+        engine = getattr(self.kernel, "decision_engine", None)
+        if engine is None:
+            return False
+
+        # Computer commands use the action-oriented System-1 path. The
+        # deterministic intent router remains the first execution boundary,
+        # while System-1 can recover actionable commands that rules did not
+        # recognize, such as fuzzy media requests.
+        #
+        # High-confidence direct commands already have a deterministic action
+        # and target, so do not make Laya inference a synchronous latency tax.
+        # Laya stays on the path for compound, ambiguous, or non-rule commands
+        # where its structured action selection is actually useful.
+        if (
+            intent_hint is not None
+            and intent_hint.intent == IntentType.COMMAND
+            and intent_hint.classifier == "rules"
+            and intent_hint.confidence >= 0.95
+            and "commands" not in intent_hint.entities
+        ):
+            print(
+                "[AI] System 1 fast-path: deterministic direct command; "
+                "Laya not blocking execution.",
+                flush=True,
+            )
+            return
+
+        should_try_action = (
+            intent_hint is not None
+            and (
+                intent_hint.intent == IntentType.COMMAND
+                or self._looks_like_action_request(text)
+            )
+        )
+
+        if (
+            should_try_action
+            and getattr(engine, "name", "unknown") != "disabled"
+            and callable(getattr(engine, "decide_action", None))
+        ):
+            try:
+                candidates = []
+                manager = getattr(self.kernel, "application_manager", None)
+                if manager is not None:
+                    target = intent_hint.entities.get("target")
+                    normalized_target = (
+                        str(target).strip().lower()
+                        if isinstance(target, str)
+                        else ""
+                    )
+                    reference_targets = {
+                        "it",
+                        "this",
+                        "that",
+                        "this app",
+                        "that app",
+                        "the app",
+                        "the application",
+                    }
+
+                    # Only use the recent application when the user's target
+                    # is explicitly a reference such as "it". Never offer a
+                    # recent app as a fallback for an unrelated explicit name;
+                    # otherwise Laya can be forced to choose Spotify for
+                    # commands such as "close Asta HUD".
+                    if normalized_target in reference_targets:
+                        recent = getattr(
+                            manager,
+                            "last_opened_application",
+                            None,
+                        )
+                        if recent is not None:
+                            candidates.append(recent)
+                    elif isinstance(target, str) and target.strip():
+                        try:
+                            resolve_reference = getattr(
+                                manager,
+                                "resolve_reference",
+                                lambda value: value,
+                            )
+                            resolved_target = resolve_reference(target)
+                            candidates.extend(
+                                manager.discover(resolved_target, limit=8)
+                            )
+                        except Exception:
+                            pass
+
+                media_manager = getattr(self.kernel, "media_manager", None)
+                media_providers = (
+                    media_manager.providers()
+                    if media_manager is not None
+                    and callable(getattr(media_manager, "providers", None))
+                    else ()
+                )
+
+                action_decision = engine.decide_action(
+                    text,
+                    applications=candidates,
+                    media_providers=media_providers,
+                )
+            except Exception as exc:
+                print(
+                    f"[AI] System 1 action decision unavailable: "
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[AI] System 1 Action: "
+                    f"action={action_decision.action.value} "
+                    f"target={action_decision.arguments.get('target_app', 'none')} "
+                    f"confidence={action_decision.confidence:.2f} "
+                    f"addressed={action_decision.addressed:.2f} "
+                    f"complete={action_decision.command_complete} "
+                    f"compound={action_decision.compound} "
+                    f"latency={action_decision.latency_ms:.1f}ms",
+                    flush=True,
+                )
+                self.event_bus.emit(
+                    "action_decision",
+                    decision=action_decision,
+                )
+
+                if (
+                    action_decision.is_actionable
+                    and action_decision.action is ActionType.MEDIA
+                    and action_decision.arguments.get("operation")
+                ):
+                    media_entities = {
+                        "action": "media",
+                        **dict(action_decision.arguments),
+                    }
+                    media_intent = IntentResult(
+                        intent=IntentType.COMMAND,
+                        confidence=action_decision.confidence,
+                        normalized_text=" ".join(
+                            str(text).strip().lower().split()
+                        ),
+                        entities=media_entities,
+                        requires_tools=True,
+                        classifier="laya_system1",
+                    )
+                    print(
+                        "[AI] System 1 recovered a media command; "
+                        "routing through the normal ToolSelector/Authority path.",
+                        flush=True,
+                    )
+                    self._handle_command_intent(media_intent)
+                    return True
+
+                return False
+
+        try:
+            snapshot = engine.analyze(text)
+        except Exception as exc:
+            print(
+                f"[AI] System 1 decision unavailable: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            return
+
+        if snapshot.engine == "disabled":
+            return False
+
+        print(
+            f"[AI] System 1: engine={snapshot.engine} "
+            f"model={snapshot.model or 'unknown'} "
+            f"latency={snapshot.latency_ms:.1f}ms",
+            flush=True,
+        )
+        self.event_bus.emit("decision_result", decision=snapshot)
+        return False
+
+    @staticmethod
+    def _looks_like_action_request(text):
+        normalized = " ".join(str(text).strip().lower().split())
+        return bool(
+            re.search(
+                r"\b(?:open|launch|start|close|run|stop|play|pause|resume|skip|next|previous|"
+                r"back|screenshot|capture|mute|unmute|scroll|press|type)\b",
+                normalized,
+            )
+        )
 
     def _context_response(self, text):
         normalized = self._normalize_question(text)
@@ -419,6 +765,48 @@ class AIModule(Module):
         )
 
     def _handle_command_intent(self, intent: IntentResult):
+        planned_request = self._planned_request_for_intent(intent)
+        if planned_request is not None:
+            print(
+                f"[AI] Executing planned step: {planned_request.tool} "
+                f"(request_id={planned_request.request_id})",
+                flush=True,
+            )
+            self.event_bus.emit("tool_request", request=planned_request)
+            return
+
+        # Reuse the currently focused/recent media application only when the
+        # media request did not already name a provider. This keeps provider
+        # selection contextual without hardcoding individual commands.
+        if intent.entities.get("action") == "media" and not intent.entities.get("provider"):
+            manager = getattr(self.kernel, "media_manager", None)
+            applications = getattr(self.kernel, "application_manager", None)
+            recent = (
+                getattr(applications, "last_opened_application", None)
+                if applications is not None
+                else None
+            )
+            infer_provider = (
+                getattr(manager, "provider_for_application", None)
+                if manager is not None
+                else None
+            )
+            if recent is not None and callable(infer_provider):
+                recent_name = getattr(recent, "name", recent)
+                provider = infer_provider(str(recent_name))
+                if provider:
+                    entities = dict(intent.entities)
+                    entities["provider"] = provider
+                    intent = IntentResult(
+                        intent=intent.intent,
+                        confidence=intent.confidence,
+                        normalized_text=intent.normalized_text,
+                        entities=entities,
+                        requires_memory=intent.requires_memory,
+                        requires_tools=intent.requires_tools,
+                        classifier=intent.classifier,
+                    )
+
         commands = intent.entities.get("commands")
         if isinstance(commands, list) and len(commands) >= 2:
             self._handle_command_sequence(intent, commands)
@@ -438,6 +826,47 @@ class AIModule(Module):
             flush=True,
         )
         self.event_bus.emit("tool_request", request=request)
+
+    def _planned_request_for_intent(self, intent: IntentResult):
+        """Return the next plan step, creating a plan for recovered commands."""
+        task_manager = getattr(self.kernel, "task_manager", None)
+        task_runtime = getattr(self.kernel, "task_runtime", None)
+        if task_manager is None or task_runtime is None:
+            return None
+
+        task = task_manager.current()
+
+        if (
+            task is None
+            or task.plan is None
+            or task.status.value != "active"
+            or task.goal != intent.normalized_text
+        ):
+            starter = getattr(task_runtime, "start_plan", None)
+            if not callable(starter):
+                return None
+            task = starter(intent.normalized_text, intent)
+
+        if task is None or task.plan is None:
+            return None
+
+        plan = task.plan
+        next_step = next(
+            (
+                step
+                for step in plan.steps
+                if step.status.value == "ready"
+            ),
+            None,
+        )
+        if next_step is None:
+            return None
+
+        builder = getattr(task_runtime, "build_plan_request", None)
+        if not callable(builder):
+            return None
+
+        return builder(task, next_step)
 
     def _handle_command_sequence(self, intent: IntentResult, commands):
         first = commands[0]
@@ -509,6 +938,11 @@ class AIModule(Module):
                 return f"Launched {target}."
             if result.tool == "system.close_application" and target:
                 return f"Closed {target}."
+            if result.tool == "media.control":
+                message = output.get("message")
+                if message:
+                    return str(message)
+                return "Media action completed."
             if result.tool == "system.stop_process" and output.get("pid"):
                 return f"Stopped process {output['pid']}."
             if result.tool == "system.start_process" and target:
@@ -518,14 +952,68 @@ class AIModule(Module):
                 if path:
                     print(f"[AI] Screenshot saved: {path}", flush=True)
                 return "Screenshot captured."
+            if result.tool == "notes.create_note":
+                title = output.get("title")
+                return f"Saved note '{title}'." if title else "Saved note."
+            if result.tool == "notes.read_note":
+                content = output.get("content")
+                return str(content).strip() if content else "That note is empty."
+            if result.tool == "notes.list_notes":
+                count = int(output.get("count", 0))
+                notes = output.get("notes") or []
+                if count == 0:
+                    return "You don't have any saved notes yet."
+                titles = [str(item.get("title")).strip() for item in notes[:8] if item.get("title")]
+                suffix = f": {', '.join(titles)}" if titles else "."
+                if count > len(titles):
+                    suffix = suffix.rstrip(".") + f", and {count - len(titles)} more."
+                return f"You have {count} saved note{'s' if count != 1 else ''}{suffix}"
+            if result.tool == "notes.search_notes":
+                count = int(output.get("count", 0))
+                matches = output.get("matches") or []
+                if count == 0:
+                    return "I couldn't find any matching notes."
+                titles = [str(item.get("title")).strip() for item in matches[:8] if item.get("title")]
+                return f"I found {count} matching note{'s' if count != 1 else ''}: {', '.join(titles)}."
         if output is None:
             return f"{result.tool} completed successfully."
         return str(output)
 
     @staticmethod
     def _format_tool_failure(result: ToolResult) -> str:
-        if result.error:
-            return f"I couldn't complete that action: {result.error}"
+        output = result.output if isinstance(result.output, dict) else {}
+
+        if result.tool == "system.close_application":
+            target = output.get("target") or output.get("resolved_target")
+            if target:
+                return f"I couldn't close {target}."
+            return "I couldn't close the application."
+
+        if result.tool in {
+            "system.open_application",
+            "system.launch_application",
+        }:
+            target = output.get("target") or output.get("resolved_target")
+            if target:
+                return f"I couldn't open {target}."
+            return "I couldn't open the application."
+
+        if result.tool == "system.start_process":
+            target = output.get("target")
+            return f"I couldn't start {target}." if target else "I couldn't start the process."
+
+        if result.tool == "media.control":
+            if "ASTA_SPOTIFY_CLIENT_ID" in str(result.error or ""):
+                return "Spotify playback needs one-time authorization."
+            return "I couldn't control media playback."
+
+        if result.tool == "system.stop_process":
+            return "I couldn't stop that process."
+
+        if result.tool in {"vision.screenshot", "vision.open_screenshot"}:
+            return "I couldn't complete the screenshot action."
+
+        # Keep internal diagnostics in logs/HUD metadata, not in spoken audio.
         return "I couldn't complete that action."
 
     def _generate_response(self, text, runtime_context=None):

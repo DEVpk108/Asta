@@ -5,7 +5,7 @@ from core.tools.request_builder import ToolRequestBuilder
 
 
 class ToolRuntimeModule(Module):
-    """EventBus adapter for tool dispatch, approval, and command sequences."""
+    """EventBus adapter for tool dispatch and approval."""
 
     def __init__(self, kernel):
         super().__init__(
@@ -40,8 +40,6 @@ class ToolRuntimeModule(Module):
 
         if result.success or not result.metadata.get("requires_confirmation"):
             self._emit_result(result, request=request)
-            if result.success:
-                self._continue_sequence(request)
             return
 
         pending = self.kernel.approval_manager.request_approval(
@@ -79,8 +77,6 @@ class ToolRuntimeModule(Module):
                 confirmed=True,
             )
             self._emit_result(result, request=request)
-            if result.success:
-                self._continue_sequence(request)
             return
 
         pending = self.kernel.approval_manager.get(request_id)
@@ -108,53 +104,6 @@ class ToolRuntimeModule(Module):
             )
         )
 
-    def _continue_sequence(self, request: ToolRequest):
-        sequence = request.metadata.get("sequence")
-        index = request.metadata.get("sequence_index")
-
-        if not isinstance(sequence, list) or not isinstance(index, int):
-            return
-        if index < 0 or index + 1 >= len(sequence):
-            return
-
-        next_index = index + 1
-        next_entities = sequence[next_index]
-        if not isinstance(next_entities, dict):
-            self._emit_error(
-                request.request_id,
-                "Invalid compound command step.",
-                request=request,
-            )
-            return
-
-        next_intent = IntentResult(
-            intent=IntentType.COMMAND,
-            confidence=float(request.metadata.get("intent_confidence", 0.98)),
-            normalized_text=str(request.metadata.get("normalized_text", "")),
-            entities=dict(next_entities),
-            requires_tools=True,
-            classifier=str(request.metadata.get("classifier", "rules")),
-        )
-
-        try:
-            next_request = self.tool_request_builder.build(next_intent)
-        except ValueError as exc:
-            self._emit_error(request.request_id, str(exc), request=request)
-            return
-
-        next_request.metadata["sequence"] = [dict(command) for command in sequence]
-        next_request.metadata["sequence_index"] = next_index
-        for key in ("task_id", "intent_confidence", "normalized_text", "classifier"):
-            if key in request.metadata:
-                next_request.metadata[key] = request.metadata[key]
-
-        print(
-            f"[Tools] Continuing compound command: "
-            f"step={next_index + 1}/{len(sequence)} tool={next_request.tool}",
-            flush=True,
-        )
-        self.event_bus.emit("tool_request", request=next_request)
-
     def _emit_result(self, result, *, request=None):
         if request is not None:
             metadata = dict(result.metadata)
@@ -172,7 +121,7 @@ class ToolRuntimeModule(Module):
     @staticmethod
     def _task_metadata(request):
         metadata = {}
-        for key in ("request_id", "task_id", "task_step"):
+        for key in ("request_id", "task_id", "task_step", "plan_step_id", "planner"):
             if key == "request_id":
                 metadata[key] = request.request_id
                 continue

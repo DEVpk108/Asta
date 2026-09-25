@@ -62,6 +62,7 @@ def test_warmup_discovers_model_and_calls_chat_completions(monkeypatch):
     monkeypatch.setattr("ai.llama_cpp_engine.requests.Session.post", fake_post)
 
     engine = LlamaCppEngine()
+    engine.server_manager.ensure_running = lambda: True
     assert engine.warmup() is True
     assert engine.warmed is True
     assert engine.model == "asta-local"
@@ -323,3 +324,16 @@ def test_reasoning_exhaustion_retries_with_larger_budget(monkeypatch):
     assert len(calls) == 2
     assert calls[0]["max_tokens"] == 4
     assert calls[1]["max_tokens"] == 8
+
+
+def test_shutdown_stops_owned_llama_server():
+    engine = LlamaCppEngine(model="asta-local")
+    calls = []
+
+    engine.server_manager.stop = lambda: calls.append(True)
+    engine.warmed = True
+
+    engine.shutdown()
+
+    assert calls == [True]
+    assert engine.warmed is False

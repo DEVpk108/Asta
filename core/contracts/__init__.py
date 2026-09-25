@@ -1,4 +1,8 @@
+from .action import ActionDecision, ActionType
+
 from .capability import CapabilityDescriptor
+
+from .decision import DecisionSnapshot
 
 from .intent import (
     IntentResult,
@@ -39,8 +43,11 @@ from .workspace import WorkspaceState
 
 
 __all__ = [
+    "ActionDecision",
+    "ActionType",
     "AgentTask",
     "CapabilityDescriptor",
+    "DecisionSnapshot",
     "IntentResult",
     "IntentType",
     "MemoryQuery",

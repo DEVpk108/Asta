@@ -35,7 +35,9 @@ before memory recall and model generation begin.
    with streaming Silero VAD.
 2. faster-whisper transcribes the audio and the module emits `user_message`.
 3. `ai` handles deterministic cases first (tool approvals, conversation mode,
-   presentation, screenshot phrasing), then falls back to `IntentRouter`.
+   presentation, screenshot phrasing), then optionally runs the System 1 decision
+   provider (Laya) for structured routing signals. The existing `IntentRouter`
+   remains authoritative for executable command parsing in this first integration stage.
 4. A command becomes a `tool_request`. The tool layer checks the authority
    policy and either runs it or emits `tool_confirmation_required` and waits
    for a spoken yes/no.
@@ -70,6 +72,8 @@ source .venv/bin/activate
 
 pip install -r requirements.txt
 pip install -r requirements-kokoro.txt
+# Optional System 1 decision layer
+pip install -r requirements-laya.txt
 
 cd hud
 npm install
@@ -84,20 +88,37 @@ file).
 Optional extras:
 
 ```bash
+pip install -r requirements-laya.txt          # Laya System 1 decision layer
 pip install -r requirements-mempalace.txt     # long-term memory
 pip install -r voice/requirements-indic.txt   # IndicConformer STT backend
 ```
 
 ## Run
 
-1. Start `llama-server` with your GGUF model. A typical Windows command is:
+1. Configure A.S.T.A. to manage the local llama.cpp server. On startup, A.S.T.A.
+checks whether the configured loopback server is already running. If it is not,
+A.S.T.A. starts `llama-server`, waits for `/v1/models` to become ready, warms
+the model, and owns that process for the lifetime of the assistant.
+
+Set the server executable and GGUF model path when they are not automatically discoverable:
 
 ```powershell
-.\\llama-server.exe -m "C:\\Models\\your-model.gguf" --host 127.0.0.1 --port 8080 -c 8192 -ngl 99 --jinja --alias asta-local
+$env:ASTA_LLAMA_SERVER_PATH="C:\\Models\\llama-server.exe"
+$env:ASTA_LLM_MODEL_PATH="C:\\Models\\your-model.gguf"
 ```
 
-Adjust the model path, context size, and GPU offload for your hardware/model.
-`llama-server` provides the OpenAI-compatible `/v1/chat/completions` API used by A.S.T.A.
+A.S.T.A. first checks the system PATH and the repository's sibling `llama\\`
+directory for `llama-server.exe`. If the selected server directory contains
+exactly one `models\\*.gguf`, that model is discovered automatically.
+
+The default startup settings use context `8192`, `-ngl 99`, `--jinja`, and
+`--reasoning off`. These can be changed through the configuration variables
+below.
+
+You can still start llama.cpp yourself. When A.S.T.A. detects an already-running
+server, it uses it but does not take ownership of or terminate that external
+process.
+
 2. From the repository root:
 
 ```bash
@@ -130,18 +151,112 @@ yet, so export these before starting A.S.T.A.
 | `ASTA_LLM_PROVIDER` | `llama_cpp` | Local LLM provider |
 | `ASTA_LLM_BASE_URL` | `http://127.0.0.1:8080/v1` | llama-server OpenAI-compatible base URL |
 | `ASTA_LLM_MODEL` | auto-discovered | llama-server model id/alias |
+| `ASTA_LLM_MODEL_PATH` | - | GGUF file path used when A.S.T.A. auto-starts llama-server |
+| `ASTA_LLAMA_SERVER_PATH` | `llama-server` on PATH | llama-server executable used for auto-start |
+| `ASTA_LLM_AUTOSTART` | `1` | Automatically start a local llama-server when it is not already running |
+| `ASTA_LLAMA_SERVER_STARTUP_TIMEOUT` | `120` | Seconds to wait for the managed llama-server to become ready |
+| `ASTA_LLM_CONTEXT_SIZE` | `8192` | llama.cpp context size when A.S.T.A. starts the server |
+| `ASTA_LLM_GPU_LAYERS` | `99` | llama.cpp GPU layer offload when A.S.T.A. starts the server |
+| `ASTA_LLM_JINJA` | `1` | Pass `--jinja` to llama-server |
+| `ASTA_LLM_REASONING` | `off` | Pass the reasoning mode to llama-server |
 | `ASTA_LLM_TIMEOUT` | `120` | LLM HTTP timeout in seconds |
 | `ASTA_LLM_MAX_OUTPUT_TOKENS` | `256` | Maximum generated tokens per response |
 | `ASTA_LLM_REASONING_RETRY_TOKENS` | `512` | Retry budget when the first generation exhausts the output budget |
+| `ASTA_DECISION_ENGINE` | `disabled` | System 1 decision provider: `disabled` or `laya` |
+| `ASTA_LAYA_MODEL` | `multilingual` | Laya checkpoint: `multilingual` or `english` |
+| `ASTA_LAYA_DEVICE` | `auto` | Laya device override such as `cpu` or `cuda` |
+| `ASTA_LAYA_PRELOAD` | `1` | Preload the selected Laya checkpoint during A.S.T.A. startup |
+| `ASTA_LAYA_MAX_LOADED` | `1` | Maximum Laya checkpoints kept resident by its router |
 | `ASTA_HUD_HOST` | `127.0.0.1` | HUD transport bind address |
 | `ASTA_HUD_PORT` | `18765` | HUD transport port |
 | `ASTA_STT_BACKEND` | `whisper` | `whisper`, `indic` or `hybrid` |
 | `ASTA_CHAT_HISTORY_DB` | `data/chat_history.db` | SQLite chat history location |
+| `ASTA_VOICE_POST_TTS_GUARD_MS` | `80` | Short post-TTS settle window; speech during it is retained as VAD preroll |
+| `ASTA_VAD_PRE_ROLL_MS` | `900` | Audio retained before VAD onset so first spoken words are not clipped |
+| `ASTA_MEDIA_DEFAULT_PROVIDER` | - | Optional default provider for media queries without an explicit provider |
+| `ASTA_SPOTIFY_CLIENT_ID` | - | Spotify developer app client ID for authenticated track playback |
+| `ASTA_SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8765/callback` | Loopback URI used by Spotify PKCE authorization |
+| `ASTA_SPOTIFY_TOKEN_PATH` | `data/spotify_token.json` | Local Spotify OAuth token cache |
 | `ASTA_MEMPALACE_PATH` | MemPalace default | Long-term memory store path |
 | `HF_TOKEN` / `HUGGINGFACE_HUB_TOKEN` | - | Needed for the gated IndicConformer model |
 
 Secrets belong in the environment, never in the repository. `.env`, `*.key` and
 `*.pem` are git-ignored.
+
+## Laya System 1 decision layer
+
+A.S.T.A. can optionally run Laya as a fast, non-generative decision layer before
+the existing intent/parser and reasoning paths.
+
+Enable it with:
+
+```powershell
+$env:ASTA_DECISION_ENGINE="laya"
+pip install -r requirements-laya.txt
+```
+
+A.S.T.A. uses Laya's **multilingual checkpoint by default**. The selected model is
+passed explicitly to Laya rather than letting the router switch checkpoints per
+request. This keeps the System 1 path predictable and avoids loading the larger
+English checkpoint when it is not needed.
+
+When Laya is enabled, its selected checkpoint is loaded during A.S.T.A. startup,
+while the HUD is already visible. On shutdown, A.S.T.A. unloads the checkpoint.
+
+The model can be overridden:
+
+```powershell
+$env:ASTA_LAYA_MODEL="english"
+```
+
+Set `ASTA_LAYA_MODEL=multilingual` to return to the default.
+
+When `ASTA_LAYA_PRELOAD=1`, A.S.T.A. preloads only the selected checkpoint so
+the first user request does not pay the cold model-load cost. `ASTA_LAYA_MAX_LOADED`
+still controls the router's resident-model limit.
+
+The first integration is deliberately advisory: Laya emits a `decision_result`
+event containing structured decisions such as intent, domain, tool need,
+reasoning need, sensitivity, selected checkpoint, and latency. The existing
+rule-based `IntentRouter`, Planner, ToolRuntime, and AuthorityManager remain
+authoritative. This lets A.S.T.A. benchmark Laya against the current pipeline
+before promoting any Laya decision to control execution.
+
+The same lifecycle principle applies to llama.cpp: A.S.T.A. owns a server only
+when it started that process itself. A server started externally is reused but
+never terminated by A.S.T.A.
+
+Laya is not a replacement for the main local LLM. It is intended as a System 1
+routing/classification layer that can later feed model selection, planning
+strategy, multilingual intent classification, and guardrails.
+
+## Media control
+
+A.S.T.A. exposes media playback through a provider abstraction rather than
+hardcoding a single application.
+
+- `media.control` handles play, pause, toggle, next, previous and stop.
+- Windows transport controls use the global media keys when a provider API is
+  not required.
+- Spotify track playback uses the Spotify Web API when `ASTA_SPOTIFY_CLIENT_ID`
+  is configured. A.S.T.A. uses Authorization Code with PKCE and stores the
+  refresh token under `data/spotify_token.json`.
+
+For Spotify track playback, create a Spotify developer app and allowlist the
+loopback redirect URI `http://127.0.0.1:8765/callback`, then set:
+
+```powershell
+$env:ASTA_SPOTIFY_CLIENT_ID="your_client_id"
+$env:ASTA_SPOTIFY_REDIRECT_URI="http://127.0.0.1:8765/callback"
+```
+
+The first Spotify play request opens the browser for authorization. After the
+one-time authorization, a command such as **Play Hanuman Chalisa on Spotify**
+can search the Spotify catalog, select a matching track deterministically, and
+start playback on the active Spotify device.
+
+Spotify currently requires Premium for playback-control APIs, and Spotify's
+Development Mode also requires the app owner to have Premium.
 
 ## Tools and approvals
 
@@ -161,7 +276,7 @@ shell; they always pass argument lists.
 
 | Path | Contents |
 | --- | --- |
-| `core/` | kernel, event bus, module base, intent router, tool layer |
+| `core/` | kernel, event bus, module base, intent router, decision providers, tool layer |
 | `ai/` | llama.cpp client/provider, AI module, runtime patches, wake-word assets |
 | `voice/` | microphone, wake word, VAD and STT engines |
 | `speech/` | Kokoro TTS and the speech worker |

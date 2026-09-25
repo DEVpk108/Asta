@@ -6,6 +6,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from .llama_server_manager import LlamaServerManager
+
 
 class LlamaCppEngine:
     def __init__(
@@ -30,6 +32,7 @@ class LlamaCppEngine:
         ))
         self.reasoning = reasoning
         self.session = requests.Session()
+        self.server_manager = LlamaServerManager(base_url=self.base_url)
 
         host = urlparse(self.base_url).hostname
         if host in {"localhost", "127.0.0.1", "::1"}:
@@ -159,6 +162,14 @@ Your goal is not merely to produce an answer. Help the user understand the probl
     def warmup(self):
         start = time.perf_counter()
         try:
+            if not self.server_manager.ensure_running():
+                print(
+                    "[AI] llama.cpp server is not ready; "
+                    "LLM warm-up skipped.",
+                    flush=True,
+                )
+                return False
+
             model = self._discover_model()
             print(f"[AI] llama.cpp model: {model}", flush=True)
             response = self.session.post(
@@ -199,6 +210,11 @@ Your goal is not merely to produce an answer. Help the user understand the probl
                 flush=True,
             )
             return False
+
+    def shutdown(self) -> None:
+        self.server_manager.stop()
+        self.warmed = False
+        print("[AI] llama.cpp engine stopped.", flush=True)
 
     def reset_conversation(self):
         self._messages = [{"role": "system", "content": self.system_prompt}]

@@ -134,3 +134,84 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_task_can_own_a_structured_plan():
+    from core.contracts import Plan, PlanStatus, PlanStep
+
+    manager = TaskManager()
+    plan = Plan(
+        goal="Open and close an application",
+        steps=[
+            PlanStep(id="step-1", description="open app"),
+            PlanStep(id="step-2", description="close app", depends_on=["step-1"]),
+        ],
+        status=PlanStatus.READY,
+    )
+
+    task = manager.create(
+        "Open and close an application",
+        plan=plan,
+        pending_steps=[step.description for step in plan.steps],
+    )
+
+    assert task.plan is plan
+    assert task.pending_steps == ["open app", "close app"]
+    snapshot = task.to_dict()
+    assert snapshot["plan"]["status"] == "active"
+    assert snapshot["plan"]["steps"][1]["depends_on"] == ["step-1"]
+    assert snapshot["plan"]["steps"][0]["status"] == "ready"
+    assert snapshot["plan"]["steps"][1]["status"] == "pending"
+
+
+def test_plan_lifecycle_and_step_status_are_synchronized():
+    from core.contracts import Plan, PlanStatus, PlanStep, PlanStepStatus
+
+    manager = TaskManager()
+    plan = Plan(
+        goal="Run two dependent steps",
+        steps=[
+            PlanStep(id="step-1", description="first"),
+            PlanStep(id="step-2", description="second", depends_on=["step-1"]),
+        ],
+        status=PlanStatus.READY,
+    )
+
+    task = manager.create(
+        "Run two dependent steps",
+        plan=plan,
+        pending_steps=["first", "second"],
+    )
+
+    assert plan.status is PlanStatus.ACTIVE
+    assert plan.steps[0].status is PlanStepStatus.READY
+    assert plan.steps[1].status is PlanStepStatus.PENDING
+
+    manager.set_plan_step_status("step-1", PlanStepStatus.RUNNING)
+    manager.set_plan_step_status("step-1", PlanStepStatus.COMPLETED)
+    manager.refresh_ready_plan_steps()
+
+    assert plan.steps[0].status is PlanStepStatus.COMPLETED
+    assert plan.steps[1].status is PlanStepStatus.READY
+
+    manager.set_plan_step_status("step-2", PlanStepStatus.COMPLETED)
+    manager.complete(result={"ok": True})
+
+    assert plan.status is PlanStatus.COMPLETED
+
+
+def test_failed_task_marks_plan_failed():
+    from core.contracts import Plan, PlanStatus, PlanStep
+
+    manager = TaskManager()
+    plan = Plan(
+        goal="Fail a step",
+        steps=[PlanStep(id="step-1", description="first")],
+        status=PlanStatus.READY,
+    )
+    task = manager.create("Fail a step", plan=plan)
+
+    manager.fail("boom")
+
+    assert task.status is TaskStatus.FAILED
+    assert plan.status is PlanStatus.FAILED

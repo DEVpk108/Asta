@@ -162,6 +162,24 @@ class CloseApplicationTool(Tool):
             },
         )
 
+    @staticmethod
+    def _kill_process_tree(process, timeout):
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        detail = (completed.stderr or completed.stdout or "").strip()
+        lowered = detail.lower()
+        already_gone = (
+            "not found" in lowered
+            or "no running instance" in lowered
+        )
+        return completed.returncode == 0 or already_gone, detail
     def execute(self, request: ToolRequest) -> ToolResult:
         start = time.perf_counter()
         target = _validated_target(request)
@@ -176,45 +194,141 @@ class CloseApplicationTool(Tool):
         try:
             system = platform.system()
             if system == "Windows":
-                process = self.application_manager.resolve_running_process(target)
-                completed = subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    capture_output=True,
-                    text=True,
-                    timeout=request.timeout_seconds,
-                    check=False,
+                resolve_reference = getattr(
+                    self.application_manager,
+                    "resolve_reference",
+                    lambda value: value,
+                )
+                resolved_target = resolve_reference(target)
+
+                root_resolver = getattr(
+                    self.application_manager,
+                    "discover_running_process_roots",
+                    None,
+                )
+                single_resolver = getattr(
+                    self.application_manager,
+                    "resolve_running_process",
+                    None,
                 )
 
-                if completed.returncode != 0:
-                    detail = (completed.stderr or completed.stdout or "").strip()
-                    error = f"Application '{target}' was not closed."
-                    if detail:
-                        error += f" {detail}"
+                def resolve_roots():
+                    if callable(root_resolver):
+                        return tuple(root_resolver(resolved_target, limit=64))
+                    if callable(single_resolver):
+                        return (single_resolver(resolved_target),)
+                    raise ApplicationResolutionError(
+                        "Windows application resolver is unavailable."
+                    )
+
+                roots = resolve_roots()
+                if not roots:
+                    raise ApplicationResolutionError(
+                        f"No running application matched '{resolved_target}'."
+                    )
+
+                initial_roots = roots
+                killed_pids = []
+                attempted_pids = set()
+                max_passes = 3
+
+                for _pass_index in range(max_passes):
+                    if _pass_index > 0:
+                        try:
+                            roots = resolve_roots()
+                        except ApplicationResolutionError:
+                            roots = ()
+                        if not roots:
+                            break
+
+                    new_roots = [
+                        process for process in roots
+                        if process.pid not in attempted_pids
+                    ]
+
+                    # Do not repeatedly taskkill the same surviving PID. A
+                    # persistent PID is one process tree that has already been
+                    # attempted; only newly discovered independent roots need
+                    # another kill pass.
+                    if not new_roots:
+                        break
+
+                    for process in new_roots:
+                        attempted_pids.add(process.pid)
+                        closed, detail = self._kill_process_tree(
+                            process, request.timeout_seconds
+                        )
+                        if closed:
+                            killed_pids.append(process.pid)
+                            continue
+
+                        compact = " ".join(detail.split())
+                        if "access is denied" in compact.lower():
+                            compact = "Access is denied."
+                        elif len(compact) > 240:
+                            compact = compact[:237] + "..."
+                        return _result(
+                            request,
+                            False,
+                            output={
+                                "target": target,
+                                "pid": initial_roots[0].pid,
+                                "process": initial_roots[0].name,
+                                "root_pids": [p.pid for p in initial_roots],
+                                "closed": False,
+                                **(
+                                    {"resolved_target": resolved_target}
+                                    if resolved_target != target
+                                    else {}
+                                ),
+                            },
+                            error=(
+                                f"Application '{resolved_target}' could not be closed."
+                                + (f" {compact}" if compact else "")
+                            ),
+                            start=start,
+                        )
+
+                    time.sleep(0.20)
+
+                try:
+                    remaining = resolve_roots()
+                except ApplicationResolutionError:
+                    remaining = ()
+
+                output = {
+                    "target": target,
+                    "pid": initial_roots[0].pid,
+                    "process": initial_roots[0].name,
+                    "closed": not remaining,
+                }
+                if len(initial_roots) > 1:
+                    output["root_pids"] = [p.pid for p in initial_roots]
+                    output["killed_pids"] = sorted(set(killed_pids))
+                if remaining:
+                    output["remaining_pids"] = [p.pid for p in remaining]
+                    output["remaining_processes"] = [p.name for p in remaining]
+                if resolved_target != target:
+                    output["resolved_target"] = resolved_target
+
+                if not remaining:
                     return _result(
                         request,
-                        False,
-                        output={
-                            "target": target,
-                            "pid": process.pid,
-                            "process": process.name,
-                            "closed": False,
-                        },
-                        error=error,
+                        True,
+                        output=output,
                         start=start,
                     )
 
                 return _result(
                     request,
-                    True,
-                    output={
-                        "target": target,
-                        "pid": process.pid,
-                        "process": process.name,
-                        "closed": True,
-                    },
+                    False,
+                    output=output,
+                    error=(
+                        f"Application '{resolved_target}' was not fully closed. "
+                        f"{len(remaining)} process tree(s) are still running."
+                    ),
                     start=start,
                 )
-
             if system in {"Linux", "Darwin"}:
                 completed = subprocess.run(
                     ["pkill", "-TERM", "-x", target],
