@@ -40,7 +40,11 @@ class TaskRuntimeModule(Module):
             "tool_confirmation_response",
             self.on_confirmation_response,
         )
-        self.event_bus.subscribe(\n            "capability_setup_completed",\n            self.on_capability_setup_completed,\n        )\n        print("[Tasks] Ready", flush=True)
+        self.event_bus.subscribe(
+            "capability_setup_completed",
+            self.on_capability_setup_completed,
+        )
+        print("[Tasks] Ready", flush=True)
 
     def shutdown(self):
         self.event_bus.unsubscribe("user_message", self.on_user_message)
@@ -50,7 +54,11 @@ class TaskRuntimeModule(Module):
             "tool_confirmation_response",
             self.on_confirmation_response,
         )
-        self.event_bus.unsubscribe(\n            "capability_setup_completed",\n            self.on_capability_setup_completed,\n        )\n        print("[Tasks] Stopped", flush=True)
+        self.event_bus.unsubscribe(
+            "capability_setup_completed",
+            self.on_capability_setup_completed,
+        )
+        print("[Tasks] Stopped", flush=True)
 
     def on_user_message(self, text):
         if not text:
