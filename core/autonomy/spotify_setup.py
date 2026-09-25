@@ -247,15 +247,14 @@ class _PlaywrightSpotifyBrowser:
 
         self._click_text_if_visible(page, re.compile(r"Web API", re.IGNORECASE))
 
-        checkboxes = page.locator("input[type='checkbox']")
-        for index in range(min(checkboxes.count(), 4)):
-            checkbox = checkboxes.nth(index)
-            try:
-                if not checkbox.is_checked():
-                    checkbox.check()
-                    break
-            except Exception:
-                continue
+        if self._terms_checkbox_visible(page):
+            self._announce(
+                "Spotify requires Developer Terms acceptance before the app can be created. Please accept the terms in the A.S.T.A. browser window; I’ll continue automatically afterward."
+            )
+            if not self._wait_for_terms_acceptance(page):
+                raise _UserActionRequired(
+                    "Spotify Developer Terms still need to be accepted in the browser."
+                )
 
         create = self._first_visible(
             page,
@@ -362,6 +361,35 @@ class _PlaywrightSpotifyBrowser:
 
         return None
 
+    def _terms_checkbox_visible(self, page) -> bool:
+        body = page.locator("body").inner_text().lower()
+        if "developer terms" not in body:
+            return False
+        try:
+            return page.locator("input[type='checkbox']").count() > 0
+        except Exception:
+            return False
+
+    def _wait_for_terms_acceptance(self, page) -> bool:
+        deadline = time.monotonic() + self.timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                checkboxes = page.locator("input[type='checkbox']")
+                if checkboxes.count() == 0:
+                    return True
+
+                if any(
+                    checkboxes.nth(index).is_checked()
+                    for index in range(min(checkboxes.count(), 4))
+                ):
+                    return True
+
+                page.wait_for_timeout(750)
+            except Exception:
+                pass
+
+        return False
+
     def _login_visible(self, page) -> bool:
         url = str(page.url).lower()
         body = page.locator("body").inner_text().lower()
@@ -380,9 +408,14 @@ class _PlaywrightSpotifyBrowser:
 
     def _terms_gate_visible(self, page) -> bool:
         body = page.locator("body").inner_text().lower()
+        try:
+            checkbox_count = page.locator("input[type='checkbox']").count()
+        except Exception:
+            checkbox_count = 0
         return (
             "developer terms" in body
             and ("accept" in body or "agree" in body)
+            and checkbox_count > 0
             and "dashboard" not in str(page.url).lower()
         )
 
