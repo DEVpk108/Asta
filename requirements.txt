@@ -38,8 +38,12 @@ torch
 faster-whisper
 
 # Local LLM HTTP client
-# ai/llama_cpp_engine.py
+# ai/llama_cpp_engine.py and core/media/providers.py
 requests
+
+# Local runtime configuration
+# main.py loads .env for API credentials and other machine-local settings.
+python-dotenv
 
 # ---------------------------------------------------------------------------
 # Situational. Install only if you use that path:
