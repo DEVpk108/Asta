@@ -1,7 +1,13 @@
 import threading
 
 from .applications import ApplicationManager
-from .autonomy import (\n    CapabilitySetupManager,\n    DiagnosisEngine,\n    ReplanEngine,\n    RecoveryManager,\n    VerificationEngine,\n)
+from .autonomy import (
+    CapabilitySetupManager,
+    DiagnosisEngine,
+    ReplanEngine,
+    RecoveryManager,
+    VerificationEngine,
+)
 from .capability_discovery import CapabilityDiscovery
 from .decision import create_decision_engine
 from .event_bus import EventBus
@@ -137,7 +143,8 @@ class Kernel:
                 self._stop_event.wait(0.5)
 
         except KeyboardInterrupt:
-            print("\n[Kernel] Keyboard interrupt")
+            print("
+[Kernel] Keyboard interrupt")
 
         finally:
             self.shutdown()
