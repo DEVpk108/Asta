@@ -1,5 +1,13 @@
 from core import Kernel
-from core.contracts import (\n    Plan,\n    PlanStatus,\n    PlanStep,\n    PlanStepStatus,\n    TaskStatus,\n    ToolDefinition,\n    ToolResult,\n)
+from core.contracts import (
+    Plan,
+    PlanStatus,
+    PlanStep,
+    PlanStepStatus,
+    TaskStatus,
+    ToolDefinition,
+    ToolResult,
+)
 from core.task_runtime import TaskRuntimeModule
 
 
