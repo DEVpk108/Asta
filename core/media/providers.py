@@ -799,6 +799,37 @@ class MediaManager:
                 return getattr(provider, "application_name", None)
         return None
 
+    def verify_playback(
+        self,
+        provider_name: str,
+        query: str,
+        *,
+        expected_uri: str | None = None,
+    ) -> dict:
+        """Observe playback state through a provider-specific observer."""
+        normalized = str(provider_name or "").strip().lower()
+        provider = self._by_name.get(normalized)
+        if provider is None:
+            return {
+                "status": "unknown",
+                "summary": f"Unknown media provider '{provider_name}'.",
+            }
+
+        observer = getattr(provider, "verify_playback", None)
+        if not callable(observer):
+            return {
+                "status": "unknown",
+                "summary": (
+                    f"Media provider '{provider.name}' does not expose "
+                    "playback observation."
+                ),
+            }
+
+        return observer(
+            query,
+            expected_uri=expected_uri,
+        )
+
     def execute(self, request: MediaRequest) -> MediaResult:
         explicit = str(request.provider or "").strip().lower()
         if not explicit and request.query:
