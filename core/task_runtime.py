@@ -144,8 +144,6 @@ class TaskRuntimeModule(Module):
             "error": result.error,
             "request_id": result.metadata.get("request_id"),
         }
-        self.kernel.task_manager.add_evidence(evidence, task.id)
-
         plan_step_id = result.metadata.get("plan_step_id")
         if not result.success:
             if plan_step_id:
@@ -155,6 +153,10 @@ class TaskRuntimeModule(Module):
                     task.id,
                 )
 
+            # Decide before recording the current failure so RecoveryManager
+            # counts only prior failures as history and the current result as
+            # the next attempt. This keeps direct recovery decisions and the
+            # runtime integration on the same attempt-counting contract.
             decision = self.kernel.recovery_manager.decide(
                 task,
                 result,
