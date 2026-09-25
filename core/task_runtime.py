@@ -269,16 +269,16 @@ class TaskRuntimeModule(Module):
                             capability=provider,
                             step_id=plan_step_id,
                         )
+                        evidence["capability_setup"] = {
+                            "capability": provider,
+                            "started": bool(started),
+                            "step_id": plan_step_id,
+                        }
                         if started:
                             task.metadata["capability_setup"] = {
                                 "capability": provider,
                                 "step_id": plan_step_id,
                                 "status": "running",
-                            }
-                            evidence["capability_setup"] = {
-                                "capability": provider,
-                                "started": True,
-                                "step_id": plan_step_id,
                             }
                             self.kernel.task_manager.add_evidence(
                                 evidence,
@@ -291,6 +291,19 @@ class TaskRuntimeModule(Module):
                                 diagnosis=diagnosis.to_dict(),
                             )
                             return
+
+                        evidence["capability_setup"]["status"] = "unavailable"
+                        self.kernel.task_manager.add_evidence(
+                            evidence,
+                            task.id,
+                        )
+                        self.event_bus.emit(
+                            "task_recovery_required",
+                            task_id=task.id,
+                            decision=decision.to_dict(),
+                            diagnosis=diagnosis.to_dict(),
+                        )
+                        return
 
                 self.kernel.task_manager.add_evidence(
                     evidence,
