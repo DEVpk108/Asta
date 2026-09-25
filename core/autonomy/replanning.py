@@ -79,7 +79,15 @@ class ReplanEngine:
                 )
                 return fallback
             if isinstance(result, ReplanDecision):
-                return result
+                if (
+                    result.confidence >= 0.55
+                    or result.strategy is ReplanStrategy.WAIT_FOR_USER
+                ):
+                    return result
+                fallback = self._fallback(diagnosis, plan_step=plan_step)
+                fallback.metadata["low_confidence_provider"] = True
+                fallback.metadata["provider_confidence"] = result.confidence
+                return fallback
 
         return self._fallback(diagnosis, plan_step=plan_step)
 
