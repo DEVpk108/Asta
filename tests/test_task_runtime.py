@@ -326,6 +326,16 @@ def test_task_runtime_executes_planner_generated_media_sequence():
             "is_playing": True,
         },
     }
+    # Kernel creates VerificationEngine against its original MediaManager.
+    # Rebind it after replacing the fixture manager so the planner, runtime,
+    # and verifier all observe the same provider registry.
+    from core.autonomy import VerificationEngine
+
+    kernel.verification_engine = VerificationEngine(
+        kernel.media_manager,
+        poll_attempts=1,
+        poll_delay=0,
+    )
     kernel.planner = __import__(
         "core.planner",
         fromlist=["Planner"],
