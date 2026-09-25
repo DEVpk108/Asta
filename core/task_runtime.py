@@ -565,6 +565,92 @@ class TaskRuntimeModule(Module):
         except Exception:
             return
 
+    def on_capability_setup_completed(self, event):
+        if not isinstance(event, dict):
+            return
+
+        task_id = str(event.get("task_id") or "").strip()
+        task = self.kernel.task_manager.get(task_id) if task_id else None
+        if task is None:
+            return
+
+        status = str(event.get("status") or "").strip().lower()
+        setup_evidence = {
+            "type": "capability_setup",
+            "capability": event.get("capability"),
+            "status": status,
+            "summary": event.get("summary"),
+            "step_id": event.get("step_id"),
+            "requires_user": bool(event.get("requires_user")),
+        }
+        self.kernel.task_manager.add_evidence(setup_evidence, task.id)
+        task.metadata["capability_setup"] = {
+            "capability": event.get("capability"),
+            "step_id": event.get("step_id"),
+            "status": status,
+        }
+
+        if status != "completed":
+            return
+
+        step_id = str(event.get("step_id") or "").strip()
+        if task.plan is None or not step_id:
+            return
+
+        try:
+            step = task.plan.get_step(step_id)
+        except KeyError:
+            return
+
+        step.status = PlanStepStatus.READY
+        task.current_step = None
+        task.error = None
+        task.plan.status = PlanStatus.ACTIVE
+
+        try:
+            self.kernel.task_manager.resume(task.id)
+        except ValueError:
+            if task.status.value != "active":
+                return
+
+        self.kernel.task_manager.refresh_ready_plan_steps(task.id)
+
+        next_step = self._next_ready_plan_step(task)
+        if next_step is None:
+            return
+
+        next_request = self.build_plan_request(task, next_step)
+        if next_request is None:
+            self.kernel.task_manager.fail(
+                f"Unable to resume task step '{next_step.id}' after capability setup.",
+                task.id,
+            )
+            return
+
+        print(
+            f"[Tasks] Capability setup complete; resuming {next_step.id} -> "
+            f"{next_request.tool}",
+            flush=True,
+        )
+        self.event_bus.emit("tool_request", request=next_request)
+
+    @staticmethod
+    def _setup_provider_for_step(task, plan_step_id, result):
+        if task.plan is not None and plan_step_id:
+            try:
+                step = task.plan.get_step(plan_step_id)
+            except KeyError:
+                step = None
+            if step is not None:
+                provider = str(step.metadata.get("provider") or "").strip().lower()
+                if provider:
+                    return provider
+
+        error = str(result.error or "").lower()
+        if "spotify" in error:
+            return "spotify"
+        return ""
+
     def on_confirmation_response(self, request_id, approved):
         if not isinstance(request_id, str) or not isinstance(approved, bool):
             return
