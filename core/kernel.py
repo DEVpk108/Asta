@@ -143,8 +143,7 @@ class Kernel:
                 self._stop_event.wait(0.5)
 
         except KeyboardInterrupt:
-            print("
-[Kernel] Keyboard interrupt")
+            print("\n[Kernel] Keyboard interrupt")
 
         finally:
             self.shutdown()
