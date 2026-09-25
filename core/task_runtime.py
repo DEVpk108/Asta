@@ -186,18 +186,6 @@ class TaskRuntimeModule(Module):
                         diagnosis=diagnosis.to_dict(),
                     )
 
-            self.kernel.task_manager.add_evidence(
-                evidence,
-                task.id,
-            )
-
-            self.event_bus.emit(
-                "task_recovery_required",
-                task_id=task.id,
-                decision=decision.to_dict(),
-                diagnosis=diagnosis.to_dict() if diagnosis is not None else None,
-            )
-
             if decision.action.value == "retry":
                 retry_step = (
                     task.plan.get_step(plan_step_id)
@@ -211,6 +199,16 @@ class TaskRuntimeModule(Module):
                         retry_step,
                     )
                     if retry_request is not None:
+                        self.kernel.task_manager.add_evidence(
+                            evidence,
+                            task.id,
+                        )
+                        self.event_bus.emit(
+                            "task_recovery_required",
+                            task_id=task.id,
+                            decision=decision.to_dict(),
+                            diagnosis=None,
+                        )
                         print(
                             f"[Tasks] Recovery retry: {retry_step.id} -> "
                             f"{retry_request.tool}",
@@ -223,30 +221,20 @@ class TaskRuntimeModule(Module):
                         return
 
             if decision.action.value == "wait_for_user":
+                self.kernel.task_manager.add_evidence(
+                    evidence,
+                    task.id,
+                )
+                self.event_bus.emit(
+                    "task_recovery_required",
+                    task_id=task.id,
+                    decision=decision.to_dict(),
+                    diagnosis=None,
+                )
                 self.kernel.task_manager.pause(task.id)
                 return
 
             if decision.action.value == "replan":
-                diagnosis_engine = getattr(self.kernel, "diagnosis_engine", None)
-                diagnosis = (
-                    diagnosis_engine.diagnose(
-                        task,
-                        result,
-                        recovery=decision,
-                        step_id=plan_step_id,
-                    )
-                    if diagnosis_engine is not None
-                    else None
-                )
-
-                if diagnosis is not None:
-                    evidence["diagnosis"] = diagnosis.to_dict()
-                    self.event_bus.emit(
-                        "task_diagnosed",
-                        task_id=task.id,
-                        diagnosis=diagnosis.to_dict(),
-                    )
-
                 replan_engine = getattr(self.kernel, "replan_engine", None)
                 if replan_engine is None or diagnosis is None:
                     self.kernel.task_manager.pause(task.id)
@@ -262,6 +250,12 @@ class TaskRuntimeModule(Module):
                     plan_step=step,
                 )
                 evidence["replan"] = replan_decision.to_dict()
+                self.event_bus.emit(
+                    "task_recovery_required",
+                    task_id=task.id,
+                    decision=decision.to_dict(),
+                    diagnosis=diagnosis.to_dict(),
+                )
 
                 attempts = int(task.metadata.get("replan_attempts", 0)) + 1
                 task.metadata["replan_attempts"] = attempts
