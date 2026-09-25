@@ -53,7 +53,9 @@ class RecoveryManager:
     def decide(self, task, result, *, step_id: str | None = None) -> RecoveryDecision:
         """Return a recovery action without executing anything."""
 
-        attempts = self._attempt_count(task, result, step_id)
+        # task.evidence contains prior results when called by TaskRuntime.
+        # The result argument is the current failed attempt.
+        attempts = self._attempt_count(task, result, step_id) + 1
         task_id = getattr(task, "id", None)
 
         if self._needs_user(result):
