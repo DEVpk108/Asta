@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 from core.autonomy.diagnosis import DiagnosisCategory, FailureDiagnosis
+from core.autonomy.replanning import ReplanDecision, ReplanStrategy
 from core.contracts.action import ActionDecision, ActionType
 from core.media import parse_media_request
 
@@ -13,6 +14,7 @@ from .contracts import DecisionSnapshot
 from .laya_schemas import ASTA_DECISION_QUESTIONS
 from .laya_action_schemas import build_action_questions
 from .laya_diagnosis_schemas import build_diagnosis_questions
+from .laya_replan_schemas import build_replan_questions
 
 
 class LayaDecisionEngine(DecisionEngine):
@@ -325,6 +327,71 @@ class LayaDecisionEngine(DecisionEngine):
                     for key, answer in answers.items()
                     if isinstance(answer, dict)
                 },
+            },
+        )
+
+    def select_replan_strategy(
+        self,
+        diagnosis,
+        *,
+        plan_step=None,
+    ) -> ReplanDecision:
+        """Choose one bounded repair strategy with a single Laya pass."""
+        strategy_questions = build_replan_questions()
+        step_payload = {}
+        if plan_step is not None:
+            step_payload = {
+                "id": getattr(plan_step, "id", None),
+                "description": getattr(plan_step, "description", ""),
+                "status": getattr(getattr(plan_step, "status", None), "value", None),
+                "metadata": dict(getattr(plan_step, "metadata", {}) or {}),
+            }
+
+        diagnosis_payload = (
+            diagnosis.to_dict()
+            if hasattr(diagnosis, "to_dict")
+            else dict(diagnosis or {})
+        )
+        state = {
+            "diagnosis": diagnosis_payload,
+            "failed_step": step_payload,
+        }
+
+        started = time.perf_counter()
+        result = self._get_router().predict(
+            state,
+            strategy_questions,
+            model=self.model,
+        )
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+
+        answers = result.get("answers") or {}
+        routing = result.get("routing") or {}
+        model = routing.get("model") or result.get("model") or self.model
+        answer = answers.get("strategy") or {}
+        raw_strategy = str(answer.get("choice") or "rebuild_plan").strip().lower()
+        try:
+            strategy = ReplanStrategy(raw_strategy)
+        except ValueError:
+            strategy = ReplanStrategy.REBUILD_PLAN
+
+        try:
+            confidence = float(answer.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+
+        # The user boundary never belongs to Laya. It is enforced by the
+        # ReplanEngine before this provider is consulted.
+        return ReplanDecision(
+            strategy=strategy,
+            reason=f"Laya selected {strategy.value} for the diagnosed failure.",
+            confidence=max(0.0, min(1.0, confidence)),
+            source=self.name,
+            model=str(model) if model is not None else None,
+            latency_ms=elapsed_ms,
+            metadata={
+                "routing": dict(routing),
+                "raw_decision": dict(answer),
             },
         )
 
