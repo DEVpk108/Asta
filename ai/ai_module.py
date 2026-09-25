@@ -1003,8 +1003,14 @@ class AIModule(Module):
             return f"I couldn't start {target}." if target else "I couldn't start the process."
 
         if result.tool == "media.control":
-            if "ASTA_SPOTIFY_CLIENT_ID" in str(result.error or ""):
-                return "Spotify playback needs one-time authorization."
+            error = str(result.error or "")
+            if "Spotify is not configured yet" in error:
+                return (
+                    "Spotify isn't configured yet. I opened the Spotify Developer setup page. "
+                    "Set the Spotify Client ID in A.S.T.A. configuration, then restart A.S.T.A."
+                )
+            if "Spotify authorization" in error or "Spotify isn't authorized" in error:
+                return "Spotify authorization wasn't completed. Please authorize A.S.T.A. and try again."
             return "I couldn't control media playback."
 
         if result.tool == "system.stop_process":

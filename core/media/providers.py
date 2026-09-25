@@ -121,9 +121,13 @@ class SpotifyProvider:
     aliases = ("spoti",)
     application_name = "Spotify"
     priority = 20
+    developer_dashboard_url = "https://developer.spotify.com/dashboard"
 
-    def __init__(self):
+    def __init__(self, notify_user=None):
         self._system = WindowsMediaProvider()
+        self._notify_user = notify_user
+        self._last_setup_open_at = 0.0
+        self._setup_open_cooldown = 30.0
         self.client_id = os.getenv("ASTA_SPOTIFY_CLIENT_ID", "").strip()
         self.redirect_uri = os.getenv(
             "ASTA_SPOTIFY_REDIRECT_URI",
@@ -137,6 +141,33 @@ class SpotifyProvider:
     @property
     def configured(self) -> bool:
         return bool(self.client_id)
+
+    def _announce(self, text):
+        callback = self._notify_user
+        if callable(callback):
+            try:
+                callback(text)
+            except Exception as exc:
+                print(
+                    f"[Media/Spotify] User notification failed: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+
+    def _open_developer_setup(self):
+        now = time.monotonic()
+        if now - self._last_setup_open_at < self._setup_open_cooldown:
+            return
+
+        self._last_setup_open_at = now
+        print(
+            "[Media/Spotify] Spotify is not configured; opening the developer setup page.",
+            flush=True,
+        )
+        webbrowser.open(
+            self.developer_dashboard_url,
+            new=2,
+            autoraise=True,
+        )
 
     def supports(self, request: MediaRequest) -> bool:
         if request.operation == "play" and request.query:
@@ -239,6 +270,9 @@ class SpotifyProvider:
             + urllib.parse.urlencode(auth_params)
         )
 
+        self._announce(
+            "Spotify isn't authorized yet. I'll open the Spotify authentication page."
+        )
         print("[Media/Spotify] Opening authorization in the browser.", flush=True)
         webbrowser.open(auth_url, new=2, autoraise=True)
 
@@ -463,9 +497,10 @@ class SpotifyProvider:
 
     def _play_query(self, query):
         if not self.configured:
+            self._open_developer_setup()
             raise RuntimeError(
-                "Spotify playback requires one-time setup. "
-                "Set ASTA_SPOTIFY_CLIENT_ID and authorize A.S.T.A."
+                "Spotify is not configured yet. The Spotify Developer setup page was opened. "
+                "Set ASTA_SPOTIFY_CLIENT_ID and restart A.S.T.A."
             )
 
         token = self._get_access_token()
