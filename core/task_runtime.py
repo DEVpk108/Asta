@@ -165,6 +165,24 @@ class TaskRuntimeModule(Module):
                 step_id=plan_step_id,
             )
             evidence["recovery"] = decision.to_dict()
+
+            diagnosis = None
+            if decision.action.value == "replan":
+                diagnosis_engine = getattr(self.kernel, "diagnosis_engine", None)
+                if diagnosis_engine is not None:
+                    diagnosis = diagnosis_engine.diagnose(
+                        task,
+                        result,
+                        recovery=decision,
+                        step_id=plan_step_id,
+                    )
+                    evidence["diagnosis"] = diagnosis.to_dict()
+                    self.event_bus.emit(
+                        "task_diagnosed",
+                        task_id=task.id,
+                        diagnosis=diagnosis.to_dict(),
+                    )
+
             self.kernel.task_manager.add_evidence(
                 evidence,
                 task.id,
@@ -174,6 +192,7 @@ class TaskRuntimeModule(Module):
                 "task_recovery_required",
                 task_id=task.id,
                 decision=decision.to_dict(),
+                diagnosis=diagnosis.to_dict() if diagnosis is not None else None,
             )
 
             if decision.action.value == "retry":
