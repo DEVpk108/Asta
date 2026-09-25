@@ -96,7 +96,7 @@ class ReplanEngine:
         category = getattr(diagnosis, "category", None)
         value = getattr(category, "value", str(category or "unknown"))
 
-        if value == "authentication" or value == "authorization":
+        if value in {"authentication", "authorization", "setup_required"}:
             return ReplanDecision(
                 strategy=ReplanStrategy.WAIT_FOR_USER,
                 reason="The task cannot proceed until the user completes an access boundary.",

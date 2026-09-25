@@ -124,6 +124,11 @@ class RecoveryManager:
                 "login required",
                 "requires user",
                 "user confirmation",
+                "one-time setup",
+                "one time setup",
+                "not configured",
+                "set asta_spotify_client_id",
+                "integration is not configured",
             )
         )
 

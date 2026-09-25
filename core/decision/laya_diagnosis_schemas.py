@@ -1,5 +1,6 @@
 DIAGNOSIS_CATEGORIES = {
     "authentication": "The action cannot proceed until the user signs in or completes OAuth.",
+    "setup_required": "The integration or capability is not configured yet and requires setup before execution can continue.",
     "authorization": "The action reached an access or permission boundary that the current credentials cannot cross.",
     "transient": "The failure looks temporary, such as timeout, network interruption, service busy, or connection reset.",
     "missing_capability": "A required tool, integration, API capability, or registered capability is unavailable.",

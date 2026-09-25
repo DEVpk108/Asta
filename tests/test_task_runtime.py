@@ -389,3 +389,37 @@ def test_task_runtime_executes_planner_generated_media_sequence():
         }
     finally:
         _shutdown(tasks, ai, tools)
+
+
+def test_task_runtime_pauses_immediately_for_missing_integration_setup():
+    kernel, tasks, ai, tools = _build_runtime()
+    calls = 0
+    try:
+        original = kernel.tool_dispatcher.dispatch
+
+        def missing_setup(request, *, confirmed=False):
+            nonlocal calls
+            calls += 1
+            return ToolResult(
+                success=False,
+                tool=request.tool,
+                error=(
+                    "Spotify playback requires one-time setup. "
+                    "Set ASTA_SPOTIFY_CLIENT_ID and authorize A.S.T.A."
+                ),
+            )
+
+        kernel.tool_dispatcher.dispatch = missing_setup
+        kernel.event_bus.emit(
+            "user_message",
+            "open calculator",
+        )
+
+        task = kernel.task_manager.list()[0]
+        assert task.status is TaskStatus.PAUSED
+        assert calls == 1
+        assert task.metadata["replan_attempts"] == 0
+        assert task.evidence[-1]["recovery"]["action"] == "wait_for_user"
+    finally:
+        kernel.tool_dispatcher.dispatch = original
+        _shutdown(tasks, ai, tools)

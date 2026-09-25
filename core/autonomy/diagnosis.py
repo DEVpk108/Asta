@@ -9,6 +9,7 @@ class DiagnosisCategory(str, Enum):
     """Bounded failure categories used by autonomous recovery."""
 
     AUTHENTICATION = "authentication"
+    SETUP_REQUIRED = "setup_required"
     AUTHORIZATION = "authorization"
     TRANSIENT = "transient"
     MISSING_CAPABILITY = "missing_capability"
@@ -151,6 +152,19 @@ class DiagnosisEngine:
         if any(
             marker in error
             for marker in (
+                "one-time setup",
+                "one time setup",
+                "not configured",
+                "set asta_spotify_client_id",
+                "integration is not configured",
+            )
+        ):
+            category = DiagnosisCategory.SETUP_REQUIRED
+            recommended = "wait_for_user"
+            requires_user = True
+        elif any(
+            marker in error
+            for marker in (
                 "authentication required",
                 "login required",
                 "sign in required",
@@ -242,5 +256,8 @@ class DiagnosisEngine:
             evidence={
                 "error": str(payload.get("error") or "")[:1200],
                 "output": str(payload.get("output") or "")[:1200],
+            },
+            metadata={
+                "setup_required": category is DiagnosisCategory.SETUP_REQUIRED,
             },
         )

@@ -65,3 +65,22 @@ def test_authentication_failure_waits_for_user():
 
     assert decision.action is RecoveryAction.WAIT_FOR_USER
     assert decision.metadata["requires_user"] is True
+
+
+def test_missing_spotify_setup_waits_for_user_without_retry():
+    manager = RecoveryManager(max_retries=1)
+
+    decision = manager.decide(
+        _task(),
+        _result(
+            error=(
+                "Spotify playback requires one-time setup. "
+                "Set ASTA_SPOTIFY_CLIENT_ID and authorize A.S.T.A."
+            )
+        ),
+        step_id="step-1",
+    )
+
+    assert decision.action is RecoveryAction.WAIT_FOR_USER
+    assert decision.attempt == 1
+    assert decision.metadata["requires_user"] is True

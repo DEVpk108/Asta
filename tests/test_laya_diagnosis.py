@@ -175,3 +175,55 @@ def test_laya_engine_selects_bounded_replan_strategy(monkeypatch):
     assert decision.source == "laya"
     assert decision.model == "multilingual"
     assert decision.latency_ms is not None
+
+
+def test_laya_engine_accepts_setup_required_category(monkeypatch):
+    class FakeRouter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def predict(self, state, questions, model=None):
+            assert "setup_required" in questions["category"]["criteria"]
+            return {
+                "answers": {
+                    "category": {
+                        "type": "choice",
+                        "choice": "setup_required",
+                        "confidence": 0.94,
+                    },
+                    "recommended_action": {
+                        "type": "choice",
+                        "choice": "wait_for_user",
+                        "confidence": 0.93,
+                    },
+                    "requires_user": {
+                        "type": "noul",
+                        "noul": 0.92,
+                        "confidence": 0.95,
+                    },
+                },
+                "routing": {"model": "multilingual"},
+            }
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "laya",
+        SimpleNamespace(Router=FakeRouter),
+    )
+
+    engine = LayaDecisionEngine(model="multilingual")
+    diagnosis = engine.diagnose_failure(
+        {
+            "task_id": "task-1",
+            "goal": "Play Hanuman Chalisa on Spotify",
+            "failed_tool": "media.control",
+            "step_id": "step-1",
+            "attempt": 1,
+            "error": "Spotify integration is not configured.",
+            "output": "",
+        }
+    )
+
+    assert diagnosis.category.value == "setup_required"
+    assert diagnosis.requires_user is True
+    assert diagnosis.recommended_action == "wait_for_user"
