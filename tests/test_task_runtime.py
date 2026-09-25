@@ -316,6 +316,16 @@ def test_task_runtime_executes_planner_generated_media_sequence():
     # Keep the real media-provider registry so the planner can derive the
     # application preparation step from the provider name.
     kernel.media_manager = MediaManager()
+    kernel.media_manager.verify_playback = lambda provider, query, *, expected_uri=None: {
+        "status": "verified",
+        "summary": "Test observer confirms the requested playback.",
+        "observed": {
+            "provider": provider,
+            "query": query,
+            "uri": expected_uri,
+            "is_playing": True,
+        },
+    }
     kernel.planner = __import__(
         "core.planner",
         fromlist=["Planner"],
