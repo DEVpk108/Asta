@@ -129,9 +129,10 @@ def test_failed_tool_marks_plan_step_failed():
         kernel.event_bus.emit("user_message", "open calculator")
 
         task = kernel.task_manager.list()[0]
-        assert task.status is TaskStatus.FAILED
-        assert task.plan.status.value == "failed"
+        assert task.status is TaskStatus.PAUSED
+        assert task.plan.status.value == "active"
         assert task.plan.steps[0].status.value == "failed"
+        assert task.evidence[-1]["recovery"]["action"] == "replan"
 
         kernel.tool_dispatcher.dispatch = original
     finally:
