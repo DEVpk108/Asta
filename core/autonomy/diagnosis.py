@@ -129,6 +129,7 @@ class DiagnosisEngine:
         )
 
         return {
+            "task_id": str(getattr(task, "id", "") or ""),
             "goal": str(getattr(task, "goal", "") or ""),
             "failed_tool": str(getattr(result, "tool", "") or ""),
             "step_id": step_id,
