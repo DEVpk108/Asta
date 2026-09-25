@@ -4,6 +4,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from core.config import load_local_environment
+
+
+load_local_environment()
+
 
 _HUD_PROCESS = None
 
