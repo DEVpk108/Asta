@@ -133,6 +133,8 @@ def test_failed_tool_marks_plan_step_failed():
         assert task.plan.status.value == "active"
         assert task.plan.steps[0].status.value == "failed"
         assert task.evidence[-1]["recovery"]["action"] == "replan"
+        assert "diagnosis" in task.evidence[-1]
+        assert task.evidence[-1]["diagnosis"]["source"] == "fallback"
 
         kernel.tool_dispatcher.dispatch = original
     finally:
