@@ -318,7 +318,8 @@ class TaskRuntimeModule(Module):
                     plan=new_plan.to_dict(),
                 )
 
-                self.kernel.task_manager.resume(task.id)
+                # The task remains ACTIVE throughout an autonomous replan;
+                # only its structured plan is replaced.
                 task.plan.status = PlanStatus.ACTIVE
                 task.plan.mark_ready_steps()
 
