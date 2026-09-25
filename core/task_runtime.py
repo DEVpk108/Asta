@@ -362,8 +362,13 @@ class TaskRuntimeModule(Module):
 
         # A successful tool call is not automatically a successful real-world
         # outcome for capabilities that declare an external verifier.
+        verification_key = (
+            str((structured_step.metadata or {}).get("verification") or "").strip()
+            if structured_step is not None
+            else ""
+        )
         verification_engine = getattr(self.kernel, "verification_engine", None)
-        if verification_engine is not None and structured_step is not None:
+        if verification_key and verification_engine is not None and structured_step is not None:
             verification = verification_engine.verify(
                 task,
                 structured_step,
@@ -371,10 +376,7 @@ class TaskRuntimeModule(Module):
             )
             evidence["verification"] = verification.to_dict()
 
-            verification_key = str(
-                (structured_step.metadata or {}).get("verification") or ""
-            ).strip()
-            if verification_key and verification.status.value == "failed":
+            if verification.status.value == "failed":
                 self.kernel.task_manager.set_plan_step_status(
                     structured_step.id,
                     PlanStepStatus.FAILED,
