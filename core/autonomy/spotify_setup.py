@@ -206,6 +206,10 @@ class _PlaywrightSpotifyBrowser:
             page.goto(self.dashboard_url, wait_until="domcontentloaded")
             page.bring_to_front()
 
+            # Spotify renders the dashboard client-side; allow a bounded
+            # hydration window before deciding a control is unavailable.
+            self._wait_for_dashboard_render(page)
+
             if self._login_visible(page):
                 self._announce(
                     "Please sign in to your Spotify account in the A.S.T.A. browser window. I’ll continue after the Developer Dashboard becomes available."
@@ -266,16 +270,26 @@ class _PlaywrightSpotifyBrowser:
             page.wait_for_load_state("domcontentloaded")
             return
 
-        button = self._first_visible(
-            page,
-            (
-                re.compile(r"create\s+an?\s+app", re.IGNORECASE),
-                re.compile(r"create\s+app", re.IGNORECASE),
-            ),
-            role="button",
-        )
+        button = self._find_create_app_control(page)
         if button is None:
-            raise RuntimeError("Spotify Developer Dashboard has no Create App control.")
+            url = str(getattr(page, "url", "") or "")
+            body = self._safe_body_text(page)
+            hold_markers = (
+                "new integrations are currently on hold",
+                "temporarily unavailable",
+                "unable to create",
+                "app creation is currently unavailable",
+            )
+            if any(marker in body.lower() for marker in hold_markers):
+                raise _UserActionRequired(
+                    "Spotify is currently not allowing app creation on this developer account. "
+                    "Please resolve the account/dashboard restriction in the browser; A.S.T.A. will resume afterward."
+                )
+            raise RuntimeError(
+                "Spotify Developer Dashboard did not expose a Create App control "
+                f"after waiting for the page to render (url={url or '<unknown>'}). "
+                f"Visible dashboard text: {body[:600]!r}"
+            )
 
         button.click()
 
@@ -310,6 +324,82 @@ class _PlaywrightSpotifyBrowser:
         create.click()
         page.wait_for_load_state("domcontentloaded")
         time.sleep(0.5)
+
+    def _wait_for_dashboard_render(self, page) -> None:
+        deadline = time.monotonic() + min(15.0, self.timeout_seconds)
+        while time.monotonic() < deadline:
+            if self._login_visible(page):
+                return
+            if self._find_create_app_control(page) is not None:
+                return
+            try:
+                if "dashboard" in str(page.url).lower():
+                    body = self._safe_body_text(page).lower()
+                    if "developer terms" in body:
+                        return
+            except Exception:
+                pass
+            try:
+                page.wait_for_timeout(500)
+            except Exception:
+                time.sleep(0.5)
+
+    def _find_create_app_control(self, page):
+        patterns = (
+            re.compile(r"^create\s+app$", re.IGNORECASE),
+            re.compile(r"^create\s+an?\s+app$", re.IGNORECASE),
+            re.compile(r"create\s+app", re.IGNORECASE),
+            re.compile(r"create\s+an?\s+app", re.IGNORECASE),
+        )
+
+        # Depending on the current dashboard layout, the CTA may expose a
+        # button or link accessibility role.
+        for role in ("button", "link"):
+            for pattern in patterns:
+                try:
+                    locator = page.get_by_role(role, name=pattern)
+                    if locator.count() and locator.first.is_visible():
+                        return locator.first
+                except Exception:
+                    pass
+
+        try:
+            locator = page.get_by_text(
+                re.compile(r"^create\s+app$|^create\s+an?\s+app$", re.IGNORECASE)
+            )
+            if locator.count() and locator.first.is_visible():
+                return locator.first
+        except Exception:
+            pass
+
+        # Last-resort scan of visible buttons/links and their accessible text.
+        try:
+            candidates = page.locator("button, a, [role='button'], [role='link']")
+            for index in range(min(candidates.count(), 64)):
+                candidate = candidates.nth(index)
+                if not candidate.is_visible():
+                    continue
+                try:
+                    label = " ".join((
+                        candidate.inner_text(),
+                        candidate.get_attribute("aria-label") or "",
+                        candidate.get_attribute("title") or "",
+                    )).strip()
+                except Exception:
+                    continue
+                if re.search(r"\bcreate\s+(?:an?\s+)?app\b", label, re.IGNORECASE):
+                    return candidate
+        except Exception:
+            pass
+
+        return None
+
+    @staticmethod
+    def _safe_body_text(page) -> str:
+        try:
+            return str(page.locator("body").inner_text() or "").strip()
+        except Exception:
+            return ""
 
     def _configure_redirect(self, page) -> None:
         settings = self._first_visible(
