@@ -109,7 +109,18 @@ def _extract_known_provider(normalized: str, known_providers) -> tuple[str, str]
 def _clean_play_query(query: str) -> str:
     """Normalize common STT filler around a media play query."""
     cleaned = query.strip(" ,.-")
-    for prefix in ("play ", "resume ", "continue ", "listen to ", "put on "):
+    for prefix in (
+        "play ",
+        "resume ",
+        "continue ",
+        "listen to ",
+        "put on ",
+        "only ",
+        "just ",
+        "please ",
+        "okay ",
+        "ok ",
+    ):
         if cleaned.startswith(prefix):
             cleaned = cleaned[len(prefix):].strip(" ,.-")
             break
