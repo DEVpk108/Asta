@@ -64,6 +64,11 @@ class CapabilitySetupManager:
             status=CapabilitySetupStatus.STARTED,
             summary=f"Starting capability setup for {key[1]}.",
         )
+        print(
+            f"[Setup] Starting capability setup: {key[1]} "
+            f"(task={task.id}, step={step_id or 'unknown'})",
+            flush=True,
+        )
         self._emit("capability_setup_started", event)
 
         thread = threading.Thread(
@@ -126,6 +131,15 @@ class CapabilitySetupManager:
             with self._lock:
                 self._running.discard(key)
 
+        print(
+            f"[Setup] {capability} setup {event.status.value}: {event.summary}",
+            flush=True,
+        )
+        if event.status in {
+            CapabilitySetupStatus.WAITING_FOR_USER,
+            CapabilitySetupStatus.FAILED,
+        }:
+            self._notify(event.summary)
         self._emit("capability_setup_completed", event)
 
     def _spotify_operator(self):

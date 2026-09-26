@@ -243,3 +243,18 @@ def test_intent_router_recovers_media_command_when_stt_drops_play():
         "query": "hanuman chalisa",
         "provider": "spotify",
     }
+
+
+def test_intent_router_strips_consumed_wakeword_from_command():
+    router = IntentRouter(media_providers=("spotify", "system"))
+
+    result = router.analyze("Hey Asta, play Hanuman Chalisa on Spotify")
+
+    assert result.intent == IntentType.COMMAND
+    assert result.normalized_text == "play hanuman chalisa on spotify"
+    assert result.entities == {
+        "action": "media",
+        "operation": "play",
+        "query": "hanuman chalisa",
+        "provider": "spotify",
+    }

@@ -158,6 +158,10 @@ class _PlaywrightSpotifyBrowser:
         self.notify = notify
         self.timeout_seconds = timeout_seconds
 
+    def _announce(self, message: str) -> None:
+        if callable(self.notify):
+            self.notify(message)
+
     def run(self) -> str:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
         from playwright.sync_api import sync_playwright
@@ -173,15 +177,49 @@ class _PlaywrightSpotifyBrowser:
         profile.mkdir(parents=True, exist_ok=True)
 
         with sync_playwright() as playwright:
-            context = playwright.chromium.launch_persistent_context(
-                str(profile),
-                channel=getenv("ASTA_BROWSER_CHANNEL", "chrome") or None,
-                headless=False,
-            )
+            channel = getenv("ASTA_BROWSER_CHANNEL", "chrome").strip()
+            try:
+                context = playwright.chromium.launch_persistent_context(
+                    str(profile),
+                    channel=channel or None,
+                    headless=False,
+                )
+            except Exception as first_exc:
+                print(
+                    f"[Setup/Spotify] Browser launch via channel "
+                    f"{channel or '<default>'} failed: "
+                    f"{type(first_exc).__name__}: {first_exc}",
+                    flush=True,
+                )
+                executable = self._find_windows_chrome()
+                if executable is None:
+                    raise
+
+                print(
+                    f"[Setup/Spotify] Retrying browser launch with executable: "
+                    f"{executable}",
+                    flush=True,
+                )
+                context = playwright.chromium.launch_persistent_context(
+                    str(profile),
+                    executable_path=executable,
+                    headless=False,
+                )
             page = context.pages[0] if context.pages else context.new_page()
             page.set_default_timeout(8_000)
             page.goto(self.dashboard_url, wait_until="domcontentloaded")
             page.bring_to_front()
+
+            # Spotify renders the dashboard client-side; allow a bounded
+            # hydration window before deciding a control is unavailable.
+            self._wait_for_dashboard_render(page)
+
+            # Unauthenticated dashboard URLs currently redirect to the public
+            # Spotify for Developers homepage. Open its Log in control first;
+            # credentials remain a user-only boundary.
+            if self._public_login_control_visible(page):
+                self._click_login_control(page)
+                self._wait_for_dashboard_render(page)
 
             if self._login_visible(page):
                 self._announce(
@@ -216,6 +254,24 @@ class _PlaywrightSpotifyBrowser:
                 )
             return client_id
 
+    @staticmethod
+    def _find_windows_chrome() -> str | None:
+        import os
+
+        candidates = [
+            os.getenv("PROGRAMFILES", ""),
+            os.getenv("PROGRAMFILES(X86)", ""),
+            os.getenv("LOCALAPPDATA", ""),
+        ]
+        suffix = Path("Google") / "Chrome" / "Application" / "chrome.exe"
+        for root in candidates:
+            if not root:
+                continue
+            candidate = Path(root) / suffix
+            if candidate.exists():
+                return str(candidate)
+        return None
+
     def _open_or_create_app(self, page) -> None:
         existing = page.get_by_text(
             re.compile(r"^A\.S\.T\.A\.?$", re.IGNORECASE)
@@ -225,16 +281,29 @@ class _PlaywrightSpotifyBrowser:
             page.wait_for_load_state("domcontentloaded")
             return
 
-        button = self._first_visible(
-            page,
-            (
-                re.compile(r"create\s+an?\s+app", re.IGNORECASE),
-                re.compile(r"create\s+app", re.IGNORECASE),
-            ),
-            role="button",
-        )
+        button = self._find_create_app_control(page)
         if button is None:
-            raise RuntimeError("Spotify Developer Dashboard has no Create App control.")
+            url = str(getattr(page, "url", "") or "")
+            body = self._safe_body_text(page)
+            hold_markers = (
+                "new integrations are currently on hold",
+                "temporarily unavailable",
+                "unable to create",
+                "app creation is currently unavailable",
+            )
+            if any(marker in body.lower() for marker in hold_markers):
+                raise _UserActionRequired(
+                    "Spotify is currently not allowing app creation on this developer account. "
+                    "Please resolve the account/dashboard restriction in the browser; A.S.T.A. will resume afterward."
+                )
+            print(
+                "[Setup/Spotify] Create App control not found after render wait. "
+                f"url={url or '<unknown>'} body={body[:1200]!r}",
+                flush=True,
+            )
+            raise RuntimeError(
+                "Spotify Developer Dashboard did not expose a Create App control after the page rendered."
+            )
 
         button.click()
 
@@ -269,6 +338,82 @@ class _PlaywrightSpotifyBrowser:
         create.click()
         page.wait_for_load_state("domcontentloaded")
         time.sleep(0.5)
+
+    def _wait_for_dashboard_render(self, page) -> None:
+        deadline = time.monotonic() + min(15.0, self.timeout_seconds)
+        while time.monotonic() < deadline:
+            if self._login_visible(page):
+                return
+            if self._find_create_app_control(page) is not None:
+                return
+            try:
+                if "dashboard" in str(page.url).lower():
+                    body = self._safe_body_text(page).lower()
+                    if "developer terms" in body:
+                        return
+            except Exception:
+                pass
+            try:
+                page.wait_for_timeout(500)
+            except Exception:
+                time.sleep(0.5)
+
+    def _find_create_app_control(self, page):
+        patterns = (
+            re.compile(r"^create\s+app$", re.IGNORECASE),
+            re.compile(r"^create\s+an?\s+app$", re.IGNORECASE),
+            re.compile(r"create\s+app", re.IGNORECASE),
+            re.compile(r"create\s+an?\s+app", re.IGNORECASE),
+        )
+
+        # Depending on the current dashboard layout, the CTA may expose a
+        # button or link accessibility role.
+        for role in ("button", "link"):
+            for pattern in patterns:
+                try:
+                    locator = page.get_by_role(role, name=pattern)
+                    if locator.count() and locator.first.is_visible():
+                        return locator.first
+                except Exception:
+                    pass
+
+        try:
+            locator = page.get_by_text(
+                re.compile(r"^create\s+app$|^create\s+an?\s+app$", re.IGNORECASE)
+            )
+            if locator.count() and locator.first.is_visible():
+                return locator.first
+        except Exception:
+            pass
+
+        # Last-resort scan of visible buttons/links and their accessible text.
+        try:
+            candidates = page.locator("button, a, [role='button'], [role='link']")
+            for index in range(min(candidates.count(), 64)):
+                candidate = candidates.nth(index)
+                if not candidate.is_visible():
+                    continue
+                try:
+                    label = " ".join((
+                        candidate.inner_text(),
+                        candidate.get_attribute("aria-label") or "",
+                        candidate.get_attribute("title") or "",
+                    )).strip()
+                except Exception:
+                    continue
+                if re.search(r"\bcreate\s+(?:an?\s+)?app\b", label, re.IGNORECASE):
+                    return candidate
+        except Exception:
+            pass
+
+        return None
+
+    @staticmethod
+    def _safe_body_text(page) -> str:
+        try:
+            return str(page.locator("body").inner_text() or "").strip()
+        except Exception:
+            return ""
 
     def _configure_redirect(self, page) -> None:
         settings = self._first_visible(
@@ -390,6 +535,55 @@ class _PlaywrightSpotifyBrowser:
 
         return False
 
+    def _public_login_control_visible(self, page) -> bool:
+        url = str(getattr(page, "url", "") or "").lower()
+        if "developer.spotify.com" not in url:
+            return False
+        if "/dashboard" in url or "accounts.spotify.com" in url:
+            return False
+
+        patterns = (
+            re.compile(r"^log\s+in$", re.IGNORECASE),
+            re.compile(r"^login$", re.IGNORECASE),
+        )
+        for pattern in patterns:
+            try:
+                locator = page.get_by_role("link", name=pattern)
+                if locator.count() and locator.first.is_visible():
+                    return True
+            except Exception:
+                pass
+            try:
+                locator = page.get_by_role("button", name=pattern)
+                if locator.count() and locator.first.is_visible():
+                    return True
+            except Exception:
+                pass
+
+        return False
+
+    def _click_login_control(self, page) -> None:
+        patterns = (
+            re.compile(r"^log\s+in$", re.IGNORECASE),
+            re.compile(r"^login$", re.IGNORECASE),
+        )
+        for role in ("link", "button"):
+            for pattern in patterns:
+                try:
+                    locator = page.get_by_role(role, name=pattern)
+                    if locator.count() and locator.first.is_visible():
+                        locator.first.click()
+                        try:
+                            page.wait_for_load_state("domcontentloaded")
+                        except Exception:
+                            pass
+                        return
+                except Exception:
+                    pass
+
+        raise _UserActionRequired(
+            "Spotify Developer login is required, but the public Developer page did not expose its Log in control."
+        )
     def _login_visible(self, page) -> bool:
         url = str(page.url).lower()
         body = page.locator("body").inner_text().lower()
@@ -400,9 +594,15 @@ class _PlaywrightSpotifyBrowser:
         except Exception:
             credential_fields = 0
 
+        is_accounts_login = (
+            "accounts.spotify.com" in url
+            and "/login" in url
+        )
         return (
-            "accounts.spotify.com/login" in url
+            is_accounts_login
             or "log in to spotify" in body
+            or "welcome back" in body
+            or ("email" in body and "continue" in body and "sign up" in body)
             or credential_fields > 0
         )
 

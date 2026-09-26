@@ -65,3 +65,123 @@ def test_spotify_setup_missing_browser_uses_user_boundary(monkeypatch, tmp_path)
     assert opened == [
         "https://developer.spotify.com/dashboard"
     ]
+
+
+def test_playwright_spotify_browser_forwards_notifications():
+    from core.autonomy.spotify_setup import _PlaywrightSpotifyBrowser
+
+    calls = []
+    browser = _PlaywrightSpotifyBrowser(
+        dashboard_url="https://developer.spotify.com/dashboard",
+        redirect_uri="http://127.0.0.1:8765/callback",
+        notify=calls.append,
+    )
+
+    browser._announce("Please sign in in the browser.")
+
+    assert calls == ["Please sign in in the browser."]
+
+
+def test_playwright_spotify_browser_detects_public_login_control():
+    from core.autonomy.spotify_setup import _PlaywrightSpotifyBrowser
+
+    class Locator:
+        count_value = 1
+
+        def count(self):
+            return self.count_value
+
+        @property
+        def first(self):
+            return self
+
+        def is_visible(self):
+            return True
+
+        def click(self):
+            pass
+
+    class Page:
+        url = "https://developer.spotify.com/"
+
+        def get_by_role(self, role, name=None):
+            if role == "link" and name is not None:
+                return Locator()
+            return Locator()
+
+    browser = _PlaywrightSpotifyBrowser(
+        dashboard_url="https://developer.spotify.com/dashboard",
+        redirect_uri="http://127.0.0.1:8765/callback",
+    )
+
+    assert browser._public_login_control_visible(Page()) is True
+
+
+def test_playwright_spotify_browser_clicks_public_login_control():
+    from core.autonomy.spotify_setup import _PlaywrightSpotifyBrowser
+
+    class Locator:
+        def __init__(self, clicks):
+            self._clicks = clicks
+
+        def count(self):
+            return 1
+
+        @property
+        def first(self):
+            return self
+
+        def is_visible(self):
+            return True
+
+        def click(self):
+            self._clicks.append(True)
+
+    class Page:
+        url = "https://developer.spotify.com/"
+
+        def __init__(self):
+            self.clicks = []
+
+        def get_by_role(self, role, name=None):
+            return Locator(self.clicks)
+
+        def wait_for_load_state(self, *_args, **_kwargs):
+            return None
+
+    page = Page()
+    browser = _PlaywrightSpotifyBrowser(
+        dashboard_url="https://developer.spotify.com/dashboard",
+        redirect_uri="http://127.0.0.1:8765/callback",
+    )
+
+    browser._click_login_control(page)
+
+    assert page.clicks == [True]
+
+
+def test_playwright_spotify_browser_recognizes_accounts_login_url():
+    from core.autonomy.spotify_setup import _PlaywrightSpotifyBrowser
+
+    class Body:
+        def inner_text(self):
+            return "Welcome back Email Continue Sign up"
+
+    class Locator:
+        def count(self):
+            return 0
+
+    class Page:
+        url = "https://accounts.spotify.com/en/login?continue=test"
+
+        def locator(self, *_args):
+            if _args and _args[0] == "body":
+                return Body()
+            return Locator()
+
+    browser = _PlaywrightSpotifyBrowser(
+        dashboard_url="https://developer.spotify.com/dashboard",
+        redirect_uri="http://127.0.0.1:8765/callback",
+    )
+
+    assert browser._login_visible(Page()) is True
