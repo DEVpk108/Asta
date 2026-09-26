@@ -127,7 +127,10 @@ class IntentRouter:
                 classifier="rules",
             )
 
-        compound_commands = self._extract_compound_commands(normalized)
+        compound_commands = self._extract_compound_commands(
+            normalized,
+            known_providers=self._media_providers,
+        )
         if compound_commands:
             return IntentResult(
                 intent=IntentType.COMMAND,
@@ -138,7 +141,10 @@ class IntentRouter:
                 classifier="rules",
             )
 
-        command_entities = self._extract_command_entities(normalized)
+        command_entities = self._extract_command_entities(
+            normalized,
+            known_providers=self._media_providers,
+        )
         if command_entities:
             return IntentResult(
                 intent=IntentType.COMMAND,
@@ -289,7 +295,12 @@ class IntentRouter:
         return {}
 
     @classmethod
-    def _extract_compound_commands(cls, text: str) -> list[dict[str, Any]]:
+    def _extract_compound_commands(
+        cls,
+        text: str,
+        *,
+        known_providers=None,
+    ) -> list[dict[str, Any]]:
         """Parse sequential commands joined by explicit or natural separators."""
         first_parts = [
             part.strip(" ,")
@@ -313,13 +324,22 @@ class IntentRouter:
             # open/close parser so the suffix does not get swallowed into target.
             implicit = cls._IMPLICIT_SCREENSHOT_SUFFIX_PATTERN.match(part)
             if implicit:
-                first = cls._extract_command_entities(implicit.group("command").strip())
-                second = cls._extract_direct_command(implicit.group("screenshot").strip())
+                first = cls._extract_command_entities(
+                    implicit.group("command").strip(),
+                    known_providers=known_providers,
+                )
+                second = cls._extract_direct_command(
+                    implicit.group("screenshot").strip(),
+                    known_providers=known_providers,
+                )
                 if first and second:
                     commands.extend((first, second))
                     continue
 
-            direct = cls._extract_command_entities(part)
+            direct = cls._extract_command_entities(
+                part,
+                known_providers=known_providers,
+            )
             if direct and "commands" not in direct:
                 commands.append(direct)
                 continue
@@ -329,8 +349,16 @@ class IntentRouter:
         return commands if len(commands) >= 2 else []
 
     @classmethod
-    def _extract_command_entities(cls, text: str) -> dict[str, Any]:
-        direct = cls._extract_direct_command(text)
+    def _extract_command_entities(
+        cls,
+        text: str,
+        *,
+        known_providers=None,
+    ) -> dict[str, Any]:
+        direct = cls._extract_direct_command(
+            text,
+            known_providers=known_providers,
+        )
         if direct:
             return direct
 
@@ -344,7 +372,10 @@ class IntentRouter:
                     changed = True
                     break
 
-        direct = cls._extract_direct_command(stripped)
+        direct = cls._extract_direct_command(
+            stripped,
+            known_providers=known_providers,
+        )
         if direct:
             return direct
 
@@ -366,7 +397,12 @@ class IntentRouter:
         return {}
 
     @classmethod
-    def _extract_direct_command(cls, text: str) -> dict[str, Any]:
+    def _extract_direct_command(
+        cls,
+        text: str,
+        *,
+        known_providers=None,
+    ) -> dict[str, Any]:
         for prefix, action in cls._COMMAND_PREFIXES:
             if text.startswith(prefix):
                 target = text[len(prefix):].strip(" ,.!?;:")
@@ -392,7 +428,10 @@ class IntentRouter:
                     "target": target,
                 }
 
-        media = cls._extract_media_command(text)
+        media = cls._extract_media_command(
+            text,
+            known_providers=known_providers,
+        )
         if media:
             return media
 
@@ -425,8 +464,16 @@ class IntentRouter:
         return {}
 
     @classmethod
-    def _extract_media_command(cls, text: str) -> dict[str, Any]:
-        request = parse_media_request(text)
+    def _extract_media_command(
+        cls,
+        text: str,
+        *,
+        known_providers=None,
+    ) -> dict[str, Any]:
+        request = parse_media_request(
+            text,
+            known_providers=known_providers,
+        )
         return request.to_entities() if request is not None else {}
 
     def _recover_media_command(self, text: str) -> dict[str, Any]:
