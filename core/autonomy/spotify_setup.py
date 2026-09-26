@@ -158,6 +158,10 @@ class _PlaywrightSpotifyBrowser:
         self.notify = notify
         self.timeout_seconds = timeout_seconds
 
+    def _announce(self, message: str) -> None:
+        if callable(self.notify):
+            self.notify(message)
+
     def run(self) -> str:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
         from playwright.sync_api import sync_playwright
