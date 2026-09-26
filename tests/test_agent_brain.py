@@ -103,6 +103,6 @@ def test_agent_brain_rejects_unsupported_actions():
     try:
         brain.plan("do something", intent=_intent())
     except RuntimeError as exc:
-        assert "unsupported action" in str(exc)
+        assert "not executable" in str(exc)
     else:
         raise AssertionError("Expected unsupported action rejection")
