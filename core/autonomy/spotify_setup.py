@@ -594,9 +594,12 @@ class _PlaywrightSpotifyBrowser:
         except Exception:
             credential_fields = 0
 
+        is_accounts_login = (
+            "accounts.spotify.com" in url
+            and "/login" in url
+        )
         return (
-            bool(re.search(r"accounts\\.spotify\\.com/[^/]+/login(?:[/?]|$)", url))
-            or bool(re.search(r"accounts\\.spotify\\.com/(?:login|[^/]+/login)(?:[/?]|$)", url))
+            is_accounts_login
             or "log in to spotify" in body
             or "welcome back" in body
             or ("email" in body and "continue" in body and "sign up" in body)
