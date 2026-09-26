@@ -145,7 +145,8 @@ class AgentBrain:
                 "uncertainty": "number from 0 to 1",
                 "steps": [
                     {
-                        "action": "supported tool action such as open or media",
+                        "action": "semantic action from the selected capability metadata, such as open or media; do not use the tool name here",
+                        "tool": "optional exact registered tool name when useful",
                         "target": "optional target",
                         "operation": "optional operation",
                         "query": "optional query",
@@ -240,9 +241,31 @@ class AgentBrain:
                     f"agent planner step {index} omitted action"
                 )
 
+            normalized = dict(step)
+            # Models may copy an exact capability name into action even
+            # though the executor expects the capability semantic action.
+            if registry.contains(action):
+                definition = registry.get(action).definition
+                metadata = definition.metadata if isinstance(definition.metadata, dict) else {}
+                semantic_actions = metadata.get("actions")
+                if not isinstance(semantic_actions, (list, tuple, set, frozenset)):
+                    semantic_actions = metadata.get("action_aliases")
+                if isinstance(semantic_actions, (list, tuple, set, frozenset)):
+                    semantic_actions = [
+                        str(item).strip().lower()
+                        for item in semantic_actions
+                        if str(item).strip()
+                    ]
+                else:
+                    semantic_actions = []
+                if semantic_actions:
+                    normalized["tool"] = action
+                    normalized["action"] = semantic_actions[0]
+                    action = semantic_actions[0]
+
             entities = {
                 key: value
-                for key, value in step.items()
+                for key, value in normalized.items()
                 if value is not None and value != ""
             }
             entities["action"] = action
@@ -260,6 +283,10 @@ class AgentBrain:
                 raise AgentBrainError(
                     f"agent planner step {index} is not executable: {exc}"
                 ) from exc
+
+            # Keep the normalized representation for the deterministic planner.
+            step.clear()
+            step.update(normalized)
 
     @staticmethod
     def task_metadata(proposal: AgentPlanProposal) -> dict[str, Any]:

@@ -106,3 +106,60 @@ def test_agent_brain_rejects_unsupported_actions():
         assert "not executable" in str(exc)
     else:
         raise AssertionError("Expected unsupported action rejection")
+
+
+class FakeNamedOpenTool(Tool):
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name="system.open_application",
+            description="Open an application.",
+            input_schema={
+                "type": "object",
+                "properties": {"target": {"type": "string"}},
+                "required": ["target"],
+            },
+            risk_level="low",
+            requires_confirmation=False,
+            metadata={"actions": ["open"]},
+        )
+
+    def execute(self, request):
+        raise AssertionError("agent brain tests do not execute tools")
+
+
+def test_agent_brain_normalizes_tool_name_used_as_action():
+    kernel = Kernel()
+    kernel.register_tool(FakeNamedOpenTool())
+    provider = FakeProvider(
+        """{
+            "goal_summary": "Open the calculator application.",
+            "success_conditions": ["Calculator is open."],
+            "rationale": "Use the available application opener.",
+            "uncertainty": 0.2,
+            "steps": [
+                {
+                    "action": "system.open_application",
+                    "target": "calculator"
+                }
+            ]
+        }"""
+    )
+    brain = AgentBrain(
+        kernel,
+        provider=provider,
+        enabled=True,
+    )
+
+    proposal = brain.plan(
+        "open calculator",
+        intent=_intent(),
+    )
+
+    assert proposal.steps == (
+        {
+            "action": "open",
+            "tool": "system.open_application",
+            "target": "calculator",
+        },
+    )
