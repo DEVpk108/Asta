@@ -79,6 +79,49 @@ def _strip_polite_leads(value: str) -> str:
     return text
 
 
+def _extract_known_provider(normalized: str, known_providers) -> tuple[str, str]:
+    """Strip a recognized trailing provider without greedily consuming the query."""
+    if not known_providers:
+        return "", normalized
+
+    candidates = sorted(
+        {
+            _normalize(str(name))
+            for name in known_providers
+            if str(name).strip()
+        },
+        key=len,
+        reverse=True,
+    )
+
+    for provider in candidates:
+        if not provider:
+            continue
+        marker = f" on {provider}"
+        if normalized.endswith(marker):
+            remaining = normalized[: -len(marker)].strip()
+            if remaining:
+                return provider, remaining
+
+    return "", normalized
+
+
+def _clean_play_query(query: str) -> str:
+    """Normalize common STT filler around a media play query."""
+    cleaned = query.strip(" ,.-")
+    for prefix in ("play ", "resume ", "continue ", "listen to ", "put on "):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix):].strip(" ,.-")
+            break
+
+    # Some STT outputs insert an extra preposition, e.g.
+    # "play on hanuman chalisa on spotify".
+    if cleaned.startswith("on "):
+        cleaned = cleaned[3:].strip(" ,.-")
+
+    return cleaned
+
+
 def parse_media_request(
     text: str,
     *,
@@ -89,18 +132,27 @@ def parse_media_request(
         return None
 
     provider = None
-    provider_match = re.search(
-        r"\s+on\s+(?P<provider>[a-z0-9][a-z0-9 ._-]*)$",
-        normalized,
-        re.IGNORECASE,
-    )
-    if provider_match:
-        provider = provider_match.group("provider").strip()
-        normalized = normalized[:provider_match.start()].strip()
-        if not provider:
-            provider = None
+    if known_providers:
+        provider, remaining = _extract_known_provider(
+            normalized,
+            known_providers,
+        )
+        if provider:
+            normalized = remaining
+    else:
+        provider_match = re.search(
+            r"\s+on\s+(?P<provider>[a-z0-9][a-z0-9 ._-]*)$",
+            normalized,
+            re.IGNORECASE,
+        )
+        if provider_match:
+            provider = provider_match.group("provider").strip()
+            normalized = normalized[:provider_match.start()].strip()
+            if not provider:
+                provider = None
 
     compact = normalized
+
     if provider and known_providers:
         normalized_providers = {
             _normalize(str(name))
@@ -113,12 +165,7 @@ def parse_media_request(
         # phrase as a play query. This is intentionally provider-agnostic:
         # the provider registry decides what names are recognized.
         if provider in normalized_providers and compact:
-            cleaned_query = re.sub(
-                r"^(?:only|just|please|okay|ok)\s+",
-                "",
-                compact,
-                flags=re.IGNORECASE,
-            ).strip(" ,.-")
+            cleaned_query = _clean_play_query(compact)
             if cleaned_query:
                 return MediaRequest(
                     operation="play",
