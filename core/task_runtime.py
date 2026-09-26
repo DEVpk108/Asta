@@ -86,17 +86,36 @@ class TaskRuntimeModule(Module):
 
         pending_steps = [step.description for step in plan.steps]
 
+        metadata = {
+            "intent_type": intent.intent.value,
+            "confidence": intent.confidence,
+            "classifier": intent.classifier,
+            "intent_entities": dict(intent.entities),
+            "replan_attempts": 0,
+        }
+
+        if plan.metadata.get("agent_mode") == "cognitive_v1":
+            metadata["agent_state"] = {
+                "goal": plan.metadata.get("agent_goal_summary", goal),
+                "success_conditions": list(
+                    plan.metadata.get("agent_success_conditions") or ()
+                ),
+                "beliefs": {},
+                "observations": [],
+                "actions": [],
+                "current_strategy": str(
+                    plan.metadata.get("agent_rationale") or ""
+                ),
+                "uncertainty": float(
+                    plan.metadata.get("agent_uncertainty", 0.5) or 0.5
+                ),
+            }
+
         task = self.kernel.task_manager.create(
             intent.normalized_text,
             pending_steps=pending_steps,
             plan=plan,
-            metadata={
-                "intent_type": intent.intent.value,
-                "confidence": intent.confidence,
-                "classifier": intent.classifier,
-                "intent_entities": dict(intent.entities),
-                "replan_attempts": 0,
-            },
+            metadata=metadata,
         )
 
         print(
@@ -146,6 +165,7 @@ class TaskRuntimeModule(Module):
             return
 
         self._remember_opened_application(result)
+        self._record_agent_observation(task, result)
 
         evidence: dict[str, Any] = {
             "type": "tool_result",
@@ -555,6 +575,44 @@ class TaskRuntimeModule(Module):
         )
         self.event_bus.emit("tool_request", request=next_request)
 
+    @staticmethod
+    def _record_agent_observation(task, result: ToolResult) -> None:
+        state = task.metadata.get("agent_state")
+        if not isinstance(state, dict):
+            return
+
+        observations = state.setdefault("observations", [])
+        observations.append(
+            {
+                "kind": "tool_result",
+                "summary": (
+                    f"{result.tool} "
+                    f"{'succeeded' if result.success else 'failed'}."
+                ),
+                "source": result.tool,
+                "data": {
+                    "success": bool(result.success),
+                    "output": result.output,
+                    "error": result.error,
+                },
+            }
+        )
+        if len(observations) > 32:
+            del observations[:-32]
+
+        actions = state.setdefault("actions", [])
+        actions.append(
+            {
+                "action": "execute",
+                "tool": result.tool,
+                "outcome": "success" if result.success else "failure",
+                "error": result.error,
+            }
+        )
+        if len(actions) > 32:
+            del actions[:-32]
+
+    @staticmethod
     def _remember_opened_application(self, result: ToolResult) -> None:
         if not result.success or result.tool not in {
             "system.open_application",
@@ -757,7 +815,11 @@ class TaskRuntimeModule(Module):
         request.metadata["task_id"] = task.id
         request.metadata["task_step"] = step.description
         request.metadata["plan_step_id"] = step.id
-        request.metadata["planner"] = "task_runtime"
+        request.metadata["planner"] = str(
+            task.plan.metadata.get("planner", "task_runtime")
+            if task.plan is not None
+            else "task_runtime"
+        )
         if "sequence_index" in step.metadata:
             request.metadata["sequence_index"] = step.metadata["sequence_index"]
         return request

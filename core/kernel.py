@@ -1,5 +1,6 @@
 import threading
 
+from .agent import AgentBrain
 from .applications import ApplicationManager
 from .autonomy import (
     CapabilitySetupManager,
@@ -57,10 +58,12 @@ class Kernel:
         self.notes_manager = NotesManager()
 
         self.tool_registry = ToolRegistry()
+        self.agent_brain = AgentBrain(self)
         self.planner = Planner(
             self.tool_registry,
             media_manager=self.media_manager,
             application_manager=self.application_manager,
+            agent_brain=self.agent_brain,
         )
         self.capability_discovery = CapabilityDiscovery(
             self.tool_registry,
