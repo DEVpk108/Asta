@@ -33,7 +33,11 @@ def test_spotify_setup_persists_client_id(monkeypatch, tmp_path):
         tmp_path / ".env"
     ).read_text(encoding="utf-8")
     assert calls == [
-        "Spotify developer setup is complete. I’m resuming the original task."
+        (
+            "Spotify needs initial developer setup. I’m opening the Spotify Developer "
+            "Dashboard and will continue automatically after any required sign-in."
+        ),
+        "Spotify developer setup is complete. I’m resuming the original task.",
     ]
 
 
