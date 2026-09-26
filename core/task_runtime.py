@@ -612,7 +612,6 @@ class TaskRuntimeModule(Module):
         if len(actions) > 32:
             del actions[:-32]
 
-    @staticmethod
     def _remember_opened_application(self, result: ToolResult) -> None:
         if not result.success or result.tool not in {
             "system.open_application",
