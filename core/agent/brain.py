@@ -88,6 +88,11 @@ class AgentBrain:
 
         prompt = self._build_prompt(goal, intent)
         provider = self.provider()
+
+        reset = getattr(provider, "reset_conversation", None)
+        if callable(reset):
+            reset()
+
         response = provider.generate_response(prompt, context=None)
 
         proposal = self._parse_response(response)
