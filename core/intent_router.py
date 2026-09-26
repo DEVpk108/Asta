@@ -200,14 +200,17 @@ class IntentRouter:
     def _strip_wakeword_prefix(text: str) -> str:
         """Remove a wake phrase already consumed by the voice runtime."""
         value = str(text or "").strip()
-        patterns = (
-            r"^(?:hey|hello)\\s+asta(?:\\s*[,;:]?\\s+|\\s+)(?=\\S)",
-            r"^wake\\s+up\\s+asta(?:\\s*[,;:]?\\s+|\\s+)(?=\\S)",
+        prefixes = (
+            "hey asta, ",
+            "hey asta ",
+            "hello asta, ",
+            "hello asta ",
+            "wake up asta, ",
+            "wake up asta ",
         )
-        for pattern in patterns:
-            value = re.sub(pattern, "", value, count=1, flags=re.IGNORECASE).strip()
-            if value != str(text or "").strip():
-                return value
+        for prefix in prefixes:
+            if value.startswith(prefix):
+                return value[len(prefix):].strip()
         return value
 
     @staticmethod
