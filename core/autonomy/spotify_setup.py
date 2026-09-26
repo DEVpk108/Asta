@@ -285,10 +285,13 @@ class _PlaywrightSpotifyBrowser:
                     "Spotify is currently not allowing app creation on this developer account. "
                     "Please resolve the account/dashboard restriction in the browser; A.S.T.A. will resume afterward."
                 )
+            print(
+                "[Setup/Spotify] Create App control not found after render wait. "
+                f"url={url or '<unknown>'} body={body[:1200]!r}",
+                flush=True,
+            )
             raise RuntimeError(
-                "Spotify Developer Dashboard did not expose a Create App control "
-                f"after waiting for the page to render (url={url or '<unknown>'}). "
-                f"Visible dashboard text: {body[:600]!r}"
+                "Spotify Developer Dashboard did not expose a Create App control after the page rendered."
             )
 
         button.click()
