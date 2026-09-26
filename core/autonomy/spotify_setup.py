@@ -173,11 +173,34 @@ class _PlaywrightSpotifyBrowser:
         profile.mkdir(parents=True, exist_ok=True)
 
         with sync_playwright() as playwright:
-            context = playwright.chromium.launch_persistent_context(
-                str(profile),
-                channel=getenv("ASTA_BROWSER_CHANNEL", "chrome") or None,
-                headless=False,
-            )
+            channel = getenv("ASTA_BROWSER_CHANNEL", "chrome").strip()
+            try:
+                context = playwright.chromium.launch_persistent_context(
+                    str(profile),
+                    channel=channel or None,
+                    headless=False,
+                )
+            except Exception as first_exc:
+                print(
+                    f"[Setup/Spotify] Browser launch via channel "
+                    f"{channel or '<default>'} failed: "
+                    f"{type(first_exc).__name__}: {first_exc}",
+                    flush=True,
+                )
+                executable = self._find_windows_chrome()
+                if executable is None:
+                    raise
+
+                print(
+                    f"[Setup/Spotify] Retrying browser launch with executable: "
+                    f"{executable}",
+                    flush=True,
+                )
+                context = playwright.chromium.launch_persistent_context(
+                    str(profile),
+                    executable_path=executable,
+                    headless=False,
+                )
             page = context.pages[0] if context.pages else context.new_page()
             page.set_default_timeout(8_000)
             page.goto(self.dashboard_url, wait_until="domcontentloaded")
@@ -215,6 +238,24 @@ class _PlaywrightSpotifyBrowser:
                     "Could not locate the Spotify Client ID after app setup."
                 )
             return client_id
+
+    @staticmethod
+    def _find_windows_chrome() -> str | None:
+        import os
+
+        candidates = [
+            os.getenv("PROGRAMFILES", ""),
+            os.getenv("PROGRAMFILES(X86)", ""),
+            os.getenv("LOCALAPPDATA", ""),
+        ]
+        suffix = Path("Google") / "Chrome" / "Application" / "chrome.exe"
+        for root in candidates:
+            if not root:
+                continue
+            candidate = Path(root) / suffix
+            if candidate.exists():
+                return str(candidate)
+        return None
 
     def _open_or_create_app(self, page) -> None:
         existing = page.get_by_text(
