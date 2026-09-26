@@ -47,6 +47,10 @@ class Kernel:
         self.diagnosis_engine = DiagnosisEngine(self.decision_engine)
         self.replan_engine = ReplanEngine(self.decision_engine)
         self.verification_engine = VerificationEngine(self.media_manager)
+        self.capability_setup_manager = CapabilitySetupManager(
+            self.media_manager,
+            event_bus=self.event_bus,
+        )
         self.workspace_manager = WorkspaceManager(event_bus=self.event_bus)
         self.application_manager = ApplicationManager()
         self.skill_manager = SkillManager(event_bus=self.event_bus)
