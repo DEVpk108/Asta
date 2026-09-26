@@ -32,10 +32,12 @@ class Planner:
         *,
         media_manager=None,
         application_manager=None,
+        agent_brain=None,
     ):
         self.selector = ToolSelector(registry)
         self.media_manager = media_manager
         self.application_manager = application_manager
+        self.agent_brain = agent_brain
 
     def plan(
         self,
@@ -60,6 +62,42 @@ class Planner:
         commands = self._commands_from_intent(intent)
         if not commands:
             raise PlanningError("command intent contains no executable commands")
+
+        planner_name = "deterministic"
+        agent_metadata: dict[str, Any] = {}
+        brain = self.agent_brain
+        if brain is not None and getattr(brain, "enabled", False):
+            try:
+                proposal = brain.plan(value, intent=intent)
+                commands = [dict(step) for step in proposal.steps]
+                planner_name = "cognitive_v1"
+                agent_metadata = brain.task_metadata(proposal)
+                print(
+                    f"[Agent] Goal: {proposal.goal_summary}",
+                    flush=True,
+                )
+                print(
+                    f"[Agent] Success conditions: "
+                    f"{'; '.join(proposal.success_conditions)}",
+                    flush=True,
+                )
+                print(
+                    f"[Agent] Rationale: {proposal.rationale}",
+                    flush=True,
+                )
+                print(
+                    f"[Agent] Uncertainty: {proposal.uncertainty:.2f}",
+                    flush=True,
+                )
+            except Exception as exc:
+                print(
+                    f"[Agent] Cognitive planning unavailable; "
+                    f"falling back to deterministic planning: "
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+        elif brain is not None:
+            print("[Agent] Cognitive planning disabled (ASTA_AGENT_MODE=0).", flush=True)
 
         commands = self._expand_media_commands(commands)
 
@@ -140,9 +178,10 @@ class Planner:
             constraints=constraints or (),
             status=PlanStatus.READY,
             metadata={
-                "planner": "deterministic",
+                "planner": planner_name,
                 "intent_type": intent.intent.value,
                 "intent_confidence": intent.confidence,
+                **agent_metadata,
                 **dict(metadata or {}),
             },
         )
