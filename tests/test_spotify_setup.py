@@ -65,3 +65,18 @@ def test_spotify_setup_missing_browser_uses_user_boundary(monkeypatch, tmp_path)
     assert opened == [
         "https://developer.spotify.com/dashboard"
     ]
+
+
+def test_playwright_spotify_browser_forwards_notifications():
+    from core.autonomy.spotify_setup import _PlaywrightSpotifyBrowser
+
+    calls = []
+    browser = _PlaywrightSpotifyBrowser(
+        dashboard_url="https://developer.spotify.com/dashboard",
+        redirect_uri="http://127.0.0.1:8765/callback",
+        notify=calls.append,
+    )
+
+    browser._announce("Please sign in in the browser.")
+
+    assert calls == ["Please sign in in the browser."]
