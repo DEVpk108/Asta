@@ -814,11 +814,14 @@ class TaskRuntimeModule(Module):
         request.metadata["task_id"] = task.id
         request.metadata["task_step"] = step.description
         request.metadata["plan_step_id"] = step.id
-        request.metadata["planner"] = str(
-            task.plan.metadata.get("planner", "task_runtime")
-            if task.plan is not None
-            else "task_runtime"
-        )
+        # Keep the request-level planner marker stable for the existing
+        # execution/runtime contract. The originating plan planner (including
+        # cognitive_v1) remains available on task.plan.metadata["planner"].
+        request.metadata["planner"] = "task_runtime"
+        if task.plan is not None and task.plan.metadata.get("planner"):
+            request.metadata["plan_planner"] = str(
+                task.plan.metadata["planner"]
+            )
         if "sequence_index" in step.metadata:
             request.metadata["sequence_index"] = step.metadata["sequence_index"]
         return request
