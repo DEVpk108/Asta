@@ -595,8 +595,11 @@ class _PlaywrightSpotifyBrowser:
             credential_fields = 0
 
         return (
-            "accounts.spotify.com/login" in url
+            bool(re.search(r"accounts\\.spotify\\.com/[^/]+/login(?:[/?]|$)", url))
+            or bool(re.search(r"accounts\\.spotify\\.com/(?:login|[^/]+/login)(?:[/?]|$)", url))
             or "log in to spotify" in body
+            or "welcome back" in body
+            or ("email" in body and "continue" in body and "sign up" in body)
             or credential_fields > 0
         )
 
