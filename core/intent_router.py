@@ -94,6 +94,7 @@ class IntentRouter:
             )
 
         normalized = self._normalize(text)
+        normalized = self._strip_wakeword_prefix(normalized)
 
         memory_phrases = (
             "remember that",
@@ -194,6 +195,20 @@ class IntentRouter:
             normalized_text=normalized,
             classifier="rules",
         )
+
+    @staticmethod
+    def _strip_wakeword_prefix(text: str) -> str:
+        """Remove a wake phrase already consumed by the voice runtime."""
+        value = str(text or "").strip()
+        patterns = (
+            r"^(?:hey|hello)\\s+asta(?:\\s*[,;:]?\\s+|\\s+)(?=\\S)",
+            r"^wake\\s+up\\s+asta(?:\\s*[,;:]?\\s+|\\s+)(?=\\S)",
+        )
+        for pattern in patterns:
+            value = re.sub(pattern, "", value, count=1, flags=re.IGNORECASE).strip()
+            if value != str(text or "").strip():
+                return value
+        return value
 
     @staticmethod
     def _normalize(text: str) -> str:
