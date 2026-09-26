@@ -214,6 +214,13 @@ class _PlaywrightSpotifyBrowser:
             # hydration window before deciding a control is unavailable.
             self._wait_for_dashboard_render(page)
 
+            # Unauthenticated dashboard URLs currently redirect to the public
+            # Spotify for Developers homepage. Open its Log in control first;
+            # credentials remain a user-only boundary.
+            if self._public_login_control_visible(page):
+                self._click_login_control(page)
+                self._wait_for_dashboard_render(page)
+
             if self._login_visible(page):
                 self._announce(
                     "Please sign in to your Spotify account in the A.S.T.A. browser window. I’ll continue after the Developer Dashboard becomes available."
@@ -528,6 +535,55 @@ class _PlaywrightSpotifyBrowser:
 
         return False
 
+    def _public_login_control_visible(self, page) -> bool:
+        url = str(getattr(page, "url", "") or "").lower()
+        if "developer.spotify.com" not in url:
+            return False
+        if "/dashboard" in url or "accounts.spotify.com" in url:
+            return False
+
+        patterns = (
+            re.compile(r"^log\s+in$", re.IGNORECASE),
+            re.compile(r"^login$", re.IGNORECASE),
+        )
+        for pattern in patterns:
+            try:
+                locator = page.get_by_role("link", name=pattern)
+                if locator.count() and locator.first.is_visible():
+                    return True
+            except Exception:
+                pass
+            try:
+                locator = page.get_by_role("button", name=pattern)
+                if locator.count() and locator.first.is_visible():
+                    return True
+            except Exception:
+                pass
+
+        return False
+
+    def _click_login_control(self, page) -> None:
+        patterns = (
+            re.compile(r"^log\s+in$", re.IGNORECASE),
+            re.compile(r"^login$", re.IGNORECASE),
+        )
+        for role in ("link", "button"):
+            for pattern in patterns:
+                try:
+                    locator = page.get_by_role(role, name=pattern)
+                    if locator.count() and locator.first.is_visible():
+                        locator.first.click()
+                        try:
+                            page.wait_for_load_state("domcontentloaded")
+                        except Exception:
+                            pass
+                        return
+                except Exception:
+                    pass
+
+        raise _UserActionRequired(
+            "Spotify Developer login is required, but the public Developer page did not expose its Log in control."
+        )
     def _login_visible(self, page) -> bool:
         url = str(page.url).lower()
         body = page.locator("body").inner_text().lower()
