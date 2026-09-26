@@ -86,17 +86,36 @@ class TaskRuntimeModule(Module):
 
         pending_steps = [step.description for step in plan.steps]
 
+        metadata = {
+            "intent_type": intent.intent.value,
+            "confidence": intent.confidence,
+            "classifier": intent.classifier,
+            "intent_entities": dict(intent.entities),
+            "replan_attempts": 0,
+        }
+
+        if plan.metadata.get("agent_mode") == "cognitive_v1":
+            metadata["agent_state"] = {
+                "goal": plan.metadata.get("agent_goal_summary", goal),
+                "success_conditions": list(
+                    plan.metadata.get("agent_success_conditions") or ()
+                ),
+                "beliefs": {},
+                "observations": [],
+                "actions": [],
+                "current_strategy": str(
+                    plan.metadata.get("agent_rationale") or ""
+                ),
+                "uncertainty": float(
+                    plan.metadata.get("agent_uncertainty", 0.5) or 0.5
+                ),
+            }
+
         task = self.kernel.task_manager.create(
             intent.normalized_text,
             pending_steps=pending_steps,
             plan=plan,
-            metadata={
-                "intent_type": intent.intent.value,
-                "confidence": intent.confidence,
-                "classifier": intent.classifier,
-                "intent_entities": dict(intent.entities),
-                "replan_attempts": 0,
-            },
+            metadata=metadata,
         )
 
         print(
