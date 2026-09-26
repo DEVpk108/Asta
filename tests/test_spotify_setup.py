@@ -158,3 +158,30 @@ def test_playwright_spotify_browser_clicks_public_login_control():
     browser._click_login_control(page)
 
     assert page.clicks == [True]
+
+
+def test_playwright_spotify_browser_recognizes_accounts_login_url():
+    from core.autonomy.spotify_setup import _PlaywrightSpotifyBrowser
+
+    class Body:
+        def inner_text(self):
+            return "Welcome back Email Continue Sign up"
+
+    class Locator:
+        def count(self):
+            return 0
+
+    class Page:
+        url = "https://accounts.spotify.com/en/login?continue=test"
+
+        def locator(self, *_args):
+            if _args and _args[0] == "body":
+                return Body()
+            return Locator()
+
+    browser = _PlaywrightSpotifyBrowser(
+        dashboard_url="https://developer.spotify.com/dashboard",
+        redirect_uri="http://127.0.0.1:8765/callback",
+    )
+
+    assert browser._login_visible(Page()) is True
