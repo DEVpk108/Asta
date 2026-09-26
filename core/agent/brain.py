@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from core.contracts import IntentResult
+from core.contracts import IntentResult, IntentType
 
 
 class AgentBrainError(RuntimeError):
@@ -221,14 +221,12 @@ class AgentBrain:
             raise AgentBrainError("agent planner omitted rationale")
 
         registry = getattr(self.kernel, "tool_registry", None)
-        definitions = getattr(registry, "definitions", None)
-        if not callable(definitions):
+        if registry is None:
             raise AgentBrainError("tool registry is unavailable")
 
-        available_actions = set()
-        for definition in definitions():
-            for action in definition.metadata.get("actions", ()) or ():
-                available_actions.add(str(action).strip().lower())
+        from core.tools.selector import ToolSelector
+
+        selector = ToolSelector(registry)
 
         for index, step in enumerate(proposal.steps, start=1):
             action = str(step.get("action") or "").strip().lower()
@@ -236,10 +234,27 @@ class AgentBrain:
                 raise AgentBrainError(
                     f"agent planner step {index} omitted action"
                 )
-            if action not in available_actions:
+
+            entities = {
+                key: value
+                for key, value in step.items()
+                if value is not None and value != ""
+            }
+            entities["action"] = action
+            intent = IntentResult(
+                intent=IntentType.COMMAND,
+                confidence=0.5,
+                normalized_text=proposal.goal_summary,
+                entities=entities,
+                requires_tools=True,
+                classifier="agent_brain",
+            )
+            try:
+                selector.select(intent)
+            except ValueError as exc:
                 raise AgentBrainError(
-                    f"agent planner proposed unsupported action '{action}'"
-                )
+                    f"agent planner step {index} is not executable: {exc}"
+                ) from exc
 
     @staticmethod
     def task_metadata(proposal: AgentPlanProposal) -> dict[str, Any]:
