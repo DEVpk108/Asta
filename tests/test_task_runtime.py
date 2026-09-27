@@ -423,3 +423,126 @@ def test_task_runtime_pauses_immediately_for_missing_integration_setup():
     finally:
         kernel.tool_dispatcher.dispatch = original
         _shutdown(tasks, ai, tools)
+
+
+
+class CognitiveFakeBrain:
+    enabled = True
+
+    def __init__(self):
+        self.decisions = 0
+
+    def plan(self, goal, *, intent):
+        from core.agent import AgentPlanProposal
+        return AgentPlanProposal(
+            goal_summary="Open calculator and verify it.",
+            success_conditions=("Calculator is visible.",),
+            rationale="Open first, then verify with a screenshot.",
+            uncertainty=0.5,
+            steps=(
+                {"action": "open", "target": "calculator"},
+            ),
+        )
+
+    @staticmethod
+    def task_metadata(proposal):
+        return {
+            "agent_mode": "cognitive_v1",
+            "agent_goal_summary": proposal.goal_summary,
+            "agent_success_conditions": list(proposal.success_conditions),
+            "agent_rationale": proposal.rationale,
+            "agent_uncertainty": proposal.uncertainty,
+        }
+
+    def decide(self, state):
+        from core.agent import AgentDecision
+        self.decisions += 1
+        if self.decisions == 1:
+            return AgentDecision(
+                goal_satisfied=False,
+                needs_observation=True,
+                rationale="Tool success does not prove the calculator is visible.",
+                confidence=0.8,
+                uncertainty=0.3,
+                next_action={
+                    "action": "screenshot",
+                    "tool": "test.screenshot",
+                },
+                belief_updates=(
+                    {
+                        "key": "calculator_launch_succeeded",
+                        "value": True,
+                        "confidence": 0.9,
+                        "source": "tool",
+                    },
+                ),
+            )
+        return AgentDecision(
+            goal_satisfied=True,
+            needs_observation=False,
+            rationale="The screenshot confirms the calculator is visible.",
+            confidence=0.95,
+            uncertainty=0.05,
+        )
+
+
+class FakeScreenshotTool(Tool):
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name="test.screenshot",
+            description="Capture a screenshot for tests.",
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+            risk_level="low",
+            requires_confirmation=False,
+            metadata={"actions": ["screenshot"], "category": "vision"},
+        )
+
+    def execute(self, request: ToolRequest) -> ToolResult:
+        return ToolResult(
+            success=True,
+            tool=self.definition.name,
+            output={"path": "calculator.png", "visible": True},
+        )
+
+
+def test_cognitive_runtime_completes_only_after_follow_up_decision():
+    from core.agent import AgentDecision, AgentPlanProposal
+
+    kernel = Kernel()
+    kernel.register_tool(FakeCapabilityTool())
+    kernel.register_tool(FakeScreenshotTool())
+
+    brain = CognitiveFakeBrain()
+    kernel.agent_brain = brain
+    kernel.planner.agent_brain = brain
+
+    tasks = TaskRuntimeModule(kernel)
+    tools = ToolRuntimeModule(kernel)
+    ai = __import__("ai.ai_module", fromlist=["AIModule"]).AIModule(kernel)
+    ai.engine = RecordingEngine()
+
+    tasks.initialize()
+    ai.initialize()
+    tools.initialize()
+    try:
+        kernel.event_bus.emit(
+            "user_message",
+            "open calculator and verify that it is open",
+        )
+
+        task = kernel.task_manager.list()[0]
+        assert brain.decisions == 2
+        assert task.status is TaskStatus.COMPLETED
+        assert len(task.plan.steps) == 2
+        assert task.plan.steps[1].metadata["agent_generated"] is True
+        assert task.plan.steps[1].metadata["tool"] == "test.screenshot"
+        assert any("agent_decision" in item for item in task.evidence)
+        assert task.metadata["agent_state"]["beliefs"]["calculator_launch_succeeded"]["confidence"] == 0.9
+        assert task.result["agent_decision"]["goal_satisfied"] is True
+    finally:
+        _shutdown(tasks, ai, tools)

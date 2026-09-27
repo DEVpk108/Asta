@@ -163,3 +163,106 @@ def test_agent_brain_normalizes_tool_name_used_as_action():
             "target": "calculator",
         },
     )
+
+
+def test_agent_brain_builds_structured_post_action_decision():
+    kernel = Kernel()
+    kernel.register_tool(FakeNamedOpenTool())
+
+    provider = FakeProvider(
+        """{
+            "goal_satisfied": false,
+            "needs_observation": true,
+            "needs_user": false,
+            "rationale": "Opening the application does not prove it is visible, so capture a screenshot.",
+            "confidence": 0.78,
+            "uncertainty": 0.22,
+            "next_action": {
+                "action": "vision.screenshot",
+                "target": ""
+            },
+            "belief_updates": [
+                {
+                    "key": "calculator_launch_succeeded",
+                    "value": true,
+                    "confidence": 0.88,
+                    "source": "tool"
+                }
+            ]
+        }"""
+    )
+    # Replace the registered capability with a screenshot tool for validation.
+    kernel.tool_registry.unregister("system.open_application")
+    kernel.register_tool(
+        ToolDefinitionBackedTool(
+            ToolDefinition(
+                name="vision.screenshot",
+                description="Capture a screenshot.",
+                input_schema={
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+                risk_level="low",
+                requires_confirmation=False,
+                metadata={"actions": ["screenshot"], "category": "vision"},
+            )
+        )
+    )
+    brain = AgentBrain(kernel, provider=provider, enabled=True)
+
+    decision = brain.decide(
+        {
+            "goal": "open calculator and verify that it is open",
+            "success_conditions": ["Calculator is visible."],
+            "latest_result": {
+                "tool": "system.open_application",
+                "success": True,
+                "output": {"target": "calculator"},
+            },
+        }
+    )
+
+    assert decision.goal_satisfied is False
+    assert decision.needs_observation is True
+    assert decision.next_action == {
+        "action": "screenshot",
+        "tool": "vision.screenshot",
+        "target": "",
+    }
+    assert decision.belief_updates[0]["key"] == "calculator_launch_succeeded"
+
+
+class ToolDefinitionBackedTool(Tool):
+    def __init__(self, definition):
+        self._definition = definition
+
+    @property
+    def definition(self):
+        return self._definition
+
+    def execute(self, request):
+        raise AssertionError("decision tests must not execute tools")
+
+
+def test_agent_brain_rejects_action_without_safe_next_step_or_completion():
+    kernel = Kernel()
+    kernel.register_tool(FakeOpenTool())
+    provider = FakeProvider(
+        """{
+            "goal_satisfied": false,
+            "needs_observation": false,
+            "needs_user": false,
+            "rationale": "I need more evidence.",
+            "confidence": 0.4,
+            "uncertainty": 0.6
+        }"""
+    )
+    brain = AgentBrain(kernel, provider=provider, enabled=True)
+
+    try:
+        brain.decide({"goal": "open calculator"})
+    except RuntimeError as exc:
+        assert "neither completion nor a next action" in str(exc)
+    else:
+        raise AssertionError("Expected invalid decision rejection")
