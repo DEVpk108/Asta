@@ -49,6 +49,16 @@ class LlamaServerManager:
             if gpu_layers is not None
             else os.getenv("ASTA_LLM_GPU_LAYERS", "99")
         )
+        self.batch_size = int(
+            os.getenv("ASTA_LLM_BATCH_SIZE", "2048")
+        )
+        self.ubatch_size = int(
+            os.getenv("ASTA_LLM_UBATCH_SIZE", "512")
+        )
+        self.flash_attn = os.getenv("ASTA_LLM_FLASH_ATTN", "auto").strip().lower()
+        self.cache_type_k = os.getenv("ASTA_LLM_CACHE_TYPE_K", "").strip().lower()
+        self.cache_type_v = os.getenv("ASTA_LLM_CACHE_TYPE_V", "").strip().lower()
+        self.parallel = int(os.getenv("ASTA_LLM_PARALLEL", "1"))
         self.jinja = self._env_bool(
             "ASTA_LLM_JINJA",
             True if jinja is None else jinja,
@@ -285,7 +295,21 @@ class LlamaServerManager:
             str(self.context_size),
             "-ngl",
             str(self.gpu_layers),
+            "-b",
+            str(max(1, self.batch_size)),
+            "-ub",
+            str(max(1, min(self.ubatch_size, self.batch_size))),
+            "-np",
+            str(max(1, self.parallel)),
         ]
+
+        if self.flash_attn in {"on", "off", "auto"}:
+            command.extend(["-fa", self.flash_attn])
+
+        if self.cache_type_k:
+            command.extend(["-ctk", self.cache_type_k])
+        if self.cache_type_v:
+            command.extend(["-ctv", self.cache_type_v])
 
         if self.jinja:
             command.append("--jinja")
