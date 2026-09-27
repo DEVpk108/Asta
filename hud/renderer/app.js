@@ -252,7 +252,15 @@
     if (nextMode === 'thinking') {
       if (previousMode !== 'thinking') {
         stopExecutionTimer(now)
-        phaseTiming.thinkingElapsedMs = 0
+
+        /* A transition into thinking from idle/listening/speaking starts a
+           new user task. A transition from executing is an agent-reasoning
+           segment inside the same task, so retain the accumulated totals. */
+        if (previousMode !== 'executing') {
+          phaseTiming.thinkingElapsedMs = 0
+          phaseTiming.executionElapsedMs = 0
+        }
+
         phaseTiming.thinkingStartedAt = now
       }
       return
@@ -261,7 +269,13 @@
     if (nextMode === 'executing') {
       if (previousMode !== 'executing') {
         stopThinkingTimer(now)
-        phaseTiming.executionElapsedMs = 0
+
+        /* The first tool call of a task follows the initial thinking phase.
+           Preserve the task total; later tool calls also preserve it. */
+        if (previousMode !== 'thinking' && previousMode !== 'approval') {
+          phaseTiming.executionElapsedMs = 0
+        }
+
         phaseTiming.executionStartedAt = now
       }
       return
