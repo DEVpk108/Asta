@@ -333,11 +333,12 @@ class AgentBrain:
         )
         from core.tools.selector import ToolSelector
         try:
-            ToolSelector(registry).select(intent)
+            definition = ToolSelector(registry).select(intent)
         except ValueError as exc:
             raise AgentBrainError(
                 f"agent decision next_action is not executable: {exc}"
             ) from exc
+        normalized["tool"] = definition.name
         decision.next_action.clear()
         decision.next_action.update(normalized)
 
