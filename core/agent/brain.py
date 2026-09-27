@@ -256,7 +256,8 @@ class AgentBrain:
             task_state,
             action="screenshot",
         )
-        if latest_tool != "vision.screenshot" and screenshot is not None:
+        inspector_name = inspector.name if inspector is not None else ""
+        if latest_tool not in {inspector_name, "vision.screenshot"} and screenshot is not None:
             return AgentDecision(
                 goal_satisfied=False,
                 needs_observation=True,
