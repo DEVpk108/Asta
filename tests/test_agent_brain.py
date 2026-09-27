@@ -372,3 +372,31 @@ def test_agent_brain_allows_visual_completion_with_explicit_verified_evidence():
     )
 
     assert decision.goal_satisfied is True
+
+
+def test_agent_brain_preserves_zero_uncertainty():
+    proposal = AgentBrain._parse_response(
+        """{
+            "goal_summary": "Open calculator.",
+            "success_conditions": ["Calculator is open."],
+            "rationale": "The request is deterministic.",
+            "uncertainty": 0,
+            "steps": [{"action": "open", "target": "calculator"}]
+        }"""
+    )
+    assert proposal.uncertainty == 0.0
+
+
+def test_agent_brain_preserves_zero_decision_uncertainty():
+    decision = AgentBrain._parse_decision(
+        """{
+            "goal_satisfied": true,
+            "needs_observation": false,
+            "needs_user": false,
+            "rationale": "Explicit verification evidence is present.",
+            "confidence": 1,
+            "uncertainty": 0
+        }"""
+    )
+    assert decision.confidence == 1.0
+    assert decision.uncertainty == 0.0
