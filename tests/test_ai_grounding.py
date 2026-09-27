@@ -1,4 +1,5 @@
 from ai.ai_module import AIModule
+from ai.runtime_patch import _is_intermediate_task_result, _verified_visual_response
 from core import Kernel
 from core.tools import OpenApplicationTool, ScreenshotTool
 
@@ -85,3 +86,44 @@ def test_ai_formats_vision_inspection_success_concisely():
     assert AIModule._format_tool_success(result) == (
         "I checked the screen. The requested visual condition is confirmed."
     )
+
+
+def test_runtime_patch_suppresses_intermediate_task_results():
+    from types import SimpleNamespace
+
+    class TaskLookup:
+        def get(self, task_id):
+            assert task_id == "task-1"
+            return SimpleNamespace(
+                status=SimpleNamespace(value="active"),
+                pending_steps=["inspect calculator"],
+            )
+
+        def current(self):
+            raise AssertionError("task_id lookup should be used")
+
+    ai = SimpleNamespace(kernel=SimpleNamespace(task_manager=TaskLookup()))
+    result = __import__("core.contracts", fromlist=["ToolResult"]).ToolResult(
+        success=True,
+        tool="system.open_application",
+        metadata={"task_id": "task-1"},
+    )
+
+    assert _is_intermediate_task_result(ai, result) is True
+
+
+def test_runtime_patch_formats_verified_visual_completion_once():
+    from core.contracts import ToolResult
+
+    result = ToolResult(
+        success=True,
+        tool="vision.inspect",
+        output={
+            "verified": True,
+            "visual_match": True,
+            "confidence": 0.98,
+            "summary": "Calculator window is visible.",
+        },
+    )
+
+    assert _verified_visual_response(result) == "Done — Calculator window is visible."
