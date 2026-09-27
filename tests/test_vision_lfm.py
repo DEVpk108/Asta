@@ -117,7 +117,7 @@ class FakeVisionEngine:
         }
 
 
-def test_vision_inspect_tool_returns_verification_evidence(tmp_path):
+def test_vision_inspect_tool_returns_verification_evidence(tmp_path, capsys):
     image = tmp_path / "screen.png"
     image.write_bytes(b"fake-png")
 
@@ -139,6 +139,14 @@ def test_vision_inspect_tool_returns_verification_evidence(tmp_path):
     assert result.output["verified"] is True
     assert result.output["confidence"] == 0.95
     assert result.output["tokens_per_second"] == 150.0
+    telemetry = capsys.readouterr().out
+    assert "[Vision] Inspect:" in telemetry
+    assert "model=lfm2.5-vl-test" in telemetry
+    assert "ttft=0.020s" in telemetry
+    assert "request=0.040s" in telemetry
+    assert "visual_match=true" in telemetry
+    assert "confidence=0.95" in telemetry
+    assert "verified=true" in telemetry
 
 def test_vision_inspect_tool_accepts_capture_metadata_dict(tmp_path):
     image = tmp_path / "screen.png"
