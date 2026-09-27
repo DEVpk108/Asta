@@ -100,6 +100,14 @@ class Planner:
             print("[Agent] Cognitive planning disabled (ASTA_AGENT_MODE=0).", flush=True)
 
         commands = self._expand_media_commands(commands)
+
+        if planner_name == "cognitive_v1":
+            commands = self._normalize_visual_verification_commands(
+                commands,
+                success_conditions=proposal.success_conditions,
+                goal=value,
+            )
+
         commands = self._deduplicate_adjacent_commands(commands)
 
         steps: list[PlanStep] = []
@@ -192,6 +200,85 @@ class Planner:
             flush=True,
         )
         return plan
+
+    def _normalize_visual_verification_commands(
+        self,
+        commands: list[dict[str, Any]],
+        *,
+        success_conditions: tuple[str, ...] | list[str],
+        goal: str,
+    ) -> list[dict[str, Any]]:
+        """Make visual verification a deterministic semantic step."""
+        conditions_text = " ".join(
+            str(item).strip()
+            for item in success_conditions
+            if str(item).strip()
+        ).lower()
+
+        visual_required = any(
+            marker in conditions_text
+            for marker in (
+                "visible",
+                "visually",
+                "screenshot",
+                "screen",
+                "window",
+                "display",
+                "ui",
+                "interface",
+            )
+        )
+        if not visual_required:
+            return commands
+
+        normalized = [
+            command
+            for command in commands
+            if str(command.get("tool") or "").strip()
+            not in {"vision.screenshot", "vision.open_screenshot"}
+        ]
+
+        has_inspector = any(
+            str(command.get("tool") or "").strip() == "vision.inspect"
+            or str(command.get("action") or "").strip().lower()
+            in {"inspect", "visual_verify"}
+            for command in normalized
+        )
+        if has_inspector:
+            return normalized
+
+        prompt = (
+            f"Verify the user's goal from the current screenshot. "
+            f"Goal: {goal}. Success conditions: {conditions_text}. "
+            "Set visual_match=true only when the screenshot supports "
+            "the success conditions. Return concise evidence."
+        )
+
+        try:
+            self.selector.select(
+                IntentResult(
+                    intent=IntentType.COMMAND,
+                    confidence=1.0,
+                    normalized_text=goal,
+                    entities={
+                        "action": "inspect",
+                        "prompt": prompt,
+                    },
+                    requires_tools=True,
+                    classifier="planner_visual_verification",
+                )
+            )
+        except ValueError:
+            return normalized
+
+        normalized.append(
+            {
+                "action": "inspect",
+                "tool": "vision.inspect",
+                "prompt": prompt,
+            }
+        )
+        return normalized
 
     @staticmethod
     def _deduplicate_adjacent_commands(commands: list[dict[str, Any]]) -> list[dict[str, Any]]:
