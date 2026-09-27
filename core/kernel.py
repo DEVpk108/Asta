@@ -26,6 +26,7 @@ from .tools import (
     ToolDispatcher,
     ToolRegistry,
 )
+from vision.lfm2_5_vl_engine import LFM25VLEngine
 
 
 class Kernel:
@@ -56,6 +57,7 @@ class Kernel:
         self.application_manager = ApplicationManager()
         self.skill_manager = SkillManager(event_bus=self.event_bus)
         self.notes_manager = NotesManager()
+        self.vision_engine = LFM25VLEngine()
 
         self.tool_registry = ToolRegistry()
         self.agent_brain = AgentBrain(self)
