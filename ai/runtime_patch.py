@@ -129,9 +129,25 @@ def _is_intermediate_task_result(ai, result) -> bool:
     if task is None:
         return False
 
-    status = getattr(getattr(task, "status", None), "value", getattr(task, "status", None))
-    pending_steps = getattr(task, "pending_steps", None) or []
-    return status == "active" and bool(pending_steps)
+    plan = getattr(task, "plan", None)
+    plan_step_id = (
+        result.metadata.get("plan_step_id")
+        if isinstance(result.metadata, dict)
+        else None
+    )
+    steps = getattr(plan, "steps", None) or []
+    if plan is None or not plan_step_id or not steps:
+        return False
+
+    for index, step in enumerate(steps):
+        if getattr(step, "id", None) != plan_step_id:
+            continue
+        # A result from any step with a later step is an internal progress
+        # update. Do not let synchronous nested EventBus dispatch turn it into
+        # user-facing speech before the final step has produced its answer.
+        return index < (len(steps) - 1)
+
+    return False
 
 
 def _verified_visual_response(result: ToolResult) -> str | None:
