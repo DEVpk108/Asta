@@ -100,6 +100,7 @@ class Planner:
             print("[Agent] Cognitive planning disabled (ASTA_AGENT_MODE=0).", flush=True)
 
         commands = self._expand_media_commands(commands)
+        commands = self._deduplicate_adjacent_commands(commands)
 
         steps: list[PlanStep] = []
         previous_id: str | None = None
@@ -191,6 +192,30 @@ class Planner:
             flush=True,
         )
         return plan
+
+    @staticmethod
+    def _deduplicate_adjacent_commands(commands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Remove accidental consecutive duplicate cognitive actions."""
+        deduplicated: list[dict[str, Any]] = []
+        previous_signature = None
+        for command in commands:
+            signature = tuple(
+                (key, str(command.get(key) or "").strip().lower())
+                for key in (
+                    "action",
+                    "tool",
+                    "target",
+                    "operation",
+                    "query",
+                    "provider",
+                )
+                if command.get(key) is not None
+            )
+            if signature == previous_signature:
+                continue
+            deduplicated.append(dict(command))
+            previous_signature = signature
+        return deduplicated
 
     def replan(self, task, diagnosis, strategy) -> Plan:
         """Build a bounded repair plan from the existing task state."""
