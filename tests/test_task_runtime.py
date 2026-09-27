@@ -3,7 +3,6 @@ from core.contracts import ToolDefinition, ToolRequest, ToolResult, TaskStatus
 from core.task_runtime import TaskRuntimeModule
 from core.tools import Tool, ToolRuntimeModule
 from core.media import MediaManager
-from types import SimpleNamespace
 
 
 class FakeCapabilityTool(Tool):
@@ -507,80 +506,7 @@ class FakeScreenshotTool(Tool):
         return ToolResult(
             success=True,
             tool=self.definition.name,
-            output={"path": "calculator.pndef test_agent_generated_vision_prompt_is_passed_to_tool_request():
-    kernel = Kernel()
-    kernel.register_tool(
-        FakeCapabilityTool()
-    )
-    kernel.register_tool(
-        FakeScreenshotTool()
-    )
-
-    # Reuse the existing screenshot capability contract for a compact runtime
-    # test: the generated step must preserve its dynamic prompt argument.
-    tasks = TaskRuntimeModule(kernel)
-    task = SimpleNamespace(
-        id="task-1",
-        goal="verify calculator",
-        metadata={},
-        plan=None,
-    )
-    step = SimpleNamespace(
-        id="agent-step-1",
-        description="inspect screen",
-        metadata={
-            "action": "screenshot",
-            "tool": "test.screenshot",
-            "prompt": "Is Calculator visible?",
-        },
-    )
-
-    # The screenshot test tool has no prompt field, so this exercise is about
-    # the runtime whitelist only; use a dedicated definition below.
-    kernel.tool_registry.unregister("test.screenshot")
-    kernel.register_tool(
-        FakePromptInspectTool()
-    )
-    step.metadata.update(
-        {
-            "action": "inspect",
-            "tool": "test.inspect",
-            "prompt": "Is Calculator visible?",
-        }
-    )
-
-    request = tasks.build_plan_request(task, step)
-
-    assert request is not None
-    assert request.tool == "test.inspect"
-    assert request.arguments["prompt"] == "Is Calculator visible?"
-
-
-class FakePromptInspectTool(Tool):
-    @property
-    def definition(self):
-        return ToolDefinition(
-            name="test.inspect",
-            description="Inspect a visual target.",
-            input_schema={
-                "type": "object",
-                "properties": {"prompt": {"type": "string"}},
-                "required": ["prompt"],
-            },
-            risk_level="low",
-            requires_confirmation=False,
-            metadata={"actions": ["inspect"], "category": "vision"},
-        )
-
-    def execute(self, request):
-        return ToolResult(
-            success=True,
-            tool=self.definition.name,
-            output={"prompt": request.arguments["prompt"]},
-        )
-
-
-g", "visible": True},
+            output={"path": "calculator.png", "visible": True},
         )
 
 
@@ -620,3 +546,57 @@ def test_cognitive_runtime_completes_only_after_follow_up_decision():
         assert task.result["agent_decision"]["goal_satisfied"] is True
     finally:
         _shutdown(tasks, ai, tools)
+
+class FakePromptInspectTool(Tool):
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name="test.inspect",
+            description="Inspect a visual target.",
+            input_schema={
+                "type": "object",
+                "properties": {"prompt": {"type": "string"}},
+                "required": ["prompt"],
+            },
+            risk_level="low",
+            requires_confirmation=False,
+            metadata={"actions": ["inspect"], "category": "vision"},
+        )
+
+    def execute(self, request: ToolRequest) -> ToolResult:
+        return ToolResult(
+            success=True,
+            tool=self.definition.name,
+            output={"prompt": request.arguments["prompt"]},
+        )
+
+
+def test_agent_generated_vision_prompt_is_passed_to_tool_request():
+    from types import SimpleNamespace
+
+    kernel = Kernel()
+    kernel.register_tool(FakePromptInspectTool())
+
+    tasks = TaskRuntimeModule(kernel)
+    task = SimpleNamespace(
+        id="task-1",
+        goal="verify calculator",
+        metadata={},
+        plan=None,
+    )
+    step = SimpleNamespace(
+        id="agent-step-1",
+        description="inspect screen",
+        metadata={
+            "action": "inspect",
+            "tool": "test.inspect",
+            "prompt": "Is Calculator visible?",
+        },
+    )
+
+    request = tasks.build_plan_request(task, step)
+
+    assert request is not None
+    assert request.tool == "test.inspect"
+    assert request.arguments["prompt"] == "Is Calculator visible?"
+
