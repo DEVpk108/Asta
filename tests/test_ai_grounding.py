@@ -1,3 +1,4 @@
+from ai.ai_module import AIModule
 from core import Kernel
 from core.tools import OpenApplicationTool, ScreenshotTool
 
@@ -19,8 +20,6 @@ class RecordingEngine:
 
 
 def _make_ai():
-    from ai.ai_module import AIModule
-
     kernel = Kernel()
     kernel.register_tool(OpenApplicationTool())
     kernel.register_tool(ScreenshotTool(capture=lambda: {"path": "test.png"}))
