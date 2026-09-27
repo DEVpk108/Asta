@@ -634,6 +634,22 @@ class TaskRuntimeModule(Module):
             },
         }
 
+        # When the cognitive plan already contains a direct semantic
+        # visual-verification step, follow that bounded plan step instead of
+        # paying for another full LLM decision immediately after the launch.
+        # The specialized vision verifier remains the next observation, and
+        # the agent can reason again after its result arrives.
+        if self._should_follow_planned_visual_verification(
+            task,
+            plan_step_id,
+        ):
+            print(
+                "[Agent] Following planned visual verification step without "
+                "an extra post-action LLM call.",
+                flush=True,
+            )
+            return False
+
         try:
             decision = brain.decide(state_payload)
         except Exception as exc:
@@ -802,6 +818,28 @@ class TaskRuntimeModule(Module):
             request=next_request,
         )
         return True
+
+    @staticmethod
+    def _should_follow_planned_visual_verification(task, current_step_id: str | None) -> bool:
+        if not current_step_id or task.plan is None:
+            return False
+
+        steps = list(task.plan.steps or ())
+        for index, candidate in enumerate(steps):
+            if candidate.id != current_step_id:
+                continue
+            if index + 1 >= len(steps):
+                return False
+
+            next_step = steps[index + 1]
+            metadata = next_step.metadata or {}
+            if str(metadata.get("tool") or "").strip() != "vision.inspect":
+                return False
+
+            dependencies = list(next_step.depends_on or ())
+            return current_step_id in dependencies
+
+        return False
 
     @staticmethod
     def _next_agent_step_id(task) -> str:
