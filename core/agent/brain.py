@@ -377,7 +377,13 @@ class AgentBrain:
             intent=IntentType.COMMAND,
             confidence=1.0,
             normalized_text=str(task_state.get("goal") or ""),
-            entities={"action": action},
+            entities={
+                "action": action,
+                # Capability discovery can inspect a definition before a
+                # concrete request exists. The semantic vision inspector has
+                # a required prompt, which is supplied after selection.
+                **({"prompt": "(deferred)" } if action == "inspect" else {}),
+            },
             requires_tools=True,
             classifier="agent_verification_gate",
         )

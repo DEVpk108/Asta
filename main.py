@@ -169,6 +169,11 @@ def main():
     kernel = Kernel()
     register_builtin_skills(kernel.skill_manager)
 
+    # Vision is lazy by default so the 1.6B multimodal model and projector do
+    # not consume VRAM until A.S.T.A. actually needs visual perception.
+    if kernel.vision_engine.server_manager.preload:
+        kernel.vision_engine.warmup()
+
     # Construct the backend after the HUD is already visible. Heavy local model
     # loading can now happen in parallel with the user's visual boot animation.
     hud = HUDModule(kernel)

@@ -128,6 +128,21 @@ You can still start llama.cpp yourself. When A.S.T.A. detects an already-running
 server, it uses it but does not take ownership of or terminate that external
 process.
 
+### Managed LFM2.5-VL vision runtime
+
+A.S.T.A. manages LFM2.5-VL as a separate local llama-server runtime on
+`http://127.0.0.1:8090/v1`. The default is **lazy loading**: startup does not
+load the vision model or its multimodal projector. The first `vision.inspect`
+request starts the server and waits for `/v1/models` before sending the image.
+
+Set `ASTA_VISION_PRELOAD=1` when startup loading is preferred. As with the main
+llama.cpp runtime, A.S.T.A. stops the vision server only when it started that
+process itself; an already-running local server is reused.
+
+The managed vision runtime expects the LFM2.5-VL GGUF plus its `mmproj` GGUF.
+When several GGUFs are present in `ASTA_VISION_MODEL_DIR`, set
+`ASTA_VISION_MODEL_PATH` and `ASTA_VISION_MMPROJ_PATH` explicitly.
+
 2. From the repository root:
 
 ```bash
@@ -168,6 +183,17 @@ yet, so export these before starting A.S.T.A.
 | `ASTA_LLM_GPU_LAYERS` | `99` | llama.cpp GPU layer offload when A.S.T.A. starts the server |
 | `ASTA_LLM_JINJA` | `1` | Pass `--jinja` to llama-server |
 | `ASTA_LLM_REASONING` | `off` | Pass the reasoning mode to llama-server |
+| `ASTA_VISION_BASE_URL` | `http://127.0.0.1:8090/v1` | LFM2.5-VL OpenAI-compatible endpoint |
+| `ASTA_VISION_MODEL` | auto-discovered | Vision server model id/alias |
+| `ASTA_VISION_MODEL_PATH` | auto-discovered | LFM2.5-VL GGUF path |
+| `ASTA_VISION_MMPROJ_PATH` | auto-discovered | LFM2.5-VL multimodal projector GGUF path |
+| `ASTA_VISION_MODEL_DIR` | `E:\\Projects\\llama\\models` | Shared local vision model directory |
+| `ASTA_VISION_SERVER_PATH` | `E:\\Projects\\llama\\llama-server.exe` | llama-server executable for managed vision runtime |
+| `ASTA_VISION_PRELOAD` | `0` | Load LFM2.5-VL at startup (`1`) or lazily on first vision request (`0`) |
+| `ASTA_VISION_CONTEXT_SIZE` | `8192` | Context size for the managed vision server |
+| `ASTA_VISION_GPU_LAYERS` | `99` | GPU layer offload for the managed vision server |
+| `ASTA_VISION_MMPROJ_OFFLOAD` | `1` | GPU-offload the multimodal projector |
+
 | `ASTA_LLM_TIMEOUT` | `120` | LLM HTTP timeout in seconds |
 | `ASTA_LLM_MAX_OUTPUT_TOKENS` | `256` | Maximum generated tokens per response |
 | `ASTA_LLM_REASONING_RETRY_TOKENS` | `512` | Retry budget when the first generation exhausts the output budget |
