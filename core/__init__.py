@@ -6,7 +6,7 @@ capability discovery, skills, context, decision providers, and host application
 discovery.
 """
 
-from .agent import AgentBrain, AgentBrainError, AgentBelief, AgentObservation, AgentState
+from .agent import AgentBrain, AgentBrainError, AgentDecision, AgentBelief, AgentObservation, AgentState
 from .applications import ApplicationManager, ApplicationRecord, ApplicationResolutionError
 from .capability_discovery import CapabilityDiscovery
 from .context_builder import ContextBuilder, ContextSnapshot
@@ -29,6 +29,7 @@ from .workspace_manager import WorkspaceManager
 __all__ = [
     "AgentBrain",
     "AgentBrainError",
+    "AgentDecision",
     "AgentBelief",
     "AgentObservation",
     "AgentState",
