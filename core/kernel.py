@@ -194,6 +194,13 @@ class Kernel:
                 except Exception as exc:
                     print(f"[Kernel] Error shutting down {module.name}: {exc}")
 
+            vision_shutdown = getattr(self.vision_engine, "shutdown", None)
+            if callable(vision_shutdown):
+                try:
+                    vision_shutdown()
+                except Exception as exc:
+                    print(f"[Kernel] Error shutting down vision engine: {exc}")
+
             print("[Kernel] Stopped")
         finally:
             with self._shutdown_lock:
