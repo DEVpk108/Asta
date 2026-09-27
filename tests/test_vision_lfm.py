@@ -12,6 +12,9 @@ class FakeResponse:
     def __init__(self, events):
         self._events = events
 
+    def json(self):
+        return {"data": self._events}
+
     def raise_for_status(self):
         return None
 
