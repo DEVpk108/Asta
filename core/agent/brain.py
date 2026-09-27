@@ -139,6 +139,10 @@ class AgentBrain:
 
         response = provider.generate_response(prompt, context=None)
         decision = self._parse_decision(response)
+        decision = self._enforce_goal_verification_gate(
+            decision,
+            task_state,
+        )
         self._validate_decision(decision)
         return decision
 
@@ -199,6 +203,140 @@ class AgentBrain:
             },
         }
         return json.dumps(payload, ensure_ascii=False)
+
+    def _enforce_goal_verification_gate(
+        self,
+        decision: AgentDecision,
+        task_state: dict[str, Any],
+    ) -> AgentDecision:
+        """Prevent unsupported goal completion claims.
+
+        Tool success may prove that the requested tool ran, but it does not
+        automatically prove a visual or external success condition. The first
+        visual milestone uses an explicit evidence gate until a vision model
+        can supply semantic screen verification.
+        """
+        if not decision.goal_satisfied:
+            return decision
+
+        if not self._goal_requires_visual_evidence(task_state):
+            return decision
+
+        if self._has_verified_visual_observation(task_state):
+            return decision
+
+        latest_tool = str(
+            (task_state.get("latest_result") or {}).get("tool") or ""
+        ).strip()
+
+        # If we have not captured a screenshot yet, ask the runtime to do so.
+        if not latest_tool.startswith("vision."):
+            screenshot = self._find_action_capability(
+                task_state,
+                action="screenshot",
+            )
+            if screenshot is not None:
+                return AgentDecision(
+                    goal_satisfied=False,
+                    needs_observation=True,
+                    needs_user=False,
+                    rationale=(
+                        "The tool succeeded, but the goal requires visual "
+                        "evidence. Capture a screenshot before declaring success."
+                    ),
+                    confidence=min(decision.confidence, 0.85),
+                    next_action={
+                        "action": "screenshot",
+                        "tool": screenshot.name,
+                    },
+                    belief_updates=decision.belief_updates,
+                    uncertainty=max(decision.uncertainty, 0.25),
+                )
+
+        # A raw screenshot path is not itself a visual interpretation. Do not
+        # let the language model promote it to verified state.
+        return AgentDecision(
+            goal_satisfied=False,
+            needs_observation=True,
+            needs_user=False,
+            rationale=(
+                "The available evidence does not contain a semantic visual "
+                "verification of the goal."
+            ),
+            confidence=min(decision.confidence, 0.5),
+            next_action=None,
+            belief_updates=decision.belief_updates,
+            uncertainty=max(decision.uncertainty, 0.5),
+        )
+
+    @staticmethod
+    def _goal_requires_visual_evidence(task_state: dict[str, Any]) -> bool:
+        conditions = task_state.get("success_conditions") or ()
+        text = " ".join(str(item) for item in conditions).lower()
+        markers = (
+            "visible",
+            "visually",
+            "screenshot",
+            "screen",
+            "window",
+            "display",
+            "ui",
+            "interface",
+        )
+        return any(marker in text for marker in markers)
+
+    @staticmethod
+    def _has_verified_visual_observation(task_state: dict[str, Any]) -> bool:
+        observations = task_state.get("observations") or ()
+        for observation in observations:
+            if not isinstance(observation, dict):
+                continue
+            data = observation.get("data")
+            if not isinstance(data, dict):
+                continue
+            output = data.get("output")
+            if not isinstance(output, dict):
+                output = data
+
+            explicit_flags = (
+                "verified",
+                "vision_verified",
+                "visual_match",
+                "window_detected",
+            )
+            if any(bool(output.get(key)) for key in explicit_flags):
+                return True
+
+            # A tool may return a structured visibility result directly.
+            if "visible" in output and bool(output.get("visible")):
+                return True
+
+        return False
+
+    def _find_action_capability(
+        self,
+        task_state: dict[str, Any],
+        *,
+        action: str,
+    ):
+        registry = getattr(self.kernel, "tool_registry", None)
+        if registry is None:
+            return None
+
+        from core.tools.selector import ToolSelector
+
+        intent = IntentResult(
+            intent=IntentType.COMMAND,
+            confidence=1.0,
+            normalized_text=str(task_state.get("goal") or ""),
+            entities={"action": action},
+            requires_tools=True,
+            classifier="agent_verification_gate",
+        )
+        try:
+            return ToolSelector(registry).select(intent)
+        except ValueError:
+            return None
 
     @staticmethod
     def _parse_decision(response: str) -> AgentDecision:

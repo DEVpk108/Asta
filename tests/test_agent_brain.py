@@ -266,3 +266,109 @@ def test_agent_brain_rejects_action_without_safe_next_step_or_completion():
         assert "neither completion nor a next action" in str(exc)
     else:
         raise AssertionError("Expected invalid decision rejection")
+
+
+def test_agent_brain_blocks_visual_completion_without_visual_evidence():
+    kernel = Kernel()
+    kernel.register_tool(FakeNamedOpenTool())
+    kernel.register_tool(
+        ToolDefinitionBackedTool(
+            ToolDefinition(
+                name="vision.screenshot",
+                description="Capture a screenshot.",
+                input_schema={
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                },
+                risk_level="low",
+                requires_confirmation=False,
+                metadata={"actions": ["screenshot"], "category": "vision"},
+            )
+        )
+    )
+    provider = FakeProvider(
+        """{
+            "goal_satisfied": true,
+            "needs_observation": false,
+            "needs_user": false,
+            "rationale": "The application opened successfully, so the goal is complete.",
+            "confidence": 1.0,
+            "uncertainty": 0.0
+        }"""
+    )
+    brain = AgentBrain(kernel, provider=provider, enabled=True)
+
+    decision = brain.decide(
+        {
+            "goal": "open calculator and verify that it is open",
+            "success_conditions": ["Calculator application is open and visible."],
+            "observations": [
+                {
+                    "kind": "tool_result",
+                    "source": "system.open_application",
+                    "data": {
+                        "success": True,
+                        "output": {"target": "calculator"},
+                    },
+                }
+            ],
+            "latest_result": {
+                "tool": "system.open_application",
+                "success": True,
+                "output": {"target": "calculator"},
+            },
+        }
+    )
+
+    assert decision.goal_satisfied is False
+    assert decision.needs_observation is True
+    assert decision.next_action == {
+        "action": "screenshot",
+        "tool": "vision.screenshot",
+    }
+
+
+def test_agent_brain_allows_visual_completion_with_explicit_verified_evidence():
+    kernel = Kernel()
+    kernel.register_tool(FakeNamedOpenTool())
+    provider = FakeProvider(
+        """{
+            "goal_satisfied": true,
+            "needs_observation": false,
+            "needs_user": false,
+            "rationale": "The screenshot evidence confirms the calculator window is visible.",
+            "confidence": 0.98,
+            "uncertainty": 0.02
+        }"""
+    )
+    brain = AgentBrain(kernel, provider=provider, enabled=True)
+
+    decision = brain.decide(
+        {
+            "goal": "open calculator and verify that it is open",
+            "success_conditions": ["Calculator application is open and visible."],
+            "observations": [
+                {
+                    "kind": "visual_verification",
+                    "source": "vision.bonsai",
+                    "data": {
+                        "output": {
+                            "visible": True,
+                            "verified": True,
+                        }
+                    },
+                }
+            ],
+            "latest_result": {
+                "tool": "vision.inspect",
+                "success": True,
+                "output": {
+                    "visible": True,
+                    "verified": True,
+                },
+            },
+        }
+    )
+
+    assert decision.goal_satisfied is True

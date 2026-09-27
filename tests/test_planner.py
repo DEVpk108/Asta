@@ -199,3 +199,43 @@ def test_planner_expands_provider_media_play_into_open_and_play():
     assert plan.steps[1].metadata["operation"] == "play"
     assert plan.steps[1].metadata["query"] == "hanuman chalisa"
     assert plan.steps[1].metadata["provider"] == "spotify"
+
+
+def test_planner_collapses_adjacent_duplicate_cognitive_actions():
+    planner = _planner()
+
+    class DuplicateBrain:
+        enabled = True
+
+        @staticmethod
+        def plan(goal, *, intent):
+            from core.agent import AgentPlanProposal
+            return AgentPlanProposal(
+                goal_summary="Open calculator.",
+                success_conditions=("Calculator is open.",),
+                rationale="The model duplicated the same action.",
+                steps=(
+                    {"action": "open", "target": "calculator"},
+                    {"action": "open", "target": "calculator"},
+                ),
+                uncertainty=0.2,
+            )
+
+        @staticmethod
+        def task_metadata(proposal):
+            return {
+                "agent_mode": "cognitive_v1",
+                "agent_goal_summary": proposal.goal_summary,
+                "agent_success_conditions": list(proposal.success_conditions),
+                "agent_rationale": proposal.rationale,
+                "agent_uncertainty": proposal.uncertainty,
+            }
+
+    planner.agent_brain = DuplicateBrain()
+    plan = planner.plan(
+        "open calculator",
+        intent=_command_intent(action="open", target="calculator"),
+    )
+
+    assert len(plan.steps) == 1
+    assert plan.steps[0].description == "open calculator"
