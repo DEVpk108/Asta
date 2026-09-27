@@ -127,3 +127,59 @@ def test_runtime_patch_formats_verified_visual_completion_once():
     )
 
     assert _verified_visual_response(result) == "Done — Calculator window is visible."
+
+
+def test_runtime_patch_identifies_non_final_plan_step_as_intermediate():
+    from types import SimpleNamespace
+    from core.contracts import ToolResult
+
+    class TaskLookup:
+        def get(self, task_id):
+            return SimpleNamespace(
+                plan=SimpleNamespace(
+                    steps=[
+                        SimpleNamespace(id="step-1"),
+                        SimpleNamespace(id="step-2"),
+                    ]
+                )
+            )
+
+        def current(self):
+            return None
+
+    ai = SimpleNamespace(kernel=SimpleNamespace(task_manager=TaskLookup()))
+    result = ToolResult(
+        success=True,
+        tool="system.open_application",
+        metadata={"task_id": "task-1", "plan_step_id": "step-1"},
+    )
+
+    assert _is_intermediate_task_result(ai, result) is True
+
+
+def test_runtime_patch_keeps_final_plan_step_user_facing():
+    from types import SimpleNamespace
+    from core.contracts import ToolResult
+
+    class TaskLookup:
+        def get(self, task_id):
+            return SimpleNamespace(
+                plan=SimpleNamespace(
+                    steps=[
+                        SimpleNamespace(id="step-1"),
+                        SimpleNamespace(id="step-2"),
+                    ]
+                )
+            )
+
+        def current(self):
+            return None
+
+    ai = SimpleNamespace(kernel=SimpleNamespace(task_manager=TaskLookup()))
+    result = ToolResult(
+        success=True,
+        tool="vision.inspect",
+        metadata={"task_id": "task-1", "plan_step_id": "step-2"},
+    )
+
+    assert _is_intermediate_task_result(ai, result) is False
