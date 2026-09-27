@@ -179,3 +179,18 @@ def test_vision_inspect_tool_rejects_capture_metadata_without_path(tmp_path):
     assert result.success is False
     assert "without a 'path'" in result.error
 
+def test_lfm_engine_recovers_truncated_verification_json():
+    truncated = (
+        '{"visual_match":true,"confidence":0.95,'
+        '"summary":"The calculator window is visible.",'
+        '"observations":["calculator"]'
+    )
+
+    recovered = LFM25VLEngine._recover_truncated_json(truncated)
+
+    assert recovered == {
+        "visual_match": True,
+        "confidence": 0.95,
+        "summary": "The calculator window is visible.",
+    }
+
