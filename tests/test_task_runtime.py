@@ -425,65 +425,65 @@ def test_task_runtime_pauses_immediately_for_missing_integration_setup():
         _shutdown(tasks, ai, tools)
 
 
-def test_cognitive_runtime_observes_then_takes_next_action_before_completion():
-    from core.agent import AgentDecision, AgentPlanProposal
 
-    class CognitiveFakeBrain:
-        enabled = True
+class CognitiveFakeBrain:
+    enabled = True
 
-        def __init__(self):
-            self.decisions = 0
+    def __init__(self):
+        self.decisions = 0
 
-        def plan(self, goal, *, intent):
-            return AgentPlanProposal(
-                goal_summary="Open calculator and verify it.",
-                success_conditions=("Calculator is visible.",),
-                rationale="Open first, then verify with a screenshot.",
-                uncertainty=0.5,
-                steps=(
-                    {"action": "open", "target": "calculator"},
+    def plan(self, goal, *, intent):
+        from core.agent import AgentPlanProposal
+        return AgentPlanProposal(
+            goal_summary="Open calculator and verify it.",
+            success_conditions=("Calculator is visible.",),
+            rationale="Open first, then verify with a screenshot.",
+            uncertainty=0.5,
+            steps=(
+                {"action": "open", "target": "calculator"},
+            ),
+        )
+
+    @staticmethod
+    def task_metadata(proposal):
+        return {
+            "agent_mode": "cognitive_v1",
+            "agent_goal_summary": proposal.goal_summary,
+            "agent_success_conditions": list(proposal.success_conditions),
+            "agent_rationale": proposal.rationale,
+            "agent_uncertainty": proposal.uncertainty,
+        }
+
+    def decide(self, state):
+        from core.agent import AgentDecision
+        self.decisions += 1
+        if self.decisions == 1:
+            return AgentDecision(
+                goal_satisfied=False,
+                needs_observation=True,
+                rationale="Tool success does not prove the calculator is visible.",
+                confidence=0.8,
+                uncertainty=0.3,
+                next_action={
+                    "action": "screenshot",
+                    "tool": "test.screenshot",
+                },
+                belief_updates=(
+                    {
+                        "key": "calculator_launch_succeeded",
+                        "value": True,
+                        "confidence": 0.9,
+                        "source": "tool",
+                    },
                 ),
             )
-
-        @staticmethod
-        def task_metadata(proposal):
-            return {
-                "agent_mode": "cognitive_v1",
-                "agent_goal_summary": proposal.goal_summary,
-                "agent_success_conditions": list(proposal.success_conditions),
-                "agent_rationale": proposal.rationale,
-                "agent_uncertainty": proposal.uncertainty,
-            }
-
-        def decide(self, state):
-            self.decisions += 1
-            if self.decisions == 1:
-                return AgentDecision(
-                    goal_satisfied=False,
-                    needs_observation=True,
-                    rationale="Tool success does not prove the calculator is visible.",
-                    confidence=0.8,
-                    uncertainty=0.3,
-                    next_action={
-                        "action": "screenshot",
-                        "tool": "test.screenshot",
-                    },
-                    belief_updates=(
-                        {
-                            "key": "calculator_launch_succeeded",
-                            "value": True,
-                            "confidence": 0.9,
-                            "source": "tool",
-                        },
-                    ),
-                )
-            return AgentDecision(
-                goal_satisfied=True,
-                needs_observation=False,
-                rationale="The screenshot confirms the calculator is visible.",
-                confidence=0.95,
-                uncertainty=0.05,
-            )
+        return AgentDecision(
+            goal_satisfied=True,
+            needs_observation=False,
+            rationale="The screenshot confirms the calculator is visible.",
+            confidence=0.95,
+            uncertainty=0.05,
+        )
 
 
 class FakeScreenshotTool(Tool):
