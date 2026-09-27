@@ -90,23 +90,31 @@ def test_ai_formats_vision_inspection_success_concisely():
 
 def test_runtime_patch_suppresses_intermediate_task_results():
     from types import SimpleNamespace
+    from core.contracts import ToolResult
 
     class TaskLookup:
         def get(self, task_id):
             assert task_id == "task-1"
             return SimpleNamespace(
-                status=SimpleNamespace(value="active"),
-                pending_steps=["inspect calculator"],
+                plan=SimpleNamespace(
+                    steps=[
+                        SimpleNamespace(id="step-1"),
+                        SimpleNamespace(id="step-2"),
+                    ]
+                )
             )
 
         def current(self):
             raise AssertionError("task_id lookup should be used")
 
     ai = SimpleNamespace(kernel=SimpleNamespace(task_manager=TaskLookup()))
-    result = __import__("core.contracts", fromlist=["ToolResult"]).ToolResult(
+    result = ToolResult(
         success=True,
         tool="system.open_application",
-        metadata={"task_id": "task-1"},
+        metadata={
+            "task_id": "task-1",
+            "plan_step_id": "step-1",
+        },
     )
 
     assert _is_intermediate_task_result(ai, result) is True
