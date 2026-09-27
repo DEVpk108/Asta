@@ -33,6 +33,7 @@ class LFM25VLEngine:
         max_output_tokens: int | None = None,
         temperature: float | None = None,
         session: requests.Session | None = None,
+        server_manager: VisionServerManager | None = None,
     ):
         self.base_url = (
             base_url
@@ -58,7 +59,7 @@ class LFM25VLEngine:
             else os.getenv("ASTA_VISION_TEMPERATURE", "0")
         )
         self.session = session or requests.Session()
-        self.server_manager = VisionServerManager(base_url=self.base_url)
+        self.server_manager = server_manager or VisionServerManager(base_url=self.base_url)
         self.models_url = f"{self.base_url}/models"
         self.chat_url = f"{self.base_url}/chat/completions"
 
