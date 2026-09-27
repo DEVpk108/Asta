@@ -106,6 +106,29 @@ class AgentBrain:
             setter = getattr(self._provider, "set_system_prompt", None)
             if callable(setter):
                 setter(self._system_prompt)
+
+            # Agent planning/decision is structured control traffic. Keep its
+            # output budget small and deterministic so the general conversation
+            # model settings do not make every control step expensive.
+            try:
+                max_output = int(
+                    os.getenv("ASTA_AGENT_MAX_OUTPUT_TOKENS", "192")
+                )
+                if hasattr(self._provider, "max_output_tokens"):
+                    self._provider.max_output_tokens = max(64, max_output)
+                if hasattr(self._provider, "reasoning_retry_tokens"):
+                    self._provider.reasoning_retry_tokens = max(64, max_output)
+            except (TypeError, ValueError):
+                pass
+
+            try:
+                temperature = float(
+                    os.getenv("ASTA_AGENT_TEMPERATURE", "0.0")
+                )
+                if hasattr(self._provider, "temperature"):
+                    self._provider.temperature = max(0.0, temperature)
+            except (TypeError, ValueError):
+                pass
         return self._provider
 
     def plan(self, goal: str, *, intent: IntentResult) -> AgentPlanProposal:
@@ -163,43 +186,34 @@ class AgentBrain:
                 )
 
         payload = {
-            "task": task_state,
-            "capabilities": definitions,
+            "task": self._compact_task_state(task_state),
+            "capabilities": self._compact_capabilities(registry),
             "instruction": (
                 "You are the post-action decision layer of A.S.T.A. "
-                "Interpret the latest evidence against the goal and success conditions. "
-                "Do not claim that something is visually or externally verified unless the "
-                "supplied evidence actually proves it. Tool success is evidence about the tool, "
-                "not proof of the real-world state. If any success condition requires visibility "
-                "or visual inspection and no visual evidence is supplied, do not set goal_satisfied=true; "
-                "choose the smallest useful observation action, such as vision.screenshot, when available. "
-                "If the goal is not proven, choose the smallest useful next action or request more observation. If user input is "
-                "required, set needs_user=true and do not invent a tool action. "
-                "Return JSON only; give a concise rationale, not hidden chain-of-thought."
+                "Compare the latest result with the goal and success conditions. "
+                "Never claim visual or external verification without evidence. "
+                "For visual goals, prefer vision.inspect directly; do not open a raw screenshot "
+                "with vision.open_screenshot when semantic inspection is available. "
+                "Choose the smallest useful next action. If user input is required, set needs_user=true. "
+                "Return compact JSON only; no hidden chain-of-thought."
             ),
             "required_output": {
                 "goal_satisfied": "boolean",
                 "needs_observation": "boolean",
                 "needs_user": "boolean",
-                "rationale": "one or two concise sentences",
+                "rationale": "one concise sentence",
                 "confidence": "number from 0 to 1",
                 "uncertainty": "number from 0 to 1",
                 "next_action": {
-                    "action": "semantic action such as screenshot or open",
-                    "tool": "optional exact registered tool name",
+                    "action": "semantic action",
+                    "tool": "exact registered tool name when needed",
                     "target": "optional target",
+                    "prompt": "optional visual inspection prompt",
                     "operation": "optional operation",
                     "query": "optional query",
-                    "provider": "optional provider",
+                    "provider": "optional provider"
                 },
-                "belief_updates": [
-                    {
-                        "key": "belief name",
-                        "value": "JSON value",
-                        "confidence": "number from 0 to 1",
-                        "source": "tool/model/observation",
-                    }
-                ],
+                "belief_updates": "array; keep empty unless a new belief is useful",
             },
         }
         return json.dumps(payload, ensure_ascii=False)
@@ -393,6 +407,51 @@ class AgentBrain:
             return None
 
     @staticmethod
+    def _compact_capabilities(registry) -> list[dict[str, Any]]:
+        """Serialize only control-relevant tool metadata for the brain prompt."""
+        if registry is None:
+            return []
+
+        compact = []
+        for definition in registry.definitions():
+            metadata = definition.metadata if isinstance(definition.metadata, dict) else {}
+            schema = definition.input_schema if isinstance(definition.input_schema, dict) else {}
+            compact.append(
+                {
+                    "name": definition.name,
+                    "description": definition.description,
+                    "actions": list(metadata.get("actions") or metadata.get("action_aliases") or ()),
+                    "category": metadata.get("category"),
+                    "required_inputs": list(schema.get("required") or ()),
+                }
+            )
+        return compact
+
+    @staticmethod
+    def _compact_task_state(task_state: dict[str, Any]) -> dict[str, Any]:
+        """Bound agent decision prompts to the state needed for the next action."""
+        payload = {
+            "goal": task_state.get("goal"),
+            "success_conditions": list(task_state.get("success_conditions") or ()),
+            "beliefs": dict(task_state.get("beliefs") or {}),
+            "current_strategy": task_state.get("current_strategy", ""),
+            "uncertainty": task_state.get("uncertainty", 1.0),
+            "current_step": task_state.get("current_step"),
+            "latest_result": task_state.get("latest_result"),
+        }
+
+        observations = list(task_state.get("observations") or ())
+        if observations:
+            payload["latest_observation"] = observations[-1]
+
+        # The full action/decision history is useful for journaling but creates
+        # large repeated prompts. Keep only the latest decision for control.
+        if task_state.get("last_decision") is not None:
+            payload["last_decision"] = task_state.get("last_decision")
+
+        return payload
+
+    @staticmethod
     def _parse_decision(response: str) -> AgentDecision:
         text = str(response or "").strip()
         if not text:
@@ -578,23 +637,28 @@ class AgentBrain:
             "intent_confidence": intent.confidence,
             "current_task": current_task,
             "workspace": workspace,
-            "capabilities": definitions,
+            "capabilities": self._compact_capabilities(registry),
             "required_output": {
                 "goal_summary": "one sentence",
                 "success_conditions": ["1-3 observable conditions"],
-                "rationale": "one or two concise sentences",
+                "rationale": "one concise sentence",
                 "uncertainty": "number from 0 to 1",
                 "steps": [
                     {
-                        "action": "semantic action from the selected capability metadata, such as open or media; do not use the tool name here",
-                        "tool": "optional exact registered tool name when useful",
+                        "action": "semantic action from selected capability metadata",
+                        "tool": "exact registered tool name",
                         "target": "optional target",
+                        "prompt": "optional visual inspection prompt",
                         "operation": "optional operation",
                         "query": "optional query",
-                        "provider": "optional provider",
+                        "provider": "optional provider"
                     }
-                ],
+                ]
             },
+            "instruction": (
+                "Keep the plan minimal. For a visual success condition, prefer one "
+                "semantic vision.inspect step instead of a screenshot followed by opening the image."
+            )
         }
         return json.dumps(payload, ensure_ascii=False)
 

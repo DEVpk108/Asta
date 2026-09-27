@@ -35,6 +35,13 @@ class HUDModule(Module):
         self.event_bus.subscribe("speech_interrupt", self.on_speech_interrupt)
         self.event_bus.subscribe("speech_audio_level", self.on_speech_audio_level)
         self.event_bus.subscribe("tool_request", self.on_tool_request)
+        self.event_bus.subscribe("agent_thinking_started", self.on_agent_thinking_started)
+        self.event_bus.subscribe("agent_thinking_finished", self.on_agent_thinking_finished)
+        self.event_bus.subscribe("task_activated", self.on_task_activated)
+        self.event_bus.subscribe("task_completed", self.on_task_finished)
+        self.event_bus.subscribe("task_failed", self.on_task_finished)
+        self.event_bus.subscribe("task_paused", self.on_task_finished)
+        self.event_bus.subscribe("task_cancelled", self.on_task_finished)
         self.event_bus.subscribe("tool_confirmation_required", self.on_tool_confirmation_required)
         self.event_bus.subscribe("tool_confirmation_response", self.on_tool_confirmation_response)
         self.transport.set_command_handler(self.on_transport_message)
@@ -215,6 +222,32 @@ class HUDModule(Module):
     def on_tool_request(self, request):
         self.set_state(mode="executing", intensity="high", status="EXECUTING", progress=None, activity=getattr(request, "tool", None) or "tool")
 
+    def on_agent_thinking_started(self, *args, **kwargs):
+        self.set_state(
+            mode="thinking",
+            intensity="high",
+            status="THINKING",
+            progress=None,
+            activity="agent_reasoning",
+        )
+
+    def on_agent_thinking_finished(self, *args, **kwargs):
+        # Keep the current visual mode; the next tool_request/task event will
+        # move the HUD to its authoritative execution or terminal state.
+        return None
+
+    def on_task_activated(self, *args, **kwargs):
+        return None
+
+    def on_task_finished(self, *args, **kwargs):
+        self.set_state(
+            mode="idle",
+            intensity="low",
+            status="IDLE",
+            progress=None,
+            activity=None,
+        )
+
     def on_tool_confirmation_required(self, request=None, reason=None):
         self.set_state(mode="approval", intensity="high", status="APPROVAL", progress=None, activity=str(reason) if reason else "approval")
 
@@ -246,6 +279,13 @@ class HUDModule(Module):
             ("speech_interrupt", self.on_speech_interrupt),
             ("speech_audio_level", self.on_speech_audio_level),
             ("tool_request", self.on_tool_request),
+            ("agent_thinking_started", self.on_agent_thinking_started),
+            ("agent_thinking_finished", self.on_agent_thinking_finished),
+            ("task_activated", self.on_task_activated),
+            ("task_completed", self.on_task_finished),
+            ("task_failed", self.on_task_finished),
+            ("task_paused", self.on_task_finished),
+            ("task_cancelled", self.on_task_finished),
             ("tool_confirmation_required", self.on_tool_confirmation_required),
             ("tool_confirmation_response", self.on_tool_confirmation_response),
         ):

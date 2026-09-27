@@ -600,3 +600,28 @@ def test_agent_generated_vision_prompt_is_passed_to_tool_request():
     assert request.tool == "test.inspect"
     assert request.arguments["prompt"] == "Is Calculator visible?"
 
+def test_task_runtime_follows_planned_vision_step_without_extra_agent_decision():
+    from types import SimpleNamespace
+
+    task = SimpleNamespace(
+        plan=SimpleNamespace(
+            steps=[
+                SimpleNamespace(
+                    id="step-1",
+                    depends_on=[],
+                    metadata={"tool": "system.open_application"},
+                ),
+                SimpleNamespace(
+                    id="step-2",
+                    depends_on=["step-1"],
+                    metadata={"tool": "vision.inspect"},
+                ),
+            ]
+        )
+    )
+
+    assert TaskRuntimeModule._should_follow_planned_visual_verification(
+        task,
+        "step-1",
+    ) is True
+

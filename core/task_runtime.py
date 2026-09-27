@@ -77,6 +77,17 @@ class TaskRuntimeModule(Module):
 
     def start_plan(self, goal: str, intent: IntentResult):
         """Create an executable task plan from any structured command intent."""
+        agent_brain = getattr(self.kernel, "agent_brain", None)
+        agent_thinking = bool(
+            agent_brain is not None
+            and getattr(agent_brain, "enabled", False)
+        )
+        if agent_thinking:
+            self.event_bus.emit(
+                "agent_thinking_started",
+                phase="planning",
+            )
+
         try:
             plan = self.kernel.planner.plan(
                 goal,
@@ -85,6 +96,12 @@ class TaskRuntimeModule(Module):
         except PlanningError as exc:
             print(f"[Tasks] Planning failed: {exc}", flush=True)
             return None
+        finally:
+            if agent_thinking:
+                self.event_bus.emit(
+                    "agent_thinking_finished",
+                    phase="planning",
+                )
 
         pending_steps = [step.description for step in plan.steps]
 
@@ -634,6 +651,27 @@ class TaskRuntimeModule(Module):
             },
         }
 
+        # When the cognitive plan already contains a direct semantic
+        # visual-verification step, follow that bounded plan step instead of
+        # paying for another full LLM decision immediately after the launch.
+        # The specialized vision verifier remains the next observation, and
+        # the agent can reason again after its result arrives.
+        if self._should_follow_planned_visual_verification(
+            task,
+            plan_step_id,
+        ):
+            print(
+                "[Agent] Following planned visual verification step without "
+                "an extra post-action LLM call.",
+                flush=True,
+            )
+            return False
+
+        self.event_bus.emit(
+            "agent_thinking_started",
+            task_id=task.id,
+            phase="post_action_decision",
+        )
         try:
             decision = brain.decide(state_payload)
         except Exception as exc:
@@ -644,8 +682,18 @@ class TaskRuntimeModule(Module):
                 flush=True,
             )
             evidence["agent_decision_error"] = str(exc)
+            self.event_bus.emit(
+                "agent_thinking_finished",
+                task_id=task.id,
+                phase="post_action_decision",
+            )
             return False
 
+        self.event_bus.emit(
+            "agent_thinking_finished",
+            task_id=task.id,
+            phase="post_action_decision",
+        )
         decision_payload = decision.to_dict()
         evidence["agent_decision"] = decision_payload
         self._apply_agent_decision(task, decision_payload)
@@ -802,6 +850,28 @@ class TaskRuntimeModule(Module):
             request=next_request,
         )
         return True
+
+    @staticmethod
+    def _should_follow_planned_visual_verification(task, current_step_id: str | None) -> bool:
+        if not current_step_id or task.plan is None:
+            return False
+
+        steps = list(task.plan.steps or ())
+        for index, candidate in enumerate(steps):
+            if candidate.id != current_step_id:
+                continue
+            if index + 1 >= len(steps):
+                return False
+
+            next_step = steps[index + 1]
+            metadata = next_step.metadata or {}
+            if str(metadata.get("tool") or "").strip() != "vision.inspect":
+                return False
+
+            dependencies = list(next_step.depends_on or ())
+            return current_step_id in dependencies
+
+        return False
 
     @staticmethod
     def _next_agent_step_id(task) -> str:
