@@ -274,16 +274,19 @@ def test_agent_brain_blocks_visual_completion_without_visual_evidence():
     kernel.register_tool(
         ToolDefinitionBackedTool(
             ToolDefinition(
-                name="vision.screenshot",
-                description="Capture a screenshot.",
+                name="vision.inspect",
+                description="Capture and semantically inspect the current screen.",
                 input_schema={
                     "type": "object",
-                    "properties": {},
-                    "required": [],
+                    "properties": {"prompt": {"type": "string"}},
+                    "required": ["prompt"],
                 },
                 risk_level="low",
                 requires_confirmation=False,
-                metadata={"actions": ["screenshot"], "category": "vision"},
+                metadata={
+                    "actions": ["inspect", "visual_verify"],
+                    "category": "vision",
+                },
             )
         )
     )
@@ -323,10 +326,9 @@ def test_agent_brain_blocks_visual_completion_without_visual_evidence():
 
     assert decision.goal_satisfied is False
     assert decision.needs_observation is True
-    assert decision.next_action == {
-        "action": "screenshot",
-        "tool": "vision.screenshot",
-    }
+    assert decision.next_action["action"] == "inspect"
+    assert decision.next_action["tool"] == "vision.inspect"
+    assert "Calculator application is open and visible" in decision.next_action["prompt"]
 
 
 def test_agent_brain_allows_visual_completion_with_explicit_verified_evidence():
