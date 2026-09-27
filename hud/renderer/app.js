@@ -103,6 +103,15 @@
     progress: null,
     activity: null
   }
+
+  /* ---------- phase timers ---------- */
+  var phaseTiming = {
+    thinkingStartedAt: null,
+    executionStartedAt: null,
+    thinkingElapsedMs: 0,
+    executionElapsedMs: 0
+  }
+
   var live = { amp: 0.05, colorMix: 0, wave: 0.1 }
   var audioTarget = 0
   var audioLevel = 0
@@ -199,7 +208,71 @@
     if (assembled) updateCanonicalLabels()
   }
 
+  function formatPhaseTime (ms) {
+    var totalSeconds = Math.max(0, ms) / 1000
+    var minutes = Math.floor(totalSeconds / 60)
+    var seconds = totalSeconds - (minutes * 60)
+    return pad(minutes) + ':' + (seconds < 10 ? '0' : '') + seconds.toFixed(1)
+  }
+
+  function updatePhaseTimerLabels (now) {
+    var thinkMs = phaseTiming.thinkingElapsedMs
+    var execMs = phaseTiming.executionElapsedMs
+
+    if (phaseTiming.thinkingStartedAt !== null) {
+      thinkMs += Math.max(0, now - phaseTiming.thinkingStartedAt)
+    }
+    if (phaseTiming.executionStartedAt !== null) {
+      execMs += Math.max(0, now - phaseTiming.executionStartedAt)
+    }
+
+    var thinkingTimeEl = $('thinkingTime')
+    var executionTimeEl = $('executionTime')
+    if (thinkingTimeEl) thinkingTimeEl.textContent = formatPhaseTime(thinkMs)
+    if (executionTimeEl) executionTimeEl.textContent = formatPhaseTime(execMs)
+  }
+
+  function stopThinkingTimer (now) {
+    if (phaseTiming.thinkingStartedAt !== null) {
+      phaseTiming.thinkingElapsedMs += Math.max(0, now - phaseTiming.thinkingStartedAt)
+      phaseTiming.thinkingStartedAt = null
+    }
+  }
+
+  function stopExecutionTimer (now) {
+    if (phaseTiming.executionStartedAt !== null) {
+      phaseTiming.executionElapsedMs += Math.max(0, now - phaseTiming.executionStartedAt)
+      phaseTiming.executionStartedAt = null
+    }
+  }
+
+  function transitionPhaseTimers (previousMode, nextMode, now) {
+    if (!startupReady) return
+
+    if (nextMode === 'thinking') {
+      if (previousMode !== 'thinking') {
+        stopExecutionTimer(now)
+        phaseTiming.thinkingElapsedMs = 0
+        phaseTiming.thinkingStartedAt = now
+      }
+      return
+    }
+
+    if (nextMode === 'executing') {
+      if (previousMode !== 'executing') {
+        stopThinkingTimer(now)
+        phaseTiming.executionElapsedMs = 0
+        phaseTiming.executionStartedAt = now
+      }
+      return
+    }
+
+    if (previousMode === 'thinking') stopThinkingTimer(now)
+    if (previousMode === 'executing') stopExecutionTimer(now)
+  }
+
   function setState (name) {
+    var previousMode = canonicalState.mode
     setVisualProfile(name)
     canonicalState = {
       mode: name,
@@ -208,6 +281,8 @@
       progress: null,
       activity: 'manual'
     }
+    transitionPhaseTimers(previousMode, name, performance.now())
+    updatePhaseTimerLabels(performance.now())
   }
 
   function applyCanonicalState (state) {
@@ -218,6 +293,7 @@
     if (!VALID_MODES[mode]) mode = 'idle'
     if (!VALID_INTENSITIES[intensity]) intensity = 'low'
 
+    var previousMode = canonicalState.mode
     canonicalState = {
       mode: mode,
       intensity: intensity,
@@ -225,6 +301,9 @@
       progress: state.progress == null ? null : Number(state.progress),
       activity: state.activity || null
     }
+
+    transitionPhaseTimers(previousMode, mode, performance.now())
+    updatePhaseTimerLabels(performance.now())
 
     /* Before runtime readiness, state is buffered without cancelling the
        synchronized startup assembly. Once started, backend state is applied
@@ -395,6 +474,7 @@
     }
 
     if (!assembled) readoutPct.textContent = Math.round(progress * 100) + '%'
+    updatePhaseTimerLabels(now)
 
     for (var i = 0; i < bars.length; i++) {
       var center = 1 - Math.abs(i / (bars.length - 1) - 0.5) * 2
