@@ -656,6 +656,7 @@ def test_task_runtime_completes_verified_visual_result_without_llm_decision():
     kernel = SimpleNamespace(
         task_manager=manager,
         event_bus=event_bus,
+        tool_registry=Kernel().tool_registry,
     )
     tasks = TaskRuntimeModule(kernel)
     task = SimpleNamespace(
