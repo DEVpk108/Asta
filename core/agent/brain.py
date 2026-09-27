@@ -323,9 +323,7 @@ class AgentBrain:
         intent = IntentResult(
             intent=IntentType.COMMAND,
             confidence=decision.confidence,
-            normalized_text=str(
-                task_state.get("goal") if isinstance(task_state, dict) else ""
-            ),
+            normalized_text="",
             entities=entities,
             requires_tools=True,
             classifier="agent_brain_decision",
