@@ -952,6 +952,12 @@ class AIModule(Module):
                 if path:
                     print(f"[AI] Screenshot saved: {path}", flush=True)
                 return "Screenshot captured."
+            if result.tool == "vision.inspect":
+                if bool(output.get("verified")):
+                    return "I checked the screen. The requested visual condition is confirmed."
+                if bool(output.get("visual_match")):
+                    return "I checked the screen, but the visual verification was inconclusive."
+                return "I checked the screen, but could not verify the requested visual condition."
             if result.tool == "notes.create_note":
                 title = output.get("title")
                 return f"Saved note '{title}'." if title else "Saved note."
