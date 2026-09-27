@@ -10,6 +10,7 @@ from .contracts import (
     TaskStatus,
     ToolRequest,
     ToolResult,
+    PlanStep,
 )
 from .tools.request_builder import ToolRequestBuilder
 from .planner import PlanningError
@@ -529,6 +530,15 @@ class TaskRuntimeModule(Module):
                 self.kernel.task_manager.pause(task.id)
                 return
 
+        if self._run_agent_decision(
+            task,
+            result,
+            evidence=evidence,
+            plan_step_id=plan_step_id,
+            step_description=step,
+        ):
+            return
+
         self.kernel.task_manager.complete_step(step, task.id)
 
         # Preserve successful tool results in the task journal as well as
@@ -574,6 +584,272 @@ class TaskRuntimeModule(Module):
             flush=True,
         )
         self.event_bus.emit("tool_request", request=next_request)
+
+    def _run_agent_decision(
+        self,
+        task,
+        result: ToolResult,
+        *,
+        evidence: dict[str, Any],
+        plan_step_id: str | None,
+        step_description: str,
+    ) -> bool:
+        """Run one bounded cognitive decision after a successful tool result."""
+        agent_state = task.metadata.get("agent_state")
+        brain = getattr(self.kernel, "agent_brain", None)
+        if (
+            not isinstance(agent_state, dict)
+            or task.plan is None
+            or brain is None
+            or not getattr(brain, "enabled", False)
+        ):
+            return False
+
+        state_payload = {
+            "goal": task.goal,
+            "status": task.status.value,
+            "success_conditions": list(
+                agent_state.get("success_conditions") or []
+            ),
+            "beliefs": dict(agent_state.get("beliefs") or {}),
+            "observations": list(agent_state.get("observations") or []),
+            "actions": list(agent_state.get("actions") or []),
+            "current_strategy": agent_state.get("current_strategy", ""),
+            "uncertainty": agent_state.get("uncertainty", 1.0),
+            "current_step": {
+                "id": plan_step_id,
+                "description": step_description,
+            },
+            "latest_result": {
+                "tool": result.tool,
+                "success": bool(result.success),
+                "output": result.output,
+                "error": result.error,
+            },
+        }
+
+        try:
+            decision = brain.decide(state_payload)
+        except Exception as exc:
+            print(
+                f"[Agent] Post-action decision unavailable; "
+                f"continuing deterministic runtime: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            evidence["agent_decision_error"] = str(exc)
+            return False
+
+        decision_payload = decision.to_dict()
+        evidence["agent_decision"] = decision_payload
+        self._apply_agent_decision(task, decision_payload)
+        self.event_bus.emit(
+            "task_agent_decision",
+            task_id=task.id,
+            decision=decision_payload,
+        )
+
+        print(
+            f"[Agent] Decision: {decision.rationale}",
+            flush=True,
+        )
+        print(
+            f"[Agent] Confidence: {decision.confidence:.2f}",
+            flush=True,
+        )
+
+        if decision.needs_user:
+            self.kernel.task_manager.complete_step(step_description, task.id)
+            if plan_step_id:
+                self.kernel.task_manager.set_plan_step_status(
+                    plan_step_id,
+                    PlanStepStatus.COMPLETED,
+                    task.id,
+                )
+            self.kernel.task_manager.add_evidence(
+                evidence,
+                task.id,
+            )
+            self.event_bus.emit(
+                "task_agent_wait_required",
+                task_id=task.id,
+                decision=decision_payload,
+            )
+            self.kernel.task_manager.pause(task.id)
+            return True
+
+        if decision.goal_satisfied:
+            self.kernel.task_manager.complete_step(step_description, task.id)
+            if plan_step_id:
+                self.kernel.task_manager.set_plan_step_status(
+                    plan_step_id,
+                    PlanStepStatus.COMPLETED,
+                    task.id,
+                )
+            self.kernel.task_manager.add_evidence(
+                evidence,
+                task.id,
+            )
+            self.event_bus.emit(
+                "task_goal_verified",
+                task_id=task.id,
+                verification=decision_payload,
+            )
+            self.kernel.task_manager.complete(
+                result={
+                    "agent_decision": decision_payload,
+                    "tool": result.tool,
+                    "output": result.output,
+                },
+                task_id=task.id,
+            )
+            return True
+
+        next_action = decision.next_action
+        if next_action is None:
+            self.kernel.task_manager.add_evidence(
+                evidence,
+                task.id,
+            )
+            if decision.needs_observation:
+                self.event_bus.emit(
+                    "task_agent_observation_required",
+                    task_id=task.id,
+                    decision=decision_payload,
+                )
+                self.kernel.task_manager.pause(task.id)
+            return True
+
+        self.kernel.task_manager.complete_step(step_description, task.id)
+        if plan_step_id:
+            self.kernel.task_manager.set_plan_step_status(
+                plan_step_id,
+                PlanStepStatus.COMPLETED,
+                task.id,
+            )
+            self.kernel.task_manager.refresh_ready_plan_steps(task.id)
+
+        next_step_id = self._next_agent_step_id(task)
+        next_step_description = self._describe_command(next_action)
+        action = str(next_action.get("action") or "").strip()
+        tool_name = str(next_action.get("tool") or "").strip()
+        try:
+            definition = (
+                self.kernel.tool_registry.get(tool_name).definition
+                if tool_name
+                else None
+            )
+        except KeyError:
+            definition = None
+
+        if definition is None:
+            self.kernel.task_manager.fail(
+                "Agent selected a capability that could not be resolved.",
+                task.id,
+            )
+            return True
+
+        new_step = PlanStep(
+            id=next_step_id,
+            description=next_step_description or definition.name,
+            status=PlanStepStatus.PENDING,
+            depends_on=[plan_step_id] if plan_step_id else [],
+            required_capabilities=[definition.name],
+            completion_conditions=[
+                f"{definition.name} reports success",
+            ],
+            metadata={
+                key: value
+                for key, value in next_action.items()
+                if key not in {"description"}
+                and value is not None
+                and value != ""
+            },
+        )
+        new_step.metadata.setdefault("action", action)
+        new_step.metadata.setdefault("tool", definition.name)
+        new_step.metadata["agent_generated"] = True
+        task.plan.add_step(new_step)
+        task.pending_steps.append(new_step.description)
+        task.plan.status = PlanStatus.ACTIVE
+        task.plan.mark_ready_steps()
+
+        next_request = self.build_plan_request(task, new_step)
+        if next_request is None:
+            self.kernel.task_manager.fail(
+                f"Unable to build an agent-selected step '{new_step.id}'.",
+                task.id,
+            )
+            return True
+
+        self.kernel.task_manager.add_evidence(
+            evidence,
+            task.id,
+        )
+        print(
+            f"[Agent] Next action: {new_step.description} -> "
+            f"{next_request.tool}",
+            flush=True,
+        )
+        self.event_bus.emit(
+            "tool_request",
+            request=next_request,
+        )
+        return True
+
+    @staticmethod
+    def _next_agent_step_id(task) -> str:
+        counter = int(task.metadata.get("agent_step_counter", 0)) + 1
+        task.metadata["agent_step_counter"] = counter
+        return f"agent-step-{counter}"
+
+    @staticmethod
+    def _apply_agent_decision(task, decision: dict[str, Any]) -> None:
+        state = task.metadata.get("agent_state")
+        if not isinstance(state, dict):
+            return
+
+        updates = decision.get("belief_updates") or []
+        beliefs = state.setdefault("beliefs", {})
+        for update in updates:
+            if not isinstance(update, dict):
+                continue
+            key = str(update.get("key") or "").strip()
+            if not key:
+                continue
+            try:
+                confidence = max(
+                    0.0,
+                    min(1.0, float(update.get("confidence", 0.5))),
+                )
+            except (TypeError, ValueError):
+                confidence = 0.5
+            beliefs[key] = {
+                "key": key,
+                "value": update.get("value"),
+                "confidence": confidence,
+                "source": str(
+                    update.get("source") or "agent_decision"
+                ).strip(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+        state["current_strategy"] = str(
+            decision.get("rationale") or state.get("current_strategy") or ""
+        ).strip()
+        try:
+            state["uncertainty"] = max(
+                0.0,
+                min(1.0, float(decision.get("uncertainty", state.get("uncertainty", 1.0)))),
+            )
+        except (TypeError, ValueError):
+            pass
+
+        state["last_decision"] = dict(decision)
+        history = state.setdefault("decision_history", [])
+        history.append(dict(decision))
+        if len(history) > 32:
+            del history[:-32]
 
     @staticmethod
     def _record_agent_observation(task, result: ToolResult) -> None:
