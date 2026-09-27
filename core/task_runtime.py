@@ -110,7 +110,11 @@ class TaskRuntimeModule(Module):
                     plan.metadata.get("agent_rationale") or ""
                 ),
                 "uncertainty": float(
-                    plan.metadata.get("agent_uncertainty", 0.5) or 0.5
+                    (
+                        0.5
+                        if plan.metadata.get("agent_uncertainty") is None
+                        else plan.metadata.get("agent_uncertainty")
+                    )
                 ),
             }
 
