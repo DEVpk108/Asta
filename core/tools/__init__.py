@@ -22,6 +22,7 @@ from .registry import ToolRegistry
 from .request_builder import ToolRequestBuilder
 from .selector import ToolSelector
 from .screenshot import OpenScreenshotTool
+from .vision_inspect import VisionInspectTool
 from .system import OpenApplicationTool
 from .notes import CreateNoteTool, ListNotesTool, ReadNoteTool, SearchNotesTool
 from .media import MediaControlTool
@@ -34,7 +35,7 @@ __all__ = [
     "Tool", "ToolDispatcher", "ToolRuntimeModule", "ToolRegistry",
     "ToolRequestBuilder", "ToolSelector", "OpenApplicationTool", "LaunchApplicationTool",
     "StartProcessTool", "RunCommandTool", "StopProcessTool", "CloseApplicationTool",
-    "ScreenshotTool", "OpenScreenshotTool", "AudioControlTool", "EchoTool",
+    "ScreenshotTool", "OpenScreenshotTool", "VisionInspectTool", "AudioControlTool", "EchoTool",
     "CreateNoteTool", "ReadNoteTool", "ListNotesTool", "SearchNotesTool",
     "MediaControlTool",
 ]

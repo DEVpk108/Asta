@@ -140,6 +140,7 @@ def main():
         OpenScreenshotTool,
         RunCommandTool,
         ScreenshotTool,
+        VisionInspectTool,
         StartProcessTool,
         StopProcessTool,
         MediaControlTool,
@@ -190,6 +191,10 @@ def main():
         CloseApplicationTool(kernel.application_manager),
         ScreenshotTool(capture=capture_screenshot),
         OpenScreenshotTool(),
+        VisionInspectTool(
+            kernel.vision_engine,
+            capture=capture_screenshot,
+        ),
         AudioControlTool("mute"),
         AudioControlTool("unmute"),
         CreateNoteTool(kernel.notes_manager),
