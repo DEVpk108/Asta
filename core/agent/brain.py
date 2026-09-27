@@ -14,6 +14,32 @@ class AgentBrainError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class AgentDecision:
+    """Structured post-action decision for the cognitive runtime loop."""
+
+    goal_satisfied: bool = False
+    needs_observation: bool = False
+    needs_user: bool = False
+    rationale: str = ""
+    confidence: float = 0.5
+    next_action: dict[str, Any] | None = None
+    belief_updates: tuple[dict[str, Any], ...] = ()
+    uncertainty: float = 0.5
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "goal_satisfied": self.goal_satisfied,
+            "needs_observation": self.needs_observation,
+            "needs_user": self.needs_user,
+            "rationale": self.rationale,
+            "confidence": self.confidence,
+            "next_action": dict(self.next_action) if self.next_action else None,
+            "belief_updates": [dict(item) for item in self.belief_updates],
+            "uncertainty": self.uncertainty,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class AgentPlanProposal:
     goal_summary: str
     success_conditions: tuple[str, ...]
@@ -98,6 +124,221 @@ class AgentBrain:
         proposal = self._parse_response(response)
         self._validate_proposal(proposal)
         return proposal
+
+    def decide(self, task_state: dict[str, Any]) -> AgentDecision:
+        """Interpret the latest observation and choose the next bounded action."""
+        if not self.enabled:
+            raise AgentBrainError("agent mode is disabled")
+
+        prompt = self._build_decision_prompt(task_state)
+        provider = self.provider()
+
+        reset = getattr(provider, "reset_conversation", None)
+        if callable(reset):
+            reset()
+
+        response = provider.generate_response(prompt, context=None)
+        decision = self._parse_decision(response)
+        self._validate_decision(decision)
+        return decision
+
+    def _build_decision_prompt(self, task_state: dict[str, Any]) -> str:
+        definitions = []
+        registry = getattr(self.kernel, "tool_registry", None)
+        if registry is not None:
+            for definition in registry.definitions():
+                definitions.append(
+                    {
+                        "name": definition.name,
+                        "description": definition.description,
+                        "input_schema": definition.input_schema,
+                        "risk_level": definition.risk_level,
+                        "requires_confirmation": definition.requires_confirmation,
+                        "metadata": definition.metadata,
+                    }
+                )
+
+        payload = {
+            "task": task_state,
+            "capabilities": definitions,
+            "instruction": (
+                "You are the post-action decision layer of A.S.T.A. "
+                "Interpret the latest evidence against the goal and success conditions. "
+                "Do not claim that something is visually or externally verified unless the "
+                "supplied evidence actually proves it. If the goal is not proven, choose the "
+                "smallest useful next action or request more observation. If user input is "
+                "required, set needs_user=true and do not invent a tool action. "
+                "Return JSON only; give a concise rationale, not hidden chain-of-thought."
+            ),
+            "required_output": {
+                "goal_satisfied": "boolean",
+                "needs_observation": "boolean",
+                "needs_user": "boolean",
+                "rationale": "one or two concise sentences",
+                "confidence": "number from 0 to 1",
+                "uncertainty": "number from 0 to 1",
+                "next_action": {
+                    "action": "semantic action such as screenshot or open",
+                    "tool": "optional exact registered tool name",
+                    "target": "optional target",
+                    "operation": "optional operation",
+                    "query": "optional query",
+                    "provider": "optional provider",
+                },
+                "belief_updates": [
+                    {
+                        "key": "belief name",
+                        "value": "JSON value",
+                        "confidence": "number from 0 to 1",
+                        "source": "tool/model/observation",
+                    }
+                ],
+            },
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+    @staticmethod
+    def _parse_decision(response: str) -> AgentDecision:
+        text = str(response or "").strip()
+        if not text:
+            raise AgentBrainError("agent decision returned an empty response")
+
+        candidates = [text]
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            candidates.append(text[start:end + 1])
+
+        parsed = None
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+                break
+            except json.JSONDecodeError:
+                continue
+
+        if not isinstance(parsed, dict):
+            raise AgentBrainError("agent decision returned invalid JSON")
+
+        raw_action = parsed.get("next_action")
+        next_action = dict(raw_action) if isinstance(raw_action, dict) else None
+
+        raw_updates = parsed.get("belief_updates") or []
+        if not isinstance(raw_updates, list):
+            raw_updates = []
+        belief_updates = tuple(
+            dict(item)
+            for item in raw_updates
+            if isinstance(item, dict)
+        )
+
+        try:
+            confidence = float(parsed.get("confidence", 0.5) or 0.5)
+            uncertainty = float(parsed.get("uncertainty", 0.5) or 0.5)
+        except (TypeError, ValueError) as exc:
+            raise AgentBrainError("agent decision confidence is invalid") from exc
+
+        return AgentDecision(
+            goal_satisfied=bool(parsed.get("goal_satisfied", False)),
+            needs_observation=bool(parsed.get("needs_observation", False)),
+            needs_user=bool(parsed.get("needs_user", False)),
+            rationale=str(parsed.get("rationale") or "").strip(),
+            confidence=max(0.0, min(1.0, confidence)),
+            next_action=next_action,
+            belief_updates=belief_updates,
+            uncertainty=max(0.0, min(1.0, uncertainty)),
+        )
+
+    def _validate_decision(self, decision: AgentDecision) -> None:
+        if not decision.rationale:
+            raise AgentBrainError("agent decision omitted rationale")
+
+        if decision.goal_satisfied and decision.next_action:
+            raise AgentBrainError(
+                "agent decision cannot be satisfied and request another action"
+            )
+
+        if decision.needs_user and decision.next_action:
+            raise AgentBrainError(
+                "agent decision cannot require user input and request an action"
+            )
+
+        if decision.next_action is None:
+            if not (
+                decision.goal_satisfied
+                or decision.needs_observation
+                or decision.needs_user
+            ):
+                raise AgentBrainError(
+                    "agent decision returned neither completion nor a next action"
+                )
+            return
+
+        registry = getattr(self.kernel, "tool_registry", None)
+        if registry is None:
+            raise AgentBrainError("tool registry is unavailable")
+
+        action = str(
+            decision.next_action.get("action") or ""
+        ).strip().lower()
+        if not action:
+            raise AgentBrainError("agent decision next_action omitted action")
+
+        normalized = dict(decision.next_action)
+        if registry.contains(action):
+            definition = registry.get(action).definition
+            metadata = (
+                definition.metadata
+                if isinstance(definition.metadata, dict)
+                else {}
+            )
+            semantic_actions = metadata.get("actions")
+            if not isinstance(
+                semantic_actions,
+                (list, tuple, set, frozenset),
+            ):
+                semantic_actions = metadata.get("action_aliases")
+            if isinstance(
+                semantic_actions,
+                (list, tuple, set, frozenset),
+            ):
+                semantic_actions = [
+                    str(item).strip().lower()
+                    for item in semantic_actions
+                    if str(item).strip()
+                ]
+            else:
+                semantic_actions = []
+            if semantic_actions:
+                normalized["tool"] = action
+                normalized["action"] = semantic_actions[0]
+                action = semantic_actions[0]
+
+        entities = {
+            key: value
+            for key, value in normalized.items()
+            if value is not None and value != ""
+        }
+        entities["action"] = action
+        intent = IntentResult(
+            intent=IntentType.COMMAND,
+            confidence=decision.confidence,
+            normalized_text=str(
+                task_state.get("goal") if isinstance(task_state, dict) else ""
+            ),
+            entities=entities,
+            requires_tools=True,
+            classifier="agent_brain_decision",
+        )
+        from core.tools.selector import ToolSelector
+        try:
+            ToolSelector(registry).select(intent)
+        except ValueError as exc:
+            raise AgentBrainError(
+                f"agent decision next_action is not executable: {exc}"
+            ) from exc
+        decision.next_action.clear()
+        decision.next_action.update(normalized)
 
     def _build_prompt(self, goal: str, intent: IntentResult) -> str:
         definitions = []
