@@ -450,3 +450,57 @@ def test_agent_brain_preserves_zero_decision_uncertainty():
     )
     assert decision.confidence == 1.0
     assert decision.uncertainty == 0.0
+
+def test_agent_brain_compacts_repeated_decision_state():
+    state = {
+        "goal": "verify calculator",
+        "success_conditions": ["Calculator is visible."],
+        "beliefs": {"calculator_open": {"confidence": 0.9}},
+        "current_strategy": "Inspect the screen.",
+        "uncertainty": 0.1,
+        "current_step": {"id": "step-2", "description": "inspect"},
+        "observations": [{"data": {"output": {"visible": False}}}] * 20,
+        "actions": [{"action": "execute", "tool": "vision.inspect"}] * 20,
+        "last_decision": {"goal_satisfied": False},
+        "latest_result": {"tool": "vision.screenshot", "success": True},
+    }
+
+    compact = AgentBrain._compact_task_state(state)
+
+    assert compact["goal"] == "verify calculator"
+    assert compact["latest_result"]["tool"] == "vision.screenshot"
+    assert compact["latest_observation"]["data"]["output"]["visible"] is False
+    assert "actions" not in compact
+    assert "observations" not in compact
+
+
+def test_agent_brain_compacts_capability_metadata():
+    kernel = Kernel()
+    kernel.register_tool(
+        ToolDefinitionBackedTool(
+            ToolDefinition(
+                name="vision.inspect",
+                description="Inspect the current screen.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"prompt": {"type": "string"}},
+                    "required": ["prompt"],
+                },
+                metadata={
+                    "actions": ["inspect", "visual_verify"],
+                    "category": "vision",
+                },
+            )
+        )
+    )
+
+    capabilities = AgentBrain._compact_capabilities(kernel.tool_registry)
+
+    assert capabilities == [{
+        "name": "vision.inspect",
+        "description": "Inspect the current screen.",
+        "actions": ["inspect", "visual_verify"],
+        "category": "vision",
+        "required_inputs": ["prompt"],
+    }]
+
