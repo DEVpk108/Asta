@@ -209,12 +209,10 @@ class AgentBrain:
         decision: AgentDecision,
         task_state: dict[str, Any],
     ) -> AgentDecision:
-        """Prevent unsupported goal completion claims.
+        """Prevent unsupported visual completion claims.
 
-        Tool success may prove that the requested tool ran, but it does not
-        automatically prove a visual or external success condition. The first
-        visual milestone uses an explicit evidence gate until a vision model
-        can supply semantic screen verification.
+        Prefer the semantic vision inspector when available. A raw screenshot
+        is only a fallback capability; it is not verification by itself.
         """
         if not decision.goal_satisfied:
             return decision
@@ -229,32 +227,53 @@ class AgentBrain:
             (task_state.get("latest_result") or {}).get("tool") or ""
         ).strip()
 
-        # If we have not captured a screenshot yet, ask the runtime to do so.
-        if not latest_tool.startswith("vision."):
-            screenshot = self._find_action_capability(
-                task_state,
-                action="screenshot",
+        inspector = self._find_action_capability(
+            task_state,
+            action="inspect",
+        )
+        if inspector is not None and latest_tool != inspector.name:
+            return AgentDecision(
+                goal_satisfied=False,
+                needs_observation=True,
+                needs_user=False,
+                rationale=(
+                    "The tool succeeded, but the goal requires visual evidence. "
+                    "Use the semantic vision inspector before declaring success."
+                ),
+                confidence=min(decision.confidence, 0.85),
+                next_action={
+                    "action": "inspect",
+                    "tool": inspector.name,
+                    "prompt": self._build_visual_verification_prompt(task_state),
+                },
+                belief_updates=decision.belief_updates,
+                uncertainty=max(decision.uncertainty, 0.25),
             )
-            if screenshot is not None:
-                return AgentDecision(
-                    goal_satisfied=False,
-                    needs_observation=True,
-                    needs_user=False,
-                    rationale=(
-                        "The tool succeeded, but the goal requires visual "
-                        "evidence. Capture a screenshot before declaring success."
-                    ),
-                    confidence=min(decision.confidence, 0.85),
-                    next_action={
-                        "action": "screenshot",
-                        "tool": screenshot.name,
-                    },
-                    belief_updates=decision.belief_updates,
-                    uncertainty=max(decision.uncertainty, 0.25),
-                )
 
-        # A raw screenshot path is not itself a visual interpretation. Do not
-        # let the language model promote it to verified state.
+        # A raw screenshot path is not itself a visual interpretation. Keep the
+        # task open until a semantic vision result is available.
+        screenshot = self._find_action_capability(
+            task_state,
+            action="screenshot",
+        )
+        if latest_tool != "vision.screenshot" and screenshot is not None:
+            return AgentDecision(
+                goal_satisfied=False,
+                needs_observation=True,
+                needs_user=False,
+                rationale=(
+                    "No semantic vision capability is available, so capture a "
+                    "screenshot as evidence before declaring success."
+                ),
+                confidence=min(decision.confidence, 0.70),
+                next_action={
+                    "action": "screenshot",
+                    "tool": screenshot.name,
+                },
+                belief_updates=decision.belief_updates,
+                uncertainty=max(decision.uncertainty, 0.35),
+            )
+
         return AgentDecision(
             goal_satisfied=False,
             needs_observation=True,
@@ -267,6 +286,28 @@ class AgentBrain:
             next_action=None,
             belief_updates=decision.belief_updates,
             uncertainty=max(decision.uncertainty, 0.5),
+        )
+
+    @staticmethod
+    def _build_visual_verification_prompt(task_state: dict[str, Any]) -> str:
+        goal = str(task_state.get("goal") or "").strip()
+        conditions = task_state.get("success_conditions") or ()
+        condition_text = "; ".join(
+            str(item).strip()
+            for item in conditions
+            if str(item).strip()
+        )
+        if condition_text:
+            return (
+                f"Verify the user's goal from the current screenshot. "
+                f"Goal: {goal}. Success conditions: {condition_text}. "
+                "Set visual_match=true only when the screenshot itself supports "
+                "the success conditions. Return concise evidence."
+            )
+        return (
+            f"Verify the user's goal from the current screenshot. Goal: {goal}. "
+            "Set visual_match=true only when the screenshot itself supports the goal. "
+            "Return concise evidence."
         )
 
     @staticmethod
@@ -297,6 +338,12 @@ class AgentBrain:
             output = data.get("output")
             if not isinstance(output, dict):
                 output = data
+
+            analysis = output.get("analysis")
+            if isinstance(analysis, dict):
+                merged = dict(output)
+                merged.update(analysis)
+                output = merged
 
             explicit_flags = (
                 "verified",
