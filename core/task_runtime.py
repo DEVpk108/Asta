@@ -553,6 +553,15 @@ class TaskRuntimeModule(Module):
                 self.kernel.task_manager.pause(task.id)
                 return
 
+        if self._complete_from_verified_visual_result(
+            task,
+            result,
+            evidence=evidence,
+            plan_step_id=plan_step_id,
+            step_description=step,
+        ):
+            return
+
         if self._run_agent_decision(
             task,
             result,
@@ -607,6 +616,80 @@ class TaskRuntimeModule(Module):
             flush=True,
         )
         self.event_bus.emit("tool_request", request=next_request)
+
+    def _complete_from_verified_visual_result(
+        self,
+        task,
+        result: ToolResult,
+        *,
+        evidence: dict[str, Any],
+        plan_step_id: str | None,
+        step_description: str,
+    ) -> bool:
+        """Complete a visual verification goal without another LLM call."""
+        if result.tool != "vision.inspect" or not result.success:
+            return False
+
+        output = result.output if isinstance(result.output, dict) else {}
+        if not bool(output.get("verified")):
+            return False
+
+        agent_state = task.metadata.get("agent_state")
+        if not isinstance(agent_state, dict):
+            return False
+
+        conditions = agent_state.get("success_conditions") or []
+        text = " ".join(str(item) for item in conditions).lower()
+        visual_goal = any(
+            marker in text
+            for marker in (
+                "visible",
+                "visually",
+                "screenshot",
+                "screen",
+                "window",
+                "display",
+                "ui",
+                "interface",
+            )
+        )
+        if not visual_goal:
+            return False
+
+        self.kernel.task_manager.complete_step(step_description, task.id)
+        if plan_step_id:
+            self.kernel.task_manager.set_plan_step_status(
+                plan_step_id,
+                PlanStepStatus.COMPLETED,
+                task.id,
+            )
+
+        evidence["agent_verified_visual"] = True
+        self.kernel.task_manager.add_evidence(evidence, task.id)
+        self.event_bus.emit(
+            "task_goal_verified",
+            task_id=task.id,
+            verification={
+                "tool": result.tool,
+                "verified": True,
+                "confidence": output.get("confidence"),
+                "summary": output.get("summary"),
+            },
+        )
+        self.kernel.task_manager.complete(
+            result={
+                "tool": result.tool,
+                "output": result.output,
+                "verified": True,
+            },
+            task_id=task.id,
+        )
+        print(
+            "[Agent] Visual verifier confirmed the goal; "
+            "skipping redundant post-action LLM decision.",
+            flush=True,
+        )
+        return True
 
     def _run_agent_decision(
         self,
