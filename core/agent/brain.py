@@ -112,7 +112,7 @@ class AgentBrain:
             # model settings do not make every control step expensive.
             try:
                 max_output = int(
-                    os.getenv("ASTA_AGENT_MAX_OUTPUT_TOKENS", "192")
+                    os.getenv("ASTA_AGENT_MAX_OUTPUT_TOKENS", "128")
                 )
                 if hasattr(self._provider, "max_output_tokens"):
                     self._provider.max_output_tokens = max(64, max_output)
@@ -162,6 +162,10 @@ class AgentBrain:
 
         response = provider.generate_response(prompt, context=None)
         decision = self._parse_decision(response)
+        decision = self._normalize_visual_next_action(
+            decision,
+            task_state,
+        )
         decision = self._enforce_goal_verification_gate(
             decision,
             task_state,
@@ -217,6 +221,47 @@ class AgentBrain:
             },
         }
         return json.dumps(payload, ensure_ascii=False)
+
+    def _normalize_visual_next_action(
+        self,
+        decision: AgentDecision,
+        task_state: dict[str, Any],
+    ) -> AgentDecision:
+        """Route visual screenshot-opening decisions to semantic inspection."""
+        next_action = decision.next_action
+        if not isinstance(next_action, dict):
+            return decision
+
+        if not self._goal_requires_visual_evidence(task_state):
+            return decision
+
+        tool = str(next_action.get("tool") or "").strip()
+        action = str(next_action.get("action") or "").strip().lower()
+        if tool != "vision.open_screenshot" and action != "open":
+            return decision
+
+        inspector = self._find_action_capability(task_state, action="inspect")
+        if inspector is None:
+            return decision
+
+        updated = dict(next_action)
+        updated.update(
+            {
+                "action": "inspect",
+                "tool": inspector.name,
+                "prompt": self._build_visual_verification_prompt(task_state),
+            }
+        )
+        return AgentDecision(
+            goal_satisfied=decision.goal_satisfied,
+            needs_observation=True if not decision.goal_satisfied else decision.needs_observation,
+            needs_user=decision.needs_user,
+            rationale=decision.rationale,
+            confidence=decision.confidence,
+            next_action=updated,
+            belief_updates=decision.belief_updates,
+            uncertainty=decision.uncertainty,
+        )
 
     def _enforce_goal_verification_gate(
         self,
@@ -600,44 +645,20 @@ class AgentBrain:
         decision.next_action.update(normalized)
 
     def _build_prompt(self, goal: str, intent: IntentResult) -> str:
-        definitions = []
         registry = getattr(self.kernel, "tool_registry", None)
-        if registry is not None:
-            for definition in registry.definitions():
-                definitions.append(
-                    {
-                        "name": definition.name,
-                        "description": definition.description,
-                        "input_schema": definition.input_schema,
-                        "risk_level": definition.risk_level,
-                        "requires_confirmation": definition.requires_confirmation,
-                        "metadata": definition.metadata,
-                    }
-                )
-
-        workspace = {}
-        workspace_manager = getattr(self.kernel, "workspace_manager", None)
-        if workspace_manager is not None:
-            try:
-                workspace = workspace_manager.snapshot()
-            except Exception:
-                workspace = {}
-
-        current_task = None
-        task_manager = getattr(self.kernel, "task_manager", None)
-        if task_manager is not None:
-            try:
-                current_task = task_manager.snapshot()
-            except Exception:
-                current_task = None
+        capabilities = self._plan_capabilities(registry, goal, intent)
 
         payload = {
             "goal": goal,
             "intent": intent.entities,
-            "intent_confidence": intent.confidence,
-            "current_task": current_task,
-            "workspace": workspace,
-            "capabilities": self._compact_capabilities(registry),
+            "capabilities": capabilities,
+            "instruction": (
+                "Create the smallest safe executable plan. Return JSON only. "
+                "For goals that require visual verification, return the primary "
+                "action only; A.S.T.A. will append the semantic vision inspection "
+                "step deterministically. Do not add screenshots or open-screenshot "
+                "steps. Keep success conditions observable and concise."
+            ),
             "required_output": {
                 "goal_summary": "one sentence",
                 "success_conditions": ["1-3 observable conditions"],
@@ -645,22 +666,71 @@ class AgentBrain:
                 "uncertainty": "number from 0 to 1",
                 "steps": [
                     {
-                        "action": "semantic action from selected capability metadata",
+                        "action": "semantic action",
                         "tool": "exact registered tool name",
                         "target": "optional target",
-                        "prompt": "optional visual inspection prompt",
                         "operation": "optional operation",
                         "query": "optional query",
                         "provider": "optional provider"
                     }
                 ]
-            },
-            "instruction": (
-                "Keep the plan minimal. For a visual success condition, prefer one "
-                "semantic vision.inspect step instead of a screenshot followed by opening the image."
-            )
+            }
         }
         return json.dumps(payload, ensure_ascii=False)
+
+    @staticmethod
+    def _plan_capabilities(registry, goal: str, intent: IntentResult) -> list[dict[str, Any]]:
+        if registry is None:
+            return []
+
+        from core.tools.selector import ToolSelector
+
+        selected = []
+        try:
+            definition = ToolSelector(registry).select(intent).definition
+            selected.append(definition)
+        except (KeyError, ValueError):
+            pass
+
+        goal_text = str(goal or "").lower()
+        visual_goal = any(
+            marker in goal_text
+            for marker in (
+                "verify",
+                "visible",
+                "visually",
+                "screenshot",
+                "screen",
+                "window",
+                "display",
+                "ui",
+                "interface",
+            )
+        )
+        if visual_goal and registry.contains("vision.inspect"):
+            selected.append(registry.get("vision.inspect").definition)
+
+        if not selected:
+            return AgentBrain._compact_capabilities(registry)
+
+        deduped = []
+        seen = set()
+        for definition in selected:
+            if definition.name in seen:
+                continue
+            seen.add(definition.name)
+            metadata = definition.metadata if isinstance(definition.metadata, dict) else {}
+            schema = definition.input_schema if isinstance(definition.input_schema, dict) else {}
+            deduped.append(
+                {
+                    "name": definition.name,
+                    "description": definition.description,
+                    "actions": list(metadata.get("actions") or metadata.get("action_aliases") or ()),
+                    "category": metadata.get("category"),
+                    "required_inputs": list(schema.get("required") or ()),
+                }
+            )
+        return deduped
 
     @staticmethod
     def _parse_response(response: str) -> AgentPlanProposal:
@@ -685,10 +755,10 @@ class AgentBrain:
                 continue
 
         if parsed is None:
-            raise AgentBrainError("agent planner returned invalid JSON")
+            parsed = AgentBrain._repair_truncated_plan(text)
 
         if not isinstance(parsed, dict):
-            raise AgentBrainError("agent planner root must be a JSON object")
+            raise AgentBrainError("agent planner returned invalid JSON")
 
         steps = parsed.get("steps")
         if not isinstance(steps, list) or not steps:
@@ -725,6 +795,88 @@ class AgentBrain:
             steps=tuple(clean_steps),
             uncertainty=max(0.0, min(1.0, uncertainty)),
         )
+
+    @staticmethod
+    def _repair_truncated_plan(text: str) -> dict[str, Any] | None:
+        """Recover completed step objects from a truncated JSON response."""
+        if '"steps"' not in text:
+            return None
+
+        def scalar(pattern: str, default: str = ""):
+            match = re.search(pattern, text, re.DOTALL)
+            return match.group(1).strip() if match else default
+
+        goal_summary = scalar(r'"goal_summary"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', "")
+        rationale = scalar(r'"rationale"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', "")
+        uncertainty_match = re.search(r'"uncertainty"\s*:\s*([0-9.]+)', text)
+        try:
+            uncertainty = float(uncertainty_match.group(1)) if uncertainty_match else 0.5
+        except ValueError:
+            uncertainty = 0.5
+
+        conditions = []
+        conditions_match = re.search(r'"success_conditions"\s*:\s*\[(.*?)\]', text, re.DOTALL)
+        if conditions_match:
+            conditions = re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', conditions_match.group(1))
+
+        array_start = text.find("[", text.find('"steps"'))
+        if array_start < 0:
+            return None
+
+        objects = []
+        i = array_start + 1
+        n = len(text)
+        while i < n:
+            while i < n and text[i].isspace():
+                i += 1
+            if i >= n or text[i] != "{":
+                break
+
+            obj_start = i
+            depth = 0
+            in_string = False
+            escape = False
+            completed = False
+            while i < n:
+                ch = text[i]
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif ch == "\\":
+                        escape = True
+                    elif ch == '"':
+                        in_string = False
+                else:
+                    if ch == '"':
+                        in_string = True
+                    elif ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                objects.append(json.loads(text[obj_start:i + 1]))
+                            except json.JSONDecodeError:
+                                pass
+                            i += 1
+                            completed = True
+                            break
+                i += 1
+            if not completed:
+                break
+            while i < n and text[i] not in "{]":
+                i += 1
+
+        if not objects:
+            return None
+
+        return {
+            "goal_summary": goal_summary,
+            "success_conditions": conditions,
+            "rationale": rationale,
+            "uncertainty": uncertainty,
+            "steps": objects,
+        }
 
     def _validate_proposal(self, proposal: AgentPlanProposal) -> None:
         if not proposal.goal_summary:
