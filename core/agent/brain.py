@@ -687,7 +687,7 @@ class AgentBrain:
 
         selected = []
         try:
-            definition = ToolSelector(registry).select(intent).definition
+            definition = ToolSelector(registry).select(intent)
             selected.append(definition)
         except (KeyError, ValueError):
             pass
