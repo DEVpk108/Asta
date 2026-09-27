@@ -213,10 +213,11 @@ class Planner:
             str(item).strip()
             for item in success_conditions
             if str(item).strip()
-        ).lower()
+        )
+        conditions_lower = conditions_text.lower()
 
         visual_required = any(
-            marker in conditions_text
+            marker in conditions_lower
             for marker in (
                 "visible",
                 "visually",
