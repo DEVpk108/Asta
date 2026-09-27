@@ -156,7 +156,7 @@ class LFM25VLEngine:
 
         content = [
             {"type": "text", "text": str(prompt).strip()},
-            {"type": "image_url", {"url": data_url}},
+            {"type": "image_url", "image_url": {"url": data_url}},
         ]
         payload: dict[str, Any] = {
             "model": model,
@@ -208,6 +208,12 @@ class LFM25VLEngine:
                         event = json.loads(raw)
                     except json.JSONDecodeError:
                         continue
+
+                    if event.get("error"):
+                        error = event.get("error")
+                        raise VisionEngineError(
+                            f"Vision server returned an error: {error}"
+                        )
 
                     response_id = event.get("id") or response_id
                     if event.get("usage"):
