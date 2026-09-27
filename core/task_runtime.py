@@ -104,6 +104,7 @@ class TaskRuntimeModule(Module):
                 "beliefs": {},
                 "observations": [],
                 "actions": [],
+                "decision_history": [],
                 "current_strategy": str(
                     plan.metadata.get("agent_rationale") or ""
                 ),
