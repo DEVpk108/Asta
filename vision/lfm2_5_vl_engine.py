@@ -10,6 +10,8 @@ from typing import Any
 
 import requests
 
+from .vision_server_manager import VisionServerManager
+
 
 class VisionEngineError(RuntimeError):
     """Raised when the configured multimodal vision backend cannot respond."""
@@ -56,6 +58,7 @@ class LFM25VLEngine:
             else os.getenv("ASTA_VISION_TEMPERATURE", "0")
         )
         self.session = session or requests.Session()
+        self.server_manager = VisionServerManager(base_url=self.base_url)
         self.models_url = f"{self.base_url}/models"
         self.chat_url = f"{self.base_url}/chat/completions"
 
@@ -63,7 +66,15 @@ class LFM25VLEngine:
         if host in {"localhost", "127.0.0.1", "::1"}:
             self.session.trust_env = False
 
+    def _ensure_server(self) -> None:
+        if not self.server_manager.ensure_running():
+            raise VisionEngineError(
+                "The local LFM2.5-VL server could not be started or reached. "
+                "Check ASTA_VISION_BASE_URL and the vision model configuration."
+            )
+
     def _discover_model(self) -> str:
+        self._ensure_server()
         try:
             response = self.session.get(
                 self.models_url,
@@ -129,6 +140,9 @@ class LFM25VLEngine:
         except VisionEngineError as exc:
             print(f"[Vision] Warm-up unavailable: {exc}", flush=True)
             return False
+
+    def shutdown(self) -> None:
+        self.server_manager.stop()
 
     def inspect(
         self,
