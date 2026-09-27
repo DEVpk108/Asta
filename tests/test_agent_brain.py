@@ -1,5 +1,5 @@
 from core import Kernel
-from core.agent import AgentBrain
+from core.agent import AgentBrain, AgentDecision
 from core.contracts import IntentResult, IntentType, ToolDefinition
 from core.tools import Tool
 
