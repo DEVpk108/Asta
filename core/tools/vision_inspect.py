@@ -69,7 +69,20 @@ class VisionInspectTool(Tool):
             )
 
         try:
-            image_path = Path(self.capture())
+            captured = self.capture()
+            if isinstance(captured, dict):
+                captured_path = captured.get("path")
+                if not captured_path:
+                    raise ValueError(
+                        "Screenshot capture returned metadata without a 'path'."
+                    )
+                image_path = Path(str(captured_path))
+            elif isinstance(captured, (str, Path)):
+                image_path = Path(captured)
+            else:
+                raise TypeError(
+                    "Screenshot capture must return a path or metadata dict containing 'path'."
+                )
         except Exception as exc:
             return ToolResult(
                 success=False,
