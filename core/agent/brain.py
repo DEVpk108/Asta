@@ -374,8 +374,14 @@ class AgentBrain:
         )
 
         try:
-            confidence = float(parsed.get("confidence", 0.5) or 0.5)
-            uncertainty = float(parsed.get("uncertainty", 0.5) or 0.5)
+            raw_confidence = parsed.get("confidence", 0.5)
+            raw_uncertainty = parsed.get("uncertainty", 0.5)
+            confidence = float(
+                0.5 if raw_confidence is None else raw_confidence
+            )
+            uncertainty = float(
+                0.5 if raw_uncertainty is None else raw_uncertainty
+            )
         except (TypeError, ValueError) as exc:
             raise AgentBrainError("agent decision confidence is invalid") from exc
 
@@ -583,7 +589,10 @@ class AgentBrain:
             conditions = [str(conditions)]
 
         try:
-            uncertainty = float(parsed.get("uncertainty", 0.5) or 0.5)
+            raw_uncertainty = parsed.get("uncertainty", 0.5)
+            uncertainty = float(
+                0.5 if raw_uncertainty is None else raw_uncertainty
+            )
         except (TypeError, ValueError) as exc:
             raise AgentBrainError("agent planner uncertainty is invalid") from exc
 
