@@ -165,8 +165,11 @@ class AgentBrain:
                 "You are the post-action decision layer of A.S.T.A. "
                 "Interpret the latest evidence against the goal and success conditions. "
                 "Do not claim that something is visually or externally verified unless the "
-                "supplied evidence actually proves it. If the goal is not proven, choose the "
-                "smallest useful next action or request more observation. If user input is "
+                "supplied evidence actually proves it. Tool success is evidence about the tool, "
+                "not proof of the real-world state. If any success condition requires visibility "
+                "or visual inspection and no visual evidence is supplied, do not set goal_satisfied=true; "
+                "choose the smallest useful observation action, such as vision.screenshot, when available. "
+                "If the goal is not proven, choose the smallest useful next action or request more observation. If user input is "
                 "required, set needs_user=true and do not invent a tool action. "
                 "Return JSON only; give a concise rationale, not hidden chain-of-thought."
             ),
