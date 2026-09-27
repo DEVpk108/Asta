@@ -77,6 +77,17 @@ class TaskRuntimeModule(Module):
 
     def start_plan(self, goal: str, intent: IntentResult):
         """Create an executable task plan from any structured command intent."""
+        agent_brain = getattr(self.kernel, "agent_brain", None)
+        agent_thinking = bool(
+            agent_brain is not None
+            and getattr(agent_brain, "enabled", False)
+        )
+        if agent_thinking:
+            self.event_bus.emit(
+                "agent_thinking_started",
+                phase="planning",
+            )
+
         try:
             plan = self.kernel.planner.plan(
                 goal,
@@ -85,6 +96,12 @@ class TaskRuntimeModule(Module):
         except PlanningError as exc:
             print(f"[Tasks] Planning failed: {exc}", flush=True)
             return None
+        finally:
+            if agent_thinking:
+                self.event_bus.emit(
+                    "agent_thinking_finished",
+                    phase="planning",
+                )
 
         pending_steps = [step.description for step in plan.steps]
 
@@ -650,6 +667,11 @@ class TaskRuntimeModule(Module):
             )
             return False
 
+        self.event_bus.emit(
+            "agent_thinking_started",
+            task_id=task.id,
+            phase="post_action_decision",
+        )
         try:
             decision = brain.decide(state_payload)
         except Exception as exc:
@@ -660,8 +682,18 @@ class TaskRuntimeModule(Module):
                 flush=True,
             )
             evidence["agent_decision_error"] = str(exc)
+            self.event_bus.emit(
+                "agent_thinking_finished",
+                task_id=task.id,
+                phase="post_action_decision",
+            )
             return False
 
+        self.event_bus.emit(
+            "agent_thinking_finished",
+            task_id=task.id,
+            phase="post_action_decision",
+        )
         decision_payload = decision.to_dict()
         evidence["agent_decision"] = decision_payload
         self._apply_agent_decision(task, decision_payload)
