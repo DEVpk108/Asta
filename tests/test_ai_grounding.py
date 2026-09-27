@@ -67,3 +67,22 @@ def test_capability_prompt_contains_only_registered_tools():
     assert "vision.screenshot" in engine.system_prompt
     assert "play_music" not in engine.system_prompt
     ai.shutdown()
+
+
+def test_ai_formats_vision_inspection_success_concisely():
+    from core.contracts import ToolResult
+
+    result = ToolResult(
+        success=True,
+        tool="vision.inspect",
+        output={
+            "verified": True,
+            "visual_match": True,
+            "confidence": 0.95,
+            "summary": "Calculator window is visible.",
+        },
+    )
+
+    assert AIModule._format_tool_success(result) == (
+        "I checked the screen. The requested visual condition is confirmed."
+    )
