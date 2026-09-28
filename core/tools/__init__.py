@@ -45,7 +45,7 @@ __all__ = [
     "Tool", "ToolDispatcher", "ToolRuntimeModule", "ToolRegistry",
     "ToolRequestBuilder", "ToolSelector", "OpenApplicationTool", "LaunchApplicationTool",
     "StartProcessTool", "RunCommandTool", "StopProcessTool", "CloseApplicationTool",
-    "ScreenshotTool", "OpenScreenshotTool", "VisionInspectTool", "AudioControlTool", "EchoTool",
+    "ScreenshotTool", "OpenScreenshotTool", "VisionInspectTool", "VisionLocateTool", "AudioControlTool", "EchoTool",
     "CreateNoteTool", "ReadNoteTool", "ListNotesTool", "SearchNotesTool",
     "MediaControlTool",
     "ComputerController", "ComputerMoveMouseTool", "ComputerClickTool",
