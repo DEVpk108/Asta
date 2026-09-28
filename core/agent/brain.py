@@ -657,8 +657,11 @@ class AgentBrain:
                 "Create the smallest safe executable plan. Return JSON only. "
                 "For goals that require visual verification, return the primary "
                 "action only; A.S.T.A. will append the semantic vision inspection "
-                "step deterministically. Do not add screenshots or open-screenshot "
-                "steps. Keep success conditions observable and concise."
+                "step deterministically. When a computer action needs an exact "
+                "screen coordinate, do not invent coordinates: plan vision.locate "
+                "first and let the next decision use its grounded result. Do not "
+                "add screenshots or open-screenshot steps. Keep success conditions "
+                "observable and concise."
             ),
             "required_output": {
                 "goal_summary": "one sentence",
@@ -708,6 +711,19 @@ class AgentBrain:
                 "interface",
             )
         )
+        selected_category = ""
+        if selected:
+            selected_definition = selected[0]
+            selected_category = str(
+                (selected_definition.metadata or {}).get("category") or ""
+            ).strip().lower()
+
+        if (
+            (visual_goal or selected_category == "computer")
+            and registry.contains("vision.locate")
+        ):
+            selected.append(registry.get("vision.locate").definition)
+
         if visual_goal and registry.contains("vision.inspect"):
             selected.append(registry.get("vision.inspect").definition)
 
