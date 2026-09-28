@@ -198,8 +198,11 @@ class AgentBrain:
                 "Never claim visual or external verification without evidence. "
                 "For visual verification, use vision.inspect. When an action needs a "
                 "specific screen coordinate, use vision.locate first and then use the grounded "
-                "computer control tool. Do not open a raw screenshot with vision.open_screenshot "
-                "when semantic inspection is available. Choose the smallest useful next action. If user input is required, set needs_user=true. "
+                "computer control tool. For a click, use the same semantic target in the "
+                "vision.locate and computer.click steps; never invent coordinates. If the "
+                "latest observation is vision.locate, use its screen_center exactly. Do not "
+                "open a raw screenshot with vision.open_screenshot when semantic inspection "
+                "is available. Choose the smallest useful next action. If user input is required, set needs_user=true. "
                 "Return compact JSON only; no hidden chain-of-thought."
             ),
             "required_output": {
