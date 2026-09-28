@@ -110,6 +110,7 @@ class AIModule(Module):
             warmup()
         self.event_bus.subscribe("user_message", self.on_user_message)
         self.event_bus.subscribe("tool_result", self.on_tool_result)
+        self.event_bus.subscribe("task_failed", self.on_task_failed)
         self.event_bus.subscribe(
             "tool_confirmation_required",
             self.on_tool_confirmation_required,
@@ -119,6 +120,7 @@ class AIModule(Module):
     def shutdown(self):
         self.event_bus.unsubscribe("user_message", self.on_user_message)
         self.event_bus.unsubscribe("tool_result", self.on_tool_result)
+        self.event_bus.unsubscribe("task_failed", self.on_task_failed)
         self.event_bus.unsubscribe(
             "tool_confirmation_required",
             self.on_tool_confirmation_required,
@@ -898,6 +900,21 @@ class AIModule(Module):
             flush=True,
         )
         self.event_bus.emit("tool_request", request=request)
+
+    def on_task_failed(self, task=None, *args, **kwargs):
+        """Give the user an explicit terminal response when autonomous work fails."""
+        if isinstance(task, dict):
+            goal = str(task.get("goal") or "").strip()
+        else:
+            goal = str(getattr(task, "goal", "") or "").strip()
+
+        message = (
+            "I couldn't complete that task."
+            if not goal
+            else f"I couldn't complete that task: {goal}."
+        )
+        print(f"[AI] Task failed: {message}", flush=True)
+        self._emit_assistant_text(message)
 
     def on_tool_confirmation_required(self, request, reason):
         action = request.metadata.get("action")
