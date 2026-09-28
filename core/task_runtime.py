@@ -1520,10 +1520,32 @@ class TaskRuntimeModule(Module):
             return {}
 
         agent_state = task.metadata.get("agent_state")
-        if not isinstance(agent_state, dict):
+        observations = (
+            list(agent_state.get("observations") or ())
+            if isinstance(agent_state, dict)
+            else []
+        )
+
+        evidence = list(getattr(task, "evidence", []) or ())
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("tool") or "").strip().lower() != "vision.locate":
+                continue
+            observations.append(
+                {
+                    "source": "vision.locate",
+                    "data": {
+                        "success": bool(item.get("success")),
+                        "output": item.get("output"),
+                        "error": item.get("error"),
+                    },
+                }
+            )
+
+        if not observations:
             return None
 
-        observations = list(agent_state.get("observations") or ())
         wanted = target.strip().lower()
 
         for observation in reversed(observations):
