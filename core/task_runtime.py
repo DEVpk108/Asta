@@ -1378,16 +1378,7 @@ class TaskRuntimeModule(Module):
                 task.metadata.get("confidence", 0.98)
             ),
             normalized_text=task.goal,
-            entities={
-                "action": action,
-                **({"target": target} if target else {}),
-                **{
-                    key: value
-                    for key, value in step.metadata.items()
-                    if key in {"operation", "query", "provider", "prompt"}
-                    and value not in {None, ""}
-                },
-            },
+            entities=intent_entities,
             requires_tools=True,
             classifier=str(task.metadata.get("classifier", "rules")),
         )
