@@ -600,6 +600,34 @@ class TaskRuntimeModule(Module):
                 self.kernel.task_manager.pause(task.id)
                 return
 
+        # vision.inspect is a verification action in the deterministic
+        # command/runtime paths. A successful model call with verified=false
+        # is still a failed task outcome; never advance the plan as if the
+        # visual condition was confirmed.
+        if result.tool == "vision.inspect" and result.success:
+            output = result.output if isinstance(result.output, dict) else {}
+            if not bool(output.get("verified")):
+                summary = str(
+                    output.get("summary")
+                    or "Visual inspection did not confirm the requested condition."
+                ).strip()
+                if plan_step_id:
+                    self.kernel.task_manager.set_plan_step_status(
+                        plan_step_id,
+                        PlanStepStatus.FAILED,
+                        task.id,
+                    )
+                evidence["verification"] = {
+                    "status": "failed",
+                    "verified": False,
+                    "summary": summary,
+                }
+                self.kernel.task_manager.add_evidence(evidence, task.id)
+                self.kernel.task_manager.fail(
+                    summary,
+                    task.id,
+                )
+                return
         if self._complete_from_verified_visual_result(
             task,
             result,
