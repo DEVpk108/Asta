@@ -481,18 +481,41 @@ class Planner:
         self,
         commands: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Expand provider-backed media play into setup + playback steps."""
+        """Expand media intent according to whether the user chose a GUI flow."""
         expanded: list[dict[str, Any]] = []
 
-        for command in commands:
+        for index, command in enumerate(commands):
             normalized = dict(command)
-            if str(normalized.get("action") or "").strip().lower() != "media":
+            action = str(normalized.get("action") or "").strip().lower()
+            if action != "media":
                 expanded.append(normalized)
                 continue
 
             operation = str(normalized.get("operation") or "").strip().lower()
             query = str(normalized.get("query") or "").strip()
             provider = str(normalized.get("provider") or "").strip()
+
+            # An explicit preceding "open <app>" means the user asked A.S.T.A.
+            # to operate the application through its visible UI. Keep that path
+            # generic: use the registered computer/vision primitives instead of
+            # silently switching to a provider API or capability setup flow.
+            previous = commands[index - 1] if index > 0 else None
+            previous_action = str(
+                (previous or {}).get("action") or ""
+            ).strip().lower()
+            previous_target = str(
+                (previous or {}).get("target") or ""
+            ).strip()
+            if (
+                operation == "play"
+                and query
+                and previous_action in {"open", "launch", "start"}
+                and previous_target
+            ):
+                expanded.extend(
+                    self._interactive_media_play_steps(query=query)
+                )
+                continue
 
             if not provider and self.application_manager is not None:
                 recent = getattr(
@@ -535,6 +558,53 @@ class Planner:
             expanded.append(normalized)
 
         return expanded
+
+    def _interactive_media_play_steps(self, *, query: str) -> list[dict[str, Any]]:
+        """Build a provider-agnostic GUI search/play sequence."""
+        search_target = "Search"
+        result_target = query
+        verification_prompt = (
+            "Verify that the requested media is now playing in the currently "
+            f"open application. Requested item: {query}. Set visual_match=true "
+            "only when the screenshot shows evidence that playback is active."
+        )
+        return [
+            {
+                "action": "locate",
+                "tool": "vision.locate",
+                "target": search_target,
+            },
+            {
+                "action": "click",
+                "tool": "computer.click",
+                "target": search_target,
+            },
+            {
+                "action": "type_text",
+                "tool": "computer.type_text",
+                "text": query,
+            },
+            {
+                "action": "keypress",
+                "tool": "computer.keypress",
+                "key": "enter",
+            },
+            {
+                "action": "locate",
+                "tool": "vision.locate",
+                "target": result_target,
+            },
+            {
+                "action": "click",
+                "tool": "computer.click",
+                "target": result_target,
+            },
+            {
+                "action": "inspect",
+                "tool": "vision.inspect",
+                "prompt": verification_prompt,
+            },
+        ]
 
     @staticmethod
     def _commands_from_intent(intent: IntentResult) -> list[dict[str, Any]]:
