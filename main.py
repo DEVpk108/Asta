@@ -141,6 +141,7 @@ def main():
         RunCommandTool,
         ScreenshotTool,
         VisionInspectTool,
+        VisionLocateTool,
         StartProcessTool,
         StopProcessTool,
         MediaControlTool,
