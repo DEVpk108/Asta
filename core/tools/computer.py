@@ -75,6 +75,11 @@ class ComputerClickTool(_ComputerTool):
                 "properties": {
                     "x": {"type": "number"},
                     "y": {"type": "number"},
+                    "target": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Optional semantic target; task runtime may ground it from vision.locate.",
+                    },
                     "button": {
                         "type": "string",
                         "enum": ["left", "middle", "right"],
