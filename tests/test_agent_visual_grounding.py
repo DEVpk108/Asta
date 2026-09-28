@@ -115,3 +115,78 @@ def test_agent_planner_exposes_locate_when_visual_goal_has_no_direct_tool():
 
     assert "vision.locate" in names
     assert "vision.inspect" in names
+
+
+
+def test_planner_inserts_locate_before_targeted_click():
+    from core.contracts import IntentResult, IntentType, ToolDefinition
+    from core.planner import Planner
+    from core.tools.base import Tool
+    from core.tools.registry import ToolRegistry
+
+    class DefinitionTool(Tool):
+        def __init__(self, name, action, properties, required):
+            self._definition = ToolDefinition(
+                name=name,
+                description=name,
+                input_schema={
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
+                metadata={"actions": [action], "category": "test"},
+            )
+
+        @property
+        def definition(self):
+            return self._definition
+
+        def execute(self, request):
+            raise NotImplementedError
+
+    registry = ToolRegistry()
+    registry.register(
+        DefinitionTool(
+            "vision.locate",
+            "locate",
+            {"target": {"type": "string"}},
+            ["target"],
+        )
+    )
+    registry.register(
+        DefinitionTool(
+            "computer.click",
+            "click",
+            {
+                "target": {"type": "string"},
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+            },
+            [],
+        )
+    )
+
+    planner = Planner(registry)
+
+    commands = planner._normalize_grounded_computer_commands(
+        [
+            {
+                "action": "click",
+                "tool": "computer.click",
+                "target": "Create App",
+            }
+        ]
+    )
+
+    assert commands == [
+        {
+            "action": "locate",
+            "tool": "vision.locate",
+            "target": "Create App",
+        },
+        {
+            "action": "click",
+            "tool": "computer.click",
+            "target": "Create App",
+        },
+    ]
