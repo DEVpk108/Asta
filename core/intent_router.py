@@ -326,6 +326,37 @@ class IntentRouter:
         known_providers=None,
     ) -> list[dict[str, Any]]:
         """Parse sequential commands joined by explicit or natural separators."""
+        visual = cls._VISUAL_VERIFICATION_SUFFIX_PATTERN.match(text)
+        if visual:
+            first_text = visual.group("command").strip()
+            verification = visual.group("verification").strip()
+            first = cls._extract_command_entities(
+                first_text,
+                known_providers=known_providers,
+            )
+            if first:
+                target = str(first.get("target") or "").strip()
+                condition = verification
+                if target and re.search(r"\bit\b", condition, re.IGNORECASE):
+                    condition = re.sub(
+                        r"\bit\b",
+                        target,
+                        condition,
+                        count=1,
+                        flags=re.IGNORECASE,
+                    )
+                return [
+                    first,
+                    {
+                        "action": "inspect",
+                        "tool": "vision.inspect",
+                        "prompt": (
+                            "Verify the following condition from the current "
+                            f"screenshot: {condition}."
+                        ),
+                    },
+                ]
+
         first_parts = [
             part.strip(" ,")
             for part in cls._COMPOUND_SEPARATOR_PATTERN.split(text)
