@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import math
+import re
 import struct
 import time
 from pathlib import Path
@@ -121,35 +123,106 @@ class VisionLocateTool(Tool):
         return image_path, width, height, origin_x, origin_y
 
     @staticmethod
-    def _validate_bbox(
+    def _normalize_bbox(
         bbox: Any,
         *,
         width: int,
         height: int,
     ) -> dict[str, int]:
-        if not isinstance(bbox, dict):
-            raise ValueError("Vision model did not return a bounding box.")
+        """Convert normalized LFM grounding coordinates into screenshot pixels."""
+        values: list[float]
 
-        x = _number(bbox.get("x"), "bbox.x")
-        y = _number(bbox.get("y"), "bbox.y")
-        box_width = _number(bbox.get("width"), "bbox.width")
-        box_height = _number(bbox.get("height"), "bbox.height")
+        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+            values = [
+                _number(bbox[0], "bbox[0]"),
+                _number(bbox[1], "bbox[1]"),
+                _number(bbox[2], "bbox[2]"),
+                _number(bbox[3], "bbox[3]"),
+            ]
+            x1, y1, x2, y2 = values
+        elif isinstance(bbox, dict):
+            x1 = _number(bbox.get("x"), "bbox.x")
+            y1 = _number(bbox.get("y"), "bbox.y")
+            box_width = _number(bbox.get("width"), "bbox.width")
+            box_height = _number(bbox.get("height"), "bbox.height")
+            x2 = x1 + box_width
+            y2 = y1 + box_height
+            values = [x1, y1, x2, y2]
+        else:
+            raise ValueError("Vision model did not return a valid bounding box.")
 
-        if box_width <= 0 or box_height <= 0:
+        if any(value < 0.0 or value > 1000.0 for value in values):
+            raise ValueError(
+                "Vision model returned coordinates outside the normalized 0-1000 space."
+            )
+        if x2 <= x1 or y2 <= y1:
             raise ValueError("Vision model returned a non-positive bounding box.")
 
-        right = x + box_width
-        bottom = y + box_height
-        if x < 0 or y < 0 or right > width or bottom > height:
-            raise ValueError(
-                "Vision model returned a bounding box outside the screenshot bounds."
-            )
+        pixel_x1 = x1 / 1000.0 * width
+        pixel_y1 = y1 / 1000.0 * height
+        pixel_x2 = x2 / 1000.0 * width
+        pixel_y2 = y2 / 1000.0 * height
 
         return {
-            "x": int(round(x)),
-            "y": int(round(y)),
-            "width": int(round(box_width)),
-            "height": int(round(box_height)),
+            "x": int(round(pixel_x1)),
+            "y": int(round(pixel_y1)),
+            "width": max(1, int(round(pixel_x2 - pixel_x1))),
+            "height": max(1, int(round(pixel_y2 - pixel_y1))),
+        }
+
+    @staticmethod
+    def _recover_truncated_grounding(text: str) -> dict[str, Any] | None:
+        """Recover critical grounding fields when JSON is cut off by token limits."""
+        value = str(text or "").strip()
+        found_match = re.search(
+            r'"found"\s*:\s*(true|false)',
+            value,
+            flags=re.IGNORECASE,
+        )
+        element_match = re.search(
+            r'"element"\s*:\s*"((?:\\.|[^"\\])*)"',
+            value,
+            flags=re.IGNORECASE,
+        )
+        bbox_match = re.search(
+            r'"bbox"\s*:\s*\[\s*'
+            r'([0-9]+(?:\.[0-9]+)?)\s*,\s*'
+            r'([0-9]+(?:\.[0-9]+)?)\s*,\s*'
+            r'([0-9]+(?:\.[0-9]+)?)\s*,\s*'
+            r'([0-9]+(?:\.[0-9]+)?)',
+            value,
+            flags=re.IGNORECASE,
+        )
+        confidence_match = re.search(
+            r'"confidence"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+            value,
+            flags=re.IGNORECASE,
+        )
+
+        if found_match is None or bbox_match is None or confidence_match is None:
+            return None
+
+        try:
+            confidence = max(
+                0.0,
+                min(1.0, float(confidence_match.group(1))),
+            )
+            bbox = [float(bbox_match.group(index)) for index in range(1, 5)]
+        except (TypeError, ValueError):
+            return None
+
+        element = ""
+        if element_match is not None:
+            try:
+                element = json.loads(f'"{element_match.group(1)}"')
+            except json.JSONDecodeError:
+                element = element_match.group(1)
+
+        return {
+            "found": found_match.group(1).lower() == "true",
+            "element": element,
+            "bbox": bbox,
+            "confidence": confidence,
         }
 
     def execute(self, request: ToolRequest) -> ToolResult:
@@ -187,20 +260,18 @@ class VisionLocateTool(Tool):
 
         prompt = (
             f"Locate the visual target '{target}' in the supplied screenshot. "
-            "Use absolute pixel coordinates relative to the screenshot's top-left corner. "
-            "Return the smallest bounding box around the target. "
-            "If the target is absent or ambiguous, set found=false and use null bbox."
+            "Return its bounding box as normalized coordinates from 0 to 1000, "
+            "with [x1, y1, x2, y2] measured from the screenshot top-left. "
+            "Return found=false and bbox=null when absent or ambiguous."
         )
         system_prompt = (
             "You are A.S.T.A.'s visual grounding sensor. Inspect only the supplied image. "
-            "Return exactly one compact JSON object with fields found, element, bbox, confidence, and summary. "
-            "The bbox must contain x, y, width, and height when found=true; use bbox=null when found=false. "
-            "Coordinates must be the actual pixel coordinates of the requested target in the supplied image, "
-            "measured from the screenshot top-left corner. Only set found=true when the target is actually "
-            "visible and unambiguous. If the target is absent, ambiguous, or you cannot reliably locate it, "
-            "return found=false and bbox=null. Do not copy coordinates, labels, or conclusions from this prompt. "
-            "Do not use prior context or assumed UI state. Do not return markdown or extra keys. "
-            "Keep summary <= 10 words."
+            "Return exactly one compact JSON object with fields found, element, bbox, and confidence. "
+            "When found=true, bbox must be [x1, y1, x2, y2] using normalized 0-1000 image coordinates "
+            "(not desktop pixels). When found=false, bbox must be null. Only set found=true when the "
+            "requested target is actually visible and unambiguous. Do not copy coordinates, labels, "
+            "or conclusions from this prompt. Do not use prior context or assumed UI state. "
+            "Return no markdown and no extra fields."
         )
 
         response_schema = {
@@ -211,23 +282,17 @@ class VisionLocateTool(Tool):
                 "bbox": {
                     "anyOf": [
                         {
-                            "type": "object",
-                            "properties": {
-                                "x": {"type": "number"},
-                                "y": {"type": "number"},
-                                "width": {"type": "number"},
-                                "height": {"type": "number"},
-                            },
-                            "required": ["x", "y", "width", "height"],
-                            "additionalProperties": False,
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 4,
+                            "maxItems": 4,
                         },
                         {"type": "null"},
                     ],
                 },
                 "confidence": {"type": "number"},
-                "summary": {"type": "string"},
             },
-            "required": ["found", "element", "bbox", "confidence", "summary"],
+            "required": ["found", "element", "bbox", "confidence"],
             "additionalProperties": False,
         }
 
@@ -250,31 +315,44 @@ class VisionLocateTool(Tool):
             )
 
         parsed = inspection.get("json")
+        json_recovered = False
         if not isinstance(parsed, dict):
-            print(
-                "[Vision] Locate failed: "
-                f"target={target!r} reason=invalid_json "
-                f"raw={str(inspection.get('text') or '')[:240]!r}",
-                flush=True,
+            recovered = self._recover_truncated_grounding(
+                inspection.get("text", "")
             )
-            return ToolResult(
-                success=False,
-                tool=request.tool,
-                output={
-                    "path": str(image_path.resolve()),
-                    "width": width,
-                    "height": height,
-                    "origin_x": origin_x,
-                    "origin_y": origin_y,
-                    "raw_response": inspection.get("text", ""),
-                },
-                error="Vision grounding returned invalid JSON.",
-                duration_seconds=time.perf_counter() - start,
-                metadata={
-                    "request_id": request.request_id,
-                    "vision_model": inspection.get("model"),
-                },
-            )
+            if recovered is not None:
+                parsed = recovered
+                json_recovered = True
+                print(
+                    "[Vision] Locate: recovered truncated JSON "
+                    f"target={target!r}",
+                    flush=True,
+                )
+            else:
+                print(
+                    "[Vision] Locate failed: "
+                    f"target={target!r} reason=invalid_json "
+                    f"raw={str(inspection.get('text') or '')[:240]!r}",
+                    flush=True,
+                )
+                return ToolResult(
+                    success=False,
+                    tool=request.tool,
+                    output={
+                        "path": str(image_path.resolve()),
+                        "width": width,
+                        "height": height,
+                        "origin_x": origin_x,
+                        "origin_y": origin_y,
+                        "raw_response": inspection.get("text", ""),
+                    },
+                    error="Vision grounding returned invalid JSON.",
+                    duration_seconds=time.perf_counter() - start,
+                    metadata={
+                        "request_id": request.request_id,
+                        "vision_model": inspection.get("model"),
+                    },
+                )
 
         found = bool(parsed.get("found", False))
         try:
@@ -295,7 +373,7 @@ class VisionLocateTool(Tool):
             "found": found,
             "element": str(parsed.get("element") or target).strip(),
             "confidence": confidence,
-            "summary": str(parsed.get("summary") or "").strip(),
+            "json_recovered": json_recovered,
             "model": inspection.get("model"),
             "ttft": inspection.get("ttft"),
             "request_time": inspection.get("request_time"),
@@ -308,7 +386,7 @@ class VisionLocateTool(Tool):
                 "[Vision] Locate failed: "
                 f"target={target!r} reason=target_not_found "
                 f"confidence={confidence:.2f} "
-                f"summary={base_output['summary']!r}",
+                f"json_recovered={str(json_recovered).lower()}",
                 flush=True,
             )
             return ToolResult(
@@ -321,7 +399,7 @@ class VisionLocateTool(Tool):
             )
 
         try:
-            bbox = self._validate_bbox(
+            bbox = self._normalize_bbox(
                 parsed.get("bbox"),
                 width=width,
                 height=height,
