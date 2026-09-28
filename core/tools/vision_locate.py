@@ -468,7 +468,8 @@ class VisionLocateTool(Tool):
             f"target={target!r} "
             f"found=true "
             f"confidence={confidence:.2f} "
-            f"center=({screen_center['x']},{screen_center['y']})",
+            f"center=({screen_center['x']},{screen_center['y']}) "
+            f"json_recovered={str(json_recovered).lower()}",
             flush=True,
         )
 
