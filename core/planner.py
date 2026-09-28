@@ -100,9 +100,9 @@ class Planner:
             print("[Agent] Cognitive planning disabled (ASTA_AGENT_MODE=0).", flush=True)
 
         commands = self._expand_media_commands(commands)
+        commands = self._normalize_grounded_computer_commands(commands)
 
         if planner_name == "cognitive_v1":
-            commands = self._normalize_grounded_computer_commands(commands)
             commands = self._normalize_visual_verification_commands(
                 commands,
                 success_conditions=proposal.success_conditions,
