@@ -42,6 +42,25 @@ def test_start_apps_discovers_whatsapp_and_file_explorer(monkeypatch):
     assert explorer.name == "File Explorer"
 
 
+def test_start_apps_launches_absolute_appid_directly(monkeypatch):
+    monkeypatch.setattr(manager_module.os, "name", "nt")
+    _empty_start_menu(monkeypatch)
+
+    payload = json.dumps(
+        {
+            "Name": "Spotify",
+            "AppID": r"C:\Users\PK\AppData\Roaming\Spotify\Spotify.exe",
+        }
+    )
+    manager = ApplicationManager(powershell_runner=lambda _: payload)
+
+    spotify = manager.resolve("spotify")
+
+    assert spotify.provider == "windows.start_apps"
+    assert spotify.app_id.endswith(r"Spotify\Spotify.exe")
+    assert spotify.launch_target == spotify.app_id
+
+
 def test_start_apps_accepts_single_json_object(monkeypatch):
     monkeypatch.setattr(manager_module.os, "name", "nt")
     _empty_start_menu(monkeypatch)
