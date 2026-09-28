@@ -50,6 +50,23 @@ def test_can_you_open_is_command_not_capability_question():
     assert result.entities == {"action": "open", "target": "spotify"}
 
 
+def test_open_media_search_and_play_sequence_is_generic():
+    result = IntentRouter(media_providers=("spotify",)).analyze(
+        "Open Spotify, search for Hanuman Chalisa, and play it."
+    )
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "commands": [
+            {"action": "open", "target": "spotify"},
+            {
+                "action": "media",
+                "operation": "play",
+                "query": "hanuman chalisa",
+                "provider": "spotify",
+            },
+        ]
+    }
+
 def test_open_command_with_visual_verification_is_sequenced():
     result = IntentRouter().analyze(
         "Open Calculator and verify that it is open."
