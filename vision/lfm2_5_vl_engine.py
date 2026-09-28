@@ -209,9 +209,13 @@ class LFM25VLEngine:
                 '{"visual_match":false,"confidence":0.0,"summary":"The requested condition is not clearly visible."}. '
                 "Set visual_match=true only when the supplied image clearly supports the "
                 "current request. If the image shows a different application, a different "
-                "target, or insufficient evidence, set visual_match=false. Never copy a "
-                "target name or conclusion from examples or prior context. No markdown, "
-                "no observations array, no extra keys, summary <= 12 words."
+                "target, or insufficient evidence, set visual_match=false. Ignore A.S.T.A.'s "
+                "HUD, conversation panels, assistant messages, terminal output, subtitles, "
+                "and overlays as evidence unless the request explicitly asks about them. "
+                "Do not treat text that merely repeats the requested command as proof that "
+                "the underlying UI state exists. Never copy a target name or conclusion from "
+                "examples or prior context. No markdown, no observations array, no extra "
+                "keys, summary <= 12 words."
             )
         else:
             system = system_prompt or (
