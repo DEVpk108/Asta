@@ -193,11 +193,14 @@ class VisionLocateTool(Tool):
         )
         system_prompt = (
             "You are A.S.T.A.'s visual grounding sensor. Inspect only the supplied image. "
-            "Return exactly one compact JSON object with these fields: "
-            '{"found":true,"element":"target label","bbox":{"x":100,"y":200,"width":120,"height":40},"confidence":0.90,"summary":"short reason"}. '
-            "When not found or ambiguous, return found=false and bbox=null. "
-            "Coordinates must be image pixels from the screenshot top-left. "
-            "Do not return markdown. Keep summary <= 10 words."
+            "Return exactly one compact JSON object with fields found, element, bbox, confidence, and summary. "
+            "The bbox must contain x, y, width, and height when found=true; use bbox=null when found=false. "
+            "Coordinates must be the actual pixel coordinates of the requested target in the supplied image, "
+            "measured from the screenshot top-left corner. Only set found=true when the target is actually "
+            "visible and unambiguous. If the target is absent, ambiguous, or you cannot reliably locate it, "
+            "return found=false and bbox=null. Do not copy coordinates, labels, or conclusions from this prompt. "
+            "Do not use prior context or assumed UI state. Do not return markdown or extra keys. "
+            "Keep summary <= 10 words."
         )
 
         try:
