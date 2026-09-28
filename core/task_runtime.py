@@ -994,6 +994,51 @@ class TaskRuntimeModule(Module):
         return True
 
     @staticmethod
+    def _should_follow_planned_grounded_action(
+        task,
+        result: ToolResult,
+        current_step_id: str | None,
+    ) -> bool:
+        """Follow a preplanned click immediately after successful vision.locate."""
+        if result.tool != "vision.locate" or not result.success:
+            return False
+        if not current_step_id or task.plan is None:
+            return False
+
+        output = result.output if isinstance(result.output, dict) else {}
+        located_target = str(
+            output.get("target")
+            or output.get("element")
+            or ""
+        ).strip().lower()
+        if not located_target:
+            return False
+
+        steps = list(task.plan.steps or ())
+        for index, candidate in enumerate(steps):
+            if candidate.id != current_step_id:
+                continue
+            if index + 1 >= len(steps):
+                return False
+
+            next_step = steps[index + 1]
+            metadata = next_step.metadata or {}
+            if str(metadata.get("tool") or "").strip() != "computer.click":
+                return False
+
+            next_target = str(
+                metadata.get("target") or ""
+            ).strip().lower()
+            dependencies = list(next_step.depends_on or ())
+            return (
+                current_step_id in dependencies
+                and bool(next_target)
+                and next_target == located_target
+            )
+
+        return False
+
+    @staticmethod
     def _should_follow_planned_visual_verification(task, current_step_id: str | None) -> bool:
         if not current_step_id or task.plan is None:
             return False
