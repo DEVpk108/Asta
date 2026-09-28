@@ -41,6 +41,10 @@ faster-whisper
 # ai/llama_cpp_engine.py
 requests
 
+# Local computer control
+pyautogui
+pyperclip
+
 # ---------------------------------------------------------------------------
 # Situational. Install only if you use that path:
 #
