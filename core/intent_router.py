@@ -601,7 +601,7 @@ class IntentRouter:
                         "target": target,
                     }
 
-        for prefix in ("type ", "type text ", "write "):
+        for prefix in ("type text ", "type ", "write "):
             if value.startswith(prefix):
                 text_value = value[len(prefix):].strip()
                 if text_value:
