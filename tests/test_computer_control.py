@@ -65,3 +65,13 @@ def test_mouse_and_keyboard_primitives_use_backend():
         ("hotkey", ("ctrl", "l")),
         ("scroll", 3),
     ]
+
+
+
+def test_click_tool_allows_runtime_grounded_target():
+    from core.tools.computer import ComputerClickTool
+
+    definition = ComputerClickTool().definition
+
+    assert definition.input_schema["required"] == []
+    assert "target" in definition.input_schema["properties"]
