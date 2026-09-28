@@ -245,6 +245,7 @@ class VisionLocateTool(Tool):
             confidence = 0.0
 
         base_output = {
+            "target": target,
             "path": str(image_path.resolve()),
             "width": width,
             "height": height,
