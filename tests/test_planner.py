@@ -305,7 +305,12 @@ def test_planner_uses_generic_computer_control_for_explicit_app_media_flow():
     assert plan.steps[3].metadata["text"] == "hanuman chalisa"
     assert plan.steps[4].metadata["key"] == "enter"
     assert plan.steps[6].metadata["target"] == "hanuman chalisa"
-    assert "Requested item: hanuman chalisa" in plan.steps[7].metadata["prompt"]
+    verification_prompt = plan.steps[7].metadata["prompt"]
+    assert "Requested item: hanuman chalisa" not in verification_prompt
+    assert "spotify" in verification_prompt
+    assert "target application's own UI" in verification_prompt
+    assert "A.S.T.A.'s HUD" in verification_prompt
+    assert "merely repeats" in verification_prompt
 
 def test_planner_collapses_adjacent_duplicate_cognitive_actions():
     planner = _planner()
