@@ -781,6 +781,18 @@ class TaskRuntimeModule(Module):
             },
         }
 
+        if self._should_follow_planned_grounded_action(
+            task,
+            result,
+            plan_step_id,
+        ):
+            print(
+                "[Agent] Following planned grounded computer action without "
+                "an extra post-action LLM call.",
+                flush=True,
+            )
+            return False
+
         # When the cognitive plan already contains a direct semantic
         # visual-verification step, follow that bounded plan step instead of
         # paying for another full LLM decision immediately after the launch.
