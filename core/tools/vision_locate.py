@@ -203,12 +203,41 @@ class VisionLocateTool(Tool):
             "Keep summary <= 10 words."
         )
 
+        response_schema = {
+            "type": "object",
+            "properties": {
+                "found": {"type": "boolean"},
+                "element": {"type": "string"},
+                "bbox": {
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "x": {"type": "number"},
+                                "y": {"type": "number"},
+                                "width": {"type": "number"},
+                                "height": {"type": "number"},
+                            },
+                            "required": ["x", "y", "width", "height"],
+                            "additionalProperties": False,
+                        },
+                        {"type": "null"},
+                    ],
+                },
+                "confidence": {"type": "number"},
+                "summary": {"type": "string"},
+            },
+            "required": ["found", "element", "bbox", "confidence", "summary"],
+            "additionalProperties": False,
+        }
+
         try:
             inspection = self.vision_engine.inspect(
                 image_path,
                 prompt,
                 json_mode=True,
                 system_prompt=system_prompt,
+                response_schema=response_schema,
             )
         except Exception as exc:
             return ToolResult(
@@ -222,6 +251,12 @@ class VisionLocateTool(Tool):
 
         parsed = inspection.get("json")
         if not isinstance(parsed, dict):
+            print(
+                "[Vision] Locate failed: "
+                f"target={target!r} reason=invalid_json "
+                f"raw={str(inspection.get('text') or '')[:240]!r}",
+                flush=True,
+            )
             return ToolResult(
                 success=False,
                 tool=request.tool,
@@ -235,7 +270,10 @@ class VisionLocateTool(Tool):
                 },
                 error="Vision grounding returned invalid JSON.",
                 duration_seconds=time.perf_counter() - start,
-                metadata={"request_id": request.request_id},
+                metadata={
+                    "request_id": request.request_id,
+                    "vision_model": inspection.get("model"),
+                },
             )
 
         found = bool(parsed.get("found", False))
@@ -266,6 +304,13 @@ class VisionLocateTool(Tool):
         }
 
         if not found:
+            print(
+                "[Vision] Locate failed: "
+                f"target={target!r} reason=target_not_found "
+                f"confidence={confidence:.2f} "
+                f"summary={base_output['summary']!r}",
+                flush=True,
+            )
             return ToolResult(
                 success=False,
                 tool=request.tool,
@@ -282,6 +327,11 @@ class VisionLocateTool(Tool):
                 height=height,
             )
         except ValueError as exc:
+            print(
+                "[Vision] Locate failed: "
+                f"target={target!r} reason=invalid_bbox error={str(exc)!r}",
+                flush=True,
+            )
             return ToolResult(
                 success=False,
                 tool=request.tool,
@@ -292,6 +342,12 @@ class VisionLocateTool(Tool):
             )
 
         if confidence < self.confidence_threshold:
+            print(
+                "[Vision] Locate failed: "
+                f"target={target!r} reason=low_confidence "
+                f"confidence={confidence:.2f} threshold={self.confidence_threshold:.2f}",
+                flush=True,
+            )
             return ToolResult(
                 success=False,
                 tool=request.tool,
