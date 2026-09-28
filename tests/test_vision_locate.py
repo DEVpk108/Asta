@@ -9,13 +9,14 @@ class FakeVisionEngine:
         self.payload = payload
         self.calls = []
 
-    def inspect(self, image_path, prompt, *, json_mode, system_prompt):
+    def inspect(self, image_path, prompt, *, json_mode, system_prompt, response_schema=None):
         self.calls.append(
             {
                 "image_path": str(image_path),
                 "prompt": prompt,
                 "json_mode": json_mode,
                 "system_prompt": system_prompt,
+                "response_schema": response_schema,
             }
         )
         return self.payload
@@ -102,6 +103,12 @@ def test_locate_returns_grounded_image_and_screen_coordinates(tmp_path):
     assert '"height":40' not in system_prompt
     assert "actual pixel coordinates" in system_prompt
     assert "Do not copy coordinates" in system_prompt
+    schema = vision.calls[0]["response_schema"]
+    assert schema["properties"]["bbox"]["anyOf"][1] == {"type": "null"}
+    assert schema["properties"]["bbox"]["anyOf"][0]["required"] == [
+        "x", "y", "width", "height"
+    ]
+    assert schema["additionalProperties"] is False
 
 
 def test_locate_rejects_low_confidence(tmp_path):
