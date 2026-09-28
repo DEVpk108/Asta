@@ -117,6 +117,23 @@ class FakeVisionEngine:
         }
 
 
+def test_lfm_engine_default_verification_prompt_is_target_neutral(tmp_path):
+    image = tmp_path / "screen.png"
+    image.write_bytes(b"fake-png")
+
+    session = FakeSession()
+    engine = LFM25VLEngine(
+        base_url="http://127.0.0.1:8090/v1",
+        session=session,
+    )
+
+    engine.inspect(image, "Verify that Spotify playback is active.", json_mode=True)
+
+    system_prompt = session.post_payload["messages"][0]["content"]
+    assert "Calculator window is visible" not in system_prompt
+    assert "Do not rely on prior turns" in system_prompt
+    assert "different application" in system_prompt
+
 def test_vision_inspect_tool_returns_verification_evidence(tmp_path, capsys):
     image = tmp_path / "screen.png"
     image.write_bytes(b"fake-png")
