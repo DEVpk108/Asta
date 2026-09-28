@@ -99,10 +99,26 @@ class ComputerClickTool(_ComputerTool):
 
     def execute(self, request):
         start = time.perf_counter()
+        x = request.arguments.get("x")
+        y = request.arguments.get("y")
+        if (x is None) != (y is None):
+            return _result(
+                request,
+                False,
+                error="Grounded click requires both x and y coordinates.",
+                start=start,
+            )
+        if x is None or y is None:
+            return _result(
+                request,
+                False,
+                error="Grounded click coordinates were not supplied.",
+                start=start,
+            )
         try:
             output = self.controller.click(
-                x=request.arguments.get("x"),
-                y=request.arguments.get("y"),
+                x=x,
+                y=y,
                 button=request.arguments.get("button", "left"),
                 clicks=request.arguments.get("clicks", 1),
                 interval=request.arguments.get("interval", 0.0),
