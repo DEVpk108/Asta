@@ -50,6 +50,46 @@ def test_can_you_open_is_command_not_capability_question():
     assert result.entities == {"action": "open", "target": "spotify"}
 
 
+def test_open_command_with_visual_verification_is_sequenced():
+    result = IntentRouter().analyze(
+        "Open Calculator and verify that it is open."
+    )
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "commands": [
+            {"action": "open", "target": "calculator"},
+            {
+                "action": "inspect",
+                "tool": "vision.inspect",
+                "prompt": (
+                    "Verify the following condition from the current "
+                    "screenshot: verify that calculator is open."
+                ),
+            },
+        ]
+    }
+
+
+def test_launch_command_with_check_is_sequenced():
+    result = IntentRouter().analyze(
+        "Launch Chrome and check that it is visible."
+    )
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "commands": [
+            {"action": "launch", "target": "chrome"},
+            {
+                "action": "inspect",
+                "tool": "vision.inspect",
+                "prompt": (
+                    "Verify the following condition from the current "
+                    "screenshot: check that chrome is visible."
+                ),
+            },
+        ]
+    }
+
+
 def test_compound_command_with_and_is_sequenced():
     result = IntentRouter().analyze("Open WhatsApp and take screen shot.")
     assert result.intent == IntentType.COMMAND
