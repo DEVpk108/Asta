@@ -298,3 +298,50 @@ def test_intent_router_strips_consumed_wakeword_from_command():
         "query": "hanuman chalisa",
         "provider": "spotify",
     }
+
+
+
+def test_click_command_is_actionable():
+    result = IntentRouter().analyze("Click the Create App button.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "click",
+        "target": "the create app button",
+    }
+
+
+def test_double_click_command_preserves_click_count():
+    result = IntentRouter().analyze("Double click the file.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "click",
+        "target": "the file",
+        "clicks": 2,
+    }
+
+
+def test_type_text_command_is_actionable():
+    result = IntentRouter().analyze("Type text hello world.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "type_text",
+        "text": "hello world",
+    }
+
+
+def test_keypress_command_is_actionable():
+    result = IntentRouter().analyze("Press Enter.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "keypress",
+        "key": "enter",
+    }
+
+
+def test_scroll_command_is_actionable():
+    result = IntentRouter().analyze("Scroll down.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "scroll",
+        "amount": -5,
+    }
