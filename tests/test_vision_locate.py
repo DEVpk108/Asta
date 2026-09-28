@@ -61,9 +61,8 @@ def test_locate_returns_grounded_image_and_screen_coordinates(tmp_path):
             "json": {
                 "found": True,
                 "element": "Create App",
-                "bbox": {"x": 700, "y": 380, "width": 120, "height": 40},
+                "bbox": [700, 475, 820, 525],
                 "confidence": 0.92,
-                "summary": "Create App button is visible.",
             },
             "text": "",
             "ttft": 0.01,
@@ -97,17 +96,15 @@ def test_locate_returns_grounded_image_and_screen_coordinates(tmp_path):
     }
     assert vision.calls[0]["json_mode"] is True
     system_prompt = vision.calls[0]["system_prompt"]
-    assert '"x":100' not in system_prompt
-    assert '"y":200' not in system_prompt
-    assert '"width":120' not in system_prompt
-    assert '"height":40' not in system_prompt
-    assert "actual pixel coordinates" in system_prompt
+    assert "desktop pixels" in system_prompt
+    assert "normalized 0-1000" in system_prompt
     assert "Do not copy coordinates" in system_prompt
     schema = vision.calls[0]["response_schema"]
     assert schema["properties"]["bbox"]["anyOf"][1] == {"type": "null"}
-    assert schema["properties"]["bbox"]["anyOf"][0]["required"] == [
-        "x", "y", "width", "height"
-    ]
+    assert schema["properties"]["bbox"]["anyOf"][0]["type"] == "array"
+    assert schema["properties"]["bbox"]["anyOf"][0]["minItems"] == 4
+    assert schema["properties"]["bbox"]["anyOf"][0]["maxItems"] == 4
+    assert schema["required"] == ["found", "element", "bbox", "confidence"]
     assert schema["additionalProperties"] is False
 
 
@@ -120,7 +117,7 @@ def test_locate_rejects_low_confidence(tmp_path):
             {
                 "json": {
                     "found": True,
-                    "bbox": {"x": 10, "y": 10, "width": 20, "height": 20},
+                    "bbox": [100, 100, 300, 300],
                     "confidence": 0.40,
                 }
             }
@@ -147,7 +144,7 @@ def test_locate_rejects_out_of_bounds_boxes(tmp_path):
             {
                 "json": {
                     "found": True,
-                    "bbox": {"x": 90, "y": 10, "width": 20, "height": 20},
+                    "bbox": [900, 100, 1100, 200],
                     "confidence": 0.95,
                 }
             }
@@ -163,6 +160,43 @@ def test_locate_rejects_out_of_bounds_boxes(tmp_path):
 
     assert result.success is False
     assert "outside" in result.error
+
+
+def test_locate_recovers_truncated_json(tmp_path):
+    image = tmp_path / "screen.png"
+    make_png(image, width=1000, height=1000)
+
+    tool = VisionLocateTool(
+        FakeVisionEngine(
+            {
+                "model": "fake-vl",
+                "json": None,
+                "text": (
+                    '{"found": true, "element": "Search", '
+                    '"bbox": [100, 100, 300, 300], "confidence": 0.95, '
+                    '"element_note": "truncated'
+                ),
+                "output_tokens": 64,
+            }
+        ),
+        capture=lambda: {
+            "path": str(image),
+            "width": 1000,
+            "height": 1000,
+        },
+    )
+
+    result = tool.execute(make_request("Search"))
+
+    assert result.success is True
+    assert result.output["center"] == {"x": 200, "y": 200}
+    assert result.output["bbox"] == {
+        "x": 100,
+        "y": 100,
+        "width": 200,
+        "height": 200,
+    }
+    assert result.output["json_recovered"] is True
 
 
 def test_locate_not_found_is_observable(tmp_path):
