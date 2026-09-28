@@ -95,6 +95,13 @@ def test_locate_returns_grounded_image_and_screen_coordinates(tmp_path):
         "height": 40,
     }
     assert vision.calls[0]["json_mode"] is True
+    system_prompt = vision.calls[0]["system_prompt"]
+    assert '"x":100' not in system_prompt
+    assert '"y":200' not in system_prompt
+    assert '"width":120' not in system_prompt
+    assert '"height":40' not in system_prompt
+    assert "actual pixel coordinates" in system_prompt
+    assert "Do not copy coordinates" in system_prompt
 
 
 def test_locate_rejects_low_confidence(tmp_path):
