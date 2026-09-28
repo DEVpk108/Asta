@@ -30,7 +30,6 @@ def make_task(observations):
         goal="click the Create App button",
         status="active",
         plan=Plan(
-            id="plan-1",
             goal="click the Create App button",
             status=PlanStatus.ACTIVE,
             steps=[],
