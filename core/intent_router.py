@@ -326,6 +326,12 @@ class IntentRouter:
         known_providers=None,
     ) -> list[dict[str, Any]]:
         """Parse sequential commands joined by explicit or natural separators."""
+        media_sequence = cls._extract_open_media_sequence(
+            text,
+            known_providers=known_providers,
+        )
+        if media_sequence:
+            return media_sequence
         visual = cls._VISUAL_VERIFICATION_SUFFIX_PATTERN.match(text)
         if visual:
             first_text = visual.group("command").strip()
@@ -438,6 +444,57 @@ class IntentRouter:
             return []
 
         return commands if len(commands) >= 2 else []
+
+    @classmethod
+    def _extract_open_media_sequence(
+        cls,
+        text: str,
+        *,
+        known_providers=None,
+    ) -> list[dict[str, Any]]:
+        """Parse a generic "open provider, search for query, and play it" flow.
+
+        Provider names come from the registered media providers; no application
+        name is hard-coded here.
+        """
+        match = re.fullmatch(
+            r"(?:please\s+)?(?:open|launch|start)\s+"
+            r"(?P<target>[^,]+?)\s*,\s*"
+            r"search\s+for\s+(?P<query>.+?)\s*,?\s*"
+            r"(?:and\s+)?play(?:\s+(?:it|that|this))?",
+            text,
+            re.IGNORECASE,
+        )
+        if not match:
+            return []
+
+        target = match.group("target").strip(" ,.!?;:")
+        query = match.group("query").strip(" ,.!?;:")
+        if not target or not query:
+            return []
+
+        normalized_target = cls._normalize(target)
+        providers = {
+            cls._normalize(str(name))
+            for name in (known_providers or ())
+            if str(name).strip()
+        }
+        provider = normalized_target if normalized_target in providers else None
+        if provider is None:
+            return []
+
+        return [
+            {
+                "action": "open",
+                "target": target,
+            },
+            {
+                "action": "media",
+                "operation": "play",
+                "query": query,
+                "provider": provider,
+            },
+        ]
 
     @classmethod
     def _extract_command_entities(
