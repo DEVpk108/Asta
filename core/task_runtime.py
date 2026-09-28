@@ -1408,6 +1408,64 @@ class TaskRuntimeModule(Module):
         return request
 
     @staticmethod
+    def _ground_action_arguments(
+        task,
+        *,
+        action: str,
+        target: str,
+    ) -> dict[str, Any] | None:
+        """Resolve semantic computer actions from the latest visual grounding."""
+        normalized_action = str(action or "").strip().lower()
+        if normalized_action != "click":
+            return {}
+
+        if not target:
+            return {}
+
+        agent_state = task.metadata.get("agent_state")
+        if not isinstance(agent_state, dict):
+            return {}
+
+        observations = list(agent_state.get("observations") or ())
+        wanted = target.strip().lower()
+
+        for observation in reversed(observations):
+            if not isinstance(observation, dict):
+                continue
+            if str(observation.get("source") or "").strip().lower() != "vision.locate":
+                continue
+
+            data = observation.get("data")
+            if not isinstance(data, dict) or not bool(data.get("success")):
+                continue
+
+            output = data.get("output")
+            if not isinstance(output, dict):
+                continue
+
+            result_target = str(
+                output.get("target")
+                or output.get("element")
+                or ""
+            ).strip().lower()
+            if result_target != wanted:
+                continue
+
+            center = output.get("screen_center") or output.get("center")
+            if not isinstance(center, dict):
+                continue
+
+            try:
+                x = int(round(float(center["x"])))
+                y = int(round(float(center["y"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            return {"x": x, "y": y}
+
+        return None
+
+    @staticmethod
     def _request_plan_step_id(request: ToolRequest, task) -> str | None:
         plan = task.plan
         if plan is None:
