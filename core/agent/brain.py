@@ -940,6 +940,20 @@ class AgentBrain:
                     normalized["action"] = semantic_actions[0]
                     action = semantic_actions[0]
 
+            if action == "click":
+                target = str(normalized.get("target") or "").strip()
+                has_coordinates = (
+                    normalized.get("x") is not None
+                    and normalized.get("y") is not None
+                )
+                if not target and not has_coordinates:
+                    raise AgentBrainError(
+                        f"agent planner step {index} click action must include a target or coordinates"
+                    )
+                if target and not has_coordinates:
+                    normalized.pop("x", None)
+                    normalized.pop("y", None)
+
             entities = {
                 key: value
                 for key, value in normalized.items()
