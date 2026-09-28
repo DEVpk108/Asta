@@ -1299,7 +1299,12 @@ class TaskRuntimeModule(Module):
         if tool == "vision.screenshot":
             return "Taking a look at the screen."
         if tool == "computer.click":
-            return "Clicking the selected control."
+            target = str(args.get("target") or "").strip()
+            return (
+                f"Clicking {target}."
+                if target
+                else "Clicking the selected control."
+            )
         if tool == "computer.type_text":
             return "Typing into the selected field."
         if tool == "computer.keypress":
