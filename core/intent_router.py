@@ -526,6 +526,10 @@ class IntentRouter:
         if media:
             return media
 
+        computer = cls._extract_computer_command(text)
+        if computer:
+            return computer
+
         if text in {"screenshot", "screen shot"}:
             return {"action": "screenshot"}
 
@@ -551,6 +555,80 @@ class IntentRouter:
 
         if text == "unmute":
             return {"action": "unmute"}
+
+        return {}
+
+    @classmethod
+    def _extract_computer_command(cls, text: str) -> dict[str, Any]:
+        value = cls._normalize(text)
+
+        double_click_prefixes = (
+            "double click ",
+            "double-click ",
+            "doubleclick ",
+        )
+        for prefix in double_click_prefixes:
+            if value.startswith(prefix):
+                target = value[len(prefix):].strip(" ,.!?;:")
+                if target:
+                    return {
+                        "action": "click",
+                        "target": target,
+                        "clicks": 2,
+                    }
+
+        right_click_prefixes = (
+            "right click ",
+            "right-click ",
+            "rightclick ",
+        )
+        for prefix in right_click_prefixes:
+            if value.startswith(prefix):
+                target = value[len(prefix):].strip(" ,.!?;:")
+                if target:
+                    return {
+                        "action": "click",
+                        "target": target,
+                        "button": "right",
+                    }
+
+        for prefix in ("click ", "click on "):
+            if value.startswith(prefix):
+                target = value[len(prefix):].strip(" ,.!?;:")
+                if target:
+                    return {
+                        "action": "click",
+                        "target": target,
+                    }
+
+        for prefix in ("type ", "type text ", "write "):
+            if value.startswith(prefix):
+                text_value = value[len(prefix):].strip()
+                if text_value:
+                    return {
+                        "action": "type_text",
+                        "text": text_value,
+                    }
+
+        for prefix in ("press ", "press the "):
+            if value.startswith(prefix):
+                key = value[len(prefix):].strip(" ,.!?;:")
+                if key:
+                    return {
+                        "action": "keypress",
+                        "key": key,
+                    }
+
+        if value.startswith("scroll "):
+            direction = value[len("scroll "):].strip()
+            if direction in {"down", "lower"}:
+                return {"action": "scroll", "amount": -5}
+            if direction in {"up", "higher"}:
+                return {"action": "scroll", "amount": 5}
+            if direction in {"to top", "top"}:
+                return {"action": "scroll", "amount": 100}
+            if direction in {"to bottom", "bottom"}:
+                return {"action": "scroll", "amount": -100}
 
         return {}
 
