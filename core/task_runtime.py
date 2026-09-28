@@ -1293,6 +1293,9 @@ class TaskRuntimeModule(Module):
             return f"Controlling media: {operation}."
         if tool == "vision.inspect":
             return "Checking the screen."
+        if tool == "vision.locate":
+            target = str(args.get("target") or "the target").strip()
+            return f"Locating {target} on the screen."
         if tool == "vision.screenshot":
             return "Taking a look at the screen."
         if tool == "computer.click":
