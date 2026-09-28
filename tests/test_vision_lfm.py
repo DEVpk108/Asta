@@ -221,3 +221,31 @@ def test_lfm_engine_recovers_truncated_verification_json():
         "summary": "The calculator window is visible.",
     }
 
+
+
+def test_lfm_engine_uses_supplied_response_schema(tmp_path):
+    image = tmp_path / "screen.png"
+    image.write_bytes(b"fake-png")
+
+    session = FakeSession()
+    engine = LFM25VLEngine(
+        base_url="http://127.0.0.1:8090/v1",
+        session=session,
+    )
+    schema = {
+        "type": "object",
+        "properties": {"found": {"type": "boolean"}},
+        "required": ["found"],
+    }
+
+    engine.inspect(
+        image,
+        "Locate the Search field.",
+        json_mode=True,
+        response_schema=schema,
+    )
+
+    assert session.post_payload["response_format"] == {
+        "type": "json_object",
+        "schema": schema,
+    }
