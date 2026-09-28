@@ -196,6 +196,8 @@ def _capture_windows(output_path: Path) -> dict:
         "path": str(output_path.resolve()),
         "width": width,
         "height": height,
+        "origin_x": x,
+        "origin_y": y,
         "platform": "windows",
     }
 
