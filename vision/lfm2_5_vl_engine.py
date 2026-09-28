@@ -203,10 +203,15 @@ class LFM25VLEngine:
 
         if json_mode:
             system = system_prompt or (
-                "You are A.S.T.A.'s fast visual sensor. Inspect only the supplied image. "
+                "You are A.S.T.A.'s fast visual sensor. Inspect only the supplied image "
+                "and the current user request. Do not rely on prior turns or assumed UI state. "
                 "Return ONLY one compact JSON object with exactly these fields: "
-                '{"visual_match":true,"confidence":0.95,"summary":"Calculator window is visible."}. '
-                "Rules: no markdown, no observations array, no extra keys, summary <= 12 words."
+                '{"visual_match":false,"confidence":0.0,"summary":"The requested condition is not clearly visible."}. '
+                "Set visual_match=true only when the supplied image clearly supports the "
+                "current request. If the image shows a different application, a different "
+                "target, or insufficient evidence, set visual_match=false. Never copy a "
+                "target name or conclusion from examples or prior context. No markdown, "
+                "no observations array, no extra keys, summary <= 12 words."
             )
         else:
             system = system_prompt or (
