@@ -24,7 +24,7 @@ def test_media_command_acknowledges_before_execution():
     )
 
     assert TaskRuntimeModule._acknowledgment_for_intent(intent) == (
-        "Okay, sir. Playing Hanuman Chalisa on spotify."
+        "Okay, sir. Playing Hanuman Chalisa."
     )
 
 
