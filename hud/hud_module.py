@@ -28,6 +28,8 @@ class HUDModule(Module):
     def initialize(self):
         self.event_bus.subscribe("voice_ready", self.on_voice_ready)
         self.event_bus.subscribe("assistant_sentence", self.on_assistant_sentence)
+        self.event_bus.subscribe("command_acknowledged", self.on_command_acknowledged)
+        self.event_bus.subscribe("task_progress", self.on_task_progress)
         self.event_bus.subscribe("user_message", self.on_user_message)
         self.event_bus.subscribe("conversation_mode_set", self.on_conversation_mode_set)
         self.event_bus.subscribe("speech_started", self.on_speech_started)
@@ -193,16 +195,103 @@ class HUDModule(Module):
             self.chat_history.append("user", value)
             self.transport.publish_chat(role="user", text=value)
             self._publish_chat_index()
+
         if self.state.mode in {"speaking", "approval", "executing"}:
             return
-        self.set_state(mode="thinking", intensity="high", status="THINKING", progress=None, activity="reasoning")
+
+        try:
+            intent = self.kernel.intent_router.analyze(text)
+        except Exception:
+            intent = None
+
+        if getattr(intent, "intent", None) is not None and getattr(intent.intent, "value", "") == "command":
+            self.set_state(
+                mode="speaking",
+                intensity="medium",
+                status="ACKNOWLEDGING",
+                progress=None,
+                activity="acknowledgment",
+            )
+            return
+
+        self.set_state(
+            mode="thinking",
+            intensity="high",
+            status="THINKING",
+            progress=None,
+            activity="reasoning",
+        )
+
+    def on_command_acknowledged(self, text=None, *args, **kwargs):
+        self.set_state(
+            mode="speaking",
+            intensity="medium",
+            status="ACKNOWLEDGED",
+            progress=None,
+            activity="acknowledgment",
+        )
+
+    def on_task_progress(self, task_id=None, phase="working", text="", *args, **kwargs):
+        phase_value = str(phase or "working").strip().lower()
+        activity = str(text or "working").strip() or "working"
+
+        if phase_value in {"planning", "replanning", "recovery"}:
+            self.set_state(
+                mode="thinking",
+                intensity="high",
+                status=phase_value.upper(),
+                progress=None,
+                activity=activity,
+            )
+        elif phase_value in {"executing", "planned"}:
+            self.set_state(
+                mode="executing",
+                intensity="high",
+                status="EXECUTING" if phase_value == "executing" else "READY",
+                progress=None,
+                activity=activity,
+            )
+        else:
+            self.set_state(
+                mode="thinking",
+                intensity="medium",
+                status=phase_value.upper(),
+                progress=None,
+                activity=activity,
+            )
 
     def on_speech_started(self, *args, **kwargs):
         self.set_state(mode="speaking", intensity="high", status="SPEAKING", progress=None, activity="speech")
         self.transport.publish_audio_level(0.0)
 
     def on_speech_finished(self, *args, **kwargs):
-        self.set_state(mode="listening", intensity="medium", status="LISTENING", progress=None, activity="command")
+        task = getattr(self.kernel, "task_manager", None)
+        current = task.current() if task is not None else None
+        status = getattr(current, "status", None)
+        if getattr(status, "value", "") == "active":
+            self.set_state(
+                mode="executing",
+                intensity="high",
+                status="EXECUTING",
+                progress=None,
+                activity=getattr(current, "current_step", None) or "working",
+            )
+        elif getattr(status, "value", "") == "paused":
+            self.set_state(
+                mode="thinking",
+                intensity="medium",
+                status="PAUSED",
+                progress=None,
+                activity="waiting",
+            )
+        else:
+            self.set_state(
+                mode="listening",
+                intensity="medium",
+                status="LISTENING",
+                progress=None,
+                activity="command",
+            )
         self.transport.publish_audio_level(0.0)
 
     def on_speech_interrupt(self, *args, **kwargs):
@@ -272,6 +361,8 @@ class HUDModule(Module):
         for event_name, callback in (
             ("voice_ready", self.on_voice_ready),
             ("assistant_sentence", self.on_assistant_sentence),
+            ("command_acknowledged", self.on_command_acknowledged),
+            ("task_progress", self.on_task_progress),
             ("user_message", self.on_user_message),
             ("conversation_mode_set", self.on_conversation_mode_set),
             ("speech_started", self.on_speech_started),
