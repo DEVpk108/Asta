@@ -144,6 +144,13 @@ def main():
         StartProcessTool,
         StopProcessTool,
         MediaControlTool,
+        ComputerController,
+        ComputerMoveMouseTool,
+        ComputerClickTool,
+        ComputerTypeTextTool,
+        ComputerKeypressTool,
+        ComputerHotkeyTool,
+        ComputerScrollTool,
         ToolRuntimeModule,
     )
     from speech.speech_module import SpeechModule
@@ -186,6 +193,11 @@ def main():
     tools = ToolRuntimeModule(kernel)
     text_input = TextInputModule(kernel) if _text_input_enabled() else None
 
+    # General computer-control capabilities are intentionally generic: the
+    # agent can reuse the same mouse/keyboard primitives for Spotify, browsers,
+    # settings, development tools, or any other interactive application.
+    computer = ComputerController()
+
     # Register capabilities before the runtime starts.
     for tool in (
         OpenApplicationTool(kernel.application_manager),
@@ -207,6 +219,12 @@ def main():
         ListNotesTool(kernel.notes_manager),
         SearchNotesTool(kernel.notes_manager),
         MediaControlTool(kernel.media_manager),
+        ComputerMoveMouseTool(computer),
+        ComputerClickTool(computer),
+        ComputerTypeTextTool(computer),
+        ComputerKeypressTool(computer),
+        ComputerHotkeyTool(computer),
+        ComputerScrollTool(computer),
     ):
         kernel.register_tool(tool)
 
