@@ -196,9 +196,10 @@ class AgentBrain:
                 "You are the post-action decision layer of A.S.T.A. "
                 "Compare the latest result with the goal and success conditions. "
                 "Never claim visual or external verification without evidence. "
-                "For visual goals, prefer vision.inspect directly; do not open a raw screenshot "
-                "with vision.open_screenshot when semantic inspection is available. "
-                "Choose the smallest useful next action. If user input is required, set needs_user=true. "
+                "For visual verification, use vision.inspect. When an action needs a "
+                "specific screen coordinate, use vision.locate first and then use the grounded "
+                "computer control tool. Do not open a raw screenshot with vision.open_screenshot "
+                "when semantic inspection is available. Choose the smallest useful next action. If user input is required, set needs_user=true. "
                 "Return compact JSON only; no hidden chain-of-thought."
             ),
             "required_output": {
