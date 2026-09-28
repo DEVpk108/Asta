@@ -70,6 +70,18 @@ class TaskRuntimeModule(Module):
         if intent.intent is not IntentType.COMMAND:
             return
 
+        acknowledgment = self._acknowledgment_for_intent(intent)
+        if acknowledgment:
+            self.event_bus.emit(
+                "command_acknowledged",
+                text=acknowledgment,
+                intent=intent.to_dict() if hasattr(intent, "to_dict") else None,
+            )
+            self.event_bus.emit(
+                "assistant_sentence",
+                text=acknowledgment,
+            )
+
         self.start_plan(
             intent.normalized_text,
             intent,
@@ -77,6 +89,11 @@ class TaskRuntimeModule(Module):
 
     def start_plan(self, goal: str, intent: IntentResult):
         """Create an executable task plan from any structured command intent."""
+        self._emit_progress(
+            "planning",
+            "I’m working out how to do that.",
+        )
+
         agent_brain = getattr(self.kernel, "agent_brain", None)
         agent_thinking = bool(
             agent_brain is not None
@@ -146,6 +163,12 @@ class TaskRuntimeModule(Module):
             f"[Tasks] Started task {task.id}: {task.goal}",
             flush=True,
         )
+        self.event_bus.emit(
+            "task_progress",
+            task_id=task.id,
+            phase="planned",
+            text="I know what I need to do. Starting now.",
+        )
         return task
 
     def on_tool_request(self, request):
@@ -174,6 +197,12 @@ class TaskRuntimeModule(Module):
                 task.id,
             )
         self.kernel.task_manager.set_step(task_step, task.id)
+        self.event_bus.emit(
+            "task_progress",
+            task_id=task.id,
+            phase="executing",
+            text=self._progress_for_request(request),
+        )
 
     def on_tool_result(self, result):
         if not isinstance(result, ToolResult):
@@ -203,6 +232,15 @@ class TaskRuntimeModule(Module):
         if plan_step_id:
             evidence["plan_step_id"] = plan_step_id
         if not result.success:
+            self.event_bus.emit(
+                "task_progress",
+                task_id=task.id,
+                phase="recovery",
+                text=(
+                    "I hit a problem with that step. "
+                    "I’m figuring out what went wrong."
+                ),
+            )
             if plan_step_id:
                 self.kernel.task_manager.set_plan_step_status(
                     plan_step_id,
@@ -391,6 +429,15 @@ class TaskRuntimeModule(Module):
                     task_id=task.id,
                     decision=decision.to_dict(),
                     diagnosis=diagnosis.to_dict(),
+                )
+                self.event_bus.emit(
+                    "task_progress",
+                    task_id=task.id,
+                    phase="replanning",
+                    text=(
+                        "I understand the problem. "
+                        "I’m trying a different way."
+                    ),
                 )
 
                 attempts = int(task.metadata.get("replan_attempts", 0)) + 1
@@ -1190,6 +1237,92 @@ class TaskRuntimeModule(Module):
             task_step = pending.request.metadata.get("task_step")
             if task_step:
                 self.kernel.task_manager.set_step(task_step, task.id)
+
+    @staticmethod
+    def _acknowledgment_for_intent(intent: IntentResult) -> str:
+        """Create a brief user-facing acknowledgment before execution starts."""
+        entities = getattr(intent, "entities", {}) or {}
+        commands = entities.get("commands")
+        candidates = (
+            list(commands)
+            if isinstance(commands, list)
+            else [entities]
+        )
+
+        for command in candidates:
+            if not isinstance(command, dict):
+                continue
+            if str(command.get("action") or "").strip().lower() != "media":
+                continue
+            operation = str(command.get("operation") or "").strip().lower()
+            query = str(command.get("query") or "").strip()
+            if operation == "play" and query:
+                provider = str(command.get("provider") or "").strip()
+                suffix = f" on {provider}" if provider else ""
+                return f"Okay, sir. Playing {query}{suffix}."
+
+        for command in candidates:
+            if not isinstance(command, dict):
+                continue
+            action = str(command.get("action") or "").strip().lower()
+            target = str(command.get("target") or "").strip()
+            if action in {"open", "launch", "start"} and target:
+                return f"Okay, sir. Opening {target}."
+
+        if len(candidates) > 1:
+            return "Okay, sir. I’ll handle that."
+
+        return "Okay, sir. I’m on it."
+
+    @staticmethod
+    def _progress_for_request(request: ToolRequest) -> str:
+        """Convert an executable tool request into a human-readable activity."""
+        tool = str(request.tool or "").strip().lower()
+        args = request.arguments or {}
+
+        if tool == "system.open_application":
+            target = str(args.get("target") or "the application").strip()
+            return f"Opening {target}."
+        if tool == "system.close_application":
+            target = str(args.get("target") or "the application").strip()
+            return f"Closing {target}."
+        if tool == "media.control":
+            operation = str(args.get("operation") or "media").strip().lower()
+            query = str(args.get("query") or "").strip()
+            if operation == "play" and query:
+                return f"Starting playback for {query}."
+            return f"Controlling media: {operation}."
+        if tool == "vision.inspect":
+            return "Checking the screen."
+        if tool == "vision.screenshot":
+            return "Taking a look at the screen."
+        if tool == "computer.click":
+            return "Clicking the selected control."
+        if tool == "computer.type_text":
+            return "Typing into the selected field."
+        if tool == "computer.keypress":
+            return f"Pressing {args.get('key', 'the key')}."
+        if tool == "computer.hotkey":
+            keys = args.get("keys") or []
+            if isinstance(keys, list):
+                shortcut = " + ".join(str(key) for key in keys)
+            else:
+                shortcut = str(keys)
+            return f"Pressing {shortcut or 'a keyboard shortcut'}."
+        if tool == "computer.move_mouse":
+            return "Moving the pointer to the selected location."
+        if tool == "computer.scroll":
+            return "Scrolling the current screen."
+
+        return f"Working with {request.tool}."
+
+    def _emit_progress(self, phase: str, text: str, *, task_id=None):
+        self.event_bus.emit(
+            "task_progress",
+            task_id=task_id,
+            phase=str(phase),
+            text=str(text),
+        )
 
     @staticmethod
     def _describe_command(command: Any) -> str:
