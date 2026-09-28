@@ -1306,24 +1306,24 @@ class TaskRuntimeModule(Module):
             else [entities]
         )
 
-        for command in candidates:
-            if not isinstance(command, dict):
-                continue
-            if str(command.get("action") or "").strip().lower() != "media":
-                continue
-            operation = str(command.get("operation") or "").strip().lower()
-            query = str(command.get("query") or "").strip()
-            if operation == "play" and query:
-                spoken_query = query.title()
-                return f"Okay, sir. Playing {spoken_query}."
-
+        # Acknowledgment follows the first actionable command so a compound
+        # request does not announce a later playback step before the app is
+        # even open.
         for command in candidates:
             if not isinstance(command, dict):
                 continue
             action = str(command.get("action") or "").strip().lower()
             target = str(command.get("target") or "").strip()
+
             if action in {"open", "launch", "start"} and target:
                 return f"Okay, sir. Opening {target}."
+
+            if action == "media":
+                operation = str(command.get("operation") or "").strip().lower()
+                query = str(command.get("query") or "").strip()
+                if operation == "play" and query:
+                    spoken_query = query.title()
+                    return f"Okay, sir. Playing {spoken_query}."
 
         if len(candidates) > 1:
             return "Okay, sir. I’ll handle that."
