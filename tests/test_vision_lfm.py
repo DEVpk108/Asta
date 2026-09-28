@@ -133,6 +133,8 @@ def test_lfm_engine_default_verification_prompt_is_target_neutral(tmp_path):
     assert "Calculator window is visible" not in system_prompt
     assert "Do not rely on prior turns" in system_prompt
     assert "different application" in system_prompt
+    assert "Ignore A.S.T.A.'s HUD" in system_prompt
+    assert "merely repeats the requested command" in system_prompt
 
 def test_vision_inspect_tool_returns_verification_evidence(tmp_path, capsys):
     image = tmp_path / "screen.png"
