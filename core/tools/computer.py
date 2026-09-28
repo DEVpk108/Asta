@@ -87,7 +87,7 @@ class ComputerClickTool(_ComputerTool):
                     "clicks": {"type": "integer", "minimum": 1},
                     "interval": {"type": "number", "minimum": 0},
                 },
-                "required": ["x", "y"],
+                "required": [],
                 "additionalProperties": False,
             },
             risk_level="medium",
