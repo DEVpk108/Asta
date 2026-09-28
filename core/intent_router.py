@@ -81,6 +81,12 @@ class IntentRouter:
         re.IGNORECASE,
     )
 
+    _VISUAL_VERIFICATION_SUFFIX_PATTERN = re.compile(
+        r"^(?P<command>.+?)\s+and\s+(?P<verification>"
+        r"(?:verify|check)\s+.+)$",
+        re.IGNORECASE,
+    )
+
     def route(self, text: str) -> IntentType:
         """Backward-compatible intent-only API."""
         return self.analyze(text).intent
@@ -337,6 +343,42 @@ class IntentRouter:
 
         commands: list[dict[str, Any]] = []
         for part in parts:
+            visual = cls._VISUAL_VERIFICATION_SUFFIX_PATTERN.match(part)
+            if visual:
+                first_text = visual.group("command").strip()
+                verification = visual.group("verification").strip()
+
+                first = cls._extract_command_entities(
+                    first_text,
+                    known_providers=known_providers,
+                )
+                if first:
+                    target = str(first.get("target") or "").strip()
+                    condition = verification
+                    if target and re.search(r"\bit\b", condition, re.IGNORECASE):
+                        condition = re.sub(
+                            r"\bit\b",
+                            target,
+                            condition,
+                            count=1,
+                            flags=re.IGNORECASE,
+                        )
+                    prompt = (
+                        "Verify the following condition from the current "
+                        f"screenshot: {condition}."
+                    )
+                    commands.extend(
+                        (
+                            first,
+                            {
+                                "action": "inspect",
+                                "tool": "vision.inspect",
+                                "prompt": prompt,
+                            },
+                        )
+                    )
+                    continue
+
             # Spoken commands sometimes omit "and" before a screenshot phrase,
             # e.g. "open camera take screenshot". Check this before the generic
             # open/close parser so the suffix does not get swallowed into target.
