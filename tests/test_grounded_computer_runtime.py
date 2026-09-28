@@ -97,3 +97,50 @@ def test_non_coordinate_actions_need_no_grounding():
         action="open",
         target="calculator",
     ) == {}
+
+
+
+def test_planned_grounded_transition_skips_extra_llm_call():
+    from core.contracts import PlanStep, PlanStepStatus, ToolResult
+
+    runtime = make_runtime()
+    task = make_task([])
+    task.plan.steps = [
+        PlanStep(
+            id="step-1",
+            description="locate Create App",
+            status=PlanStepStatus.RUNNING,
+            metadata={
+                "action": "locate",
+                "target": "Create App",
+                "tool": "vision.locate",
+            },
+        ),
+        PlanStep(
+            id="step-2",
+            description="click Create App",
+            status=PlanStepStatus.PENDING,
+            depends_on=["step-1"],
+            metadata={
+                "action": "click",
+                "target": "Create App",
+                "tool": "computer.click",
+            },
+        ),
+    ]
+
+    result = ToolResult(
+        success=True,
+        tool="vision.locate",
+        output={
+            "target": "Create App",
+            "screen_center": {"x": 760, "y": 400},
+            "confidence": 0.92,
+        },
+    )
+
+    assert runtime._should_follow_planned_grounded_action(
+        task,
+        result,
+        "step-1",
+    ) is True
