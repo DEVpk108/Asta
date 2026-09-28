@@ -202,6 +202,70 @@ class Planner:
         )
         return plan
 
+    def _normalize_grounded_computer_commands(
+        self,
+        commands: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Insert vision.locate before semantic coordinate-based computer actions."""
+        normalized: list[dict[str, Any]] = []
+
+        for command in commands:
+            current = dict(command)
+            action = str(current.get("action") or "").strip().lower()
+            target = str(current.get("target") or "").strip()
+            has_coordinates = (
+                current.get("x") is not None
+                and current.get("y") is not None
+            )
+
+            if action == "click" and target and not has_coordinates:
+                previous = normalized[-1] if normalized else None
+                previous_action = str(
+                    (previous or {}).get("action") or ""
+                ).strip().lower()
+                previous_tool = str(
+                    (previous or {}).get("tool") or ""
+                ).strip()
+                previous_target = str(
+                    (previous or {}).get("target") or ""
+                ).strip()
+
+                already_grounded = (
+                    previous_action == "locate"
+                    and previous_tool == "vision.locate"
+                    and previous_target.lower() == target.lower()
+                )
+
+                if not already_grounded:
+                    try:
+                        self.selector.select(
+                            IntentResult(
+                                intent=IntentType.COMMAND,
+                                confidence=1.0,
+                                normalized_text="",
+                                entities={
+                                    "action": "locate",
+                                    "target": target,
+                                },
+                                requires_tools=True,
+                                classifier="planner_grounding",
+                            )
+                        )
+                    except ValueError:
+                        pass
+                    else:
+                        normalized.append(
+                            {
+                                "action": "locate",
+                                "tool": "vision.locate",
+                                "target": target,
+                            }
+                        )
+
+            normalized.append(current)
+
+        return normalized
+
     def _normalize_visual_verification_commands(
         self,
         commands: list[dict[str, Any]],
