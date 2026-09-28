@@ -1352,6 +1352,26 @@ class TaskRuntimeModule(Module):
         if not action:
             return None
 
+        grounded = self._ground_action_arguments(
+            task,
+            action=action,
+            target=target,
+        )
+        if grounded is None:
+            return None
+
+        intent_entities = {
+            "action": action,
+            **({"target": target} if target else {}),
+            **grounded,
+            **{
+                key: value
+                for key, value in step.metadata.items()
+                if key in {"operation", "query", "provider", "prompt"}
+                and value not in {None, ""}
+            },
+        }
+
         intent = IntentResult(
             intent=IntentType.COMMAND,
             confidence=float(
