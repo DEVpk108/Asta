@@ -184,12 +184,21 @@ class VisionLocateTool(Tool):
             value,
             flags=re.IGNORECASE,
         )
-        bbox_match = re.search(
+        bbox_list_match = re.search(
             r'"bbox"\s*:\s*\[\s*'
             r'([0-9]+(?:\.[0-9]+)?)\s*,\s*'
             r'([0-9]+(?:\.[0-9]+)?)\s*,\s*'
             r'([0-9]+(?:\.[0-9]+)?)\s*,\s*'
             r'([0-9]+(?:\.[0-9]+)?)',
+            value,
+            flags=re.IGNORECASE,
+        )
+        bbox_object_match = re.search(
+            r'"bbox"\s*:\s*\{\s*'
+            r'"x"\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*,\s*'
+            r'"y"\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*,\s*'
+            r'"width"\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*,\s*'
+            r'"height"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
             value,
             flags=re.IGNORECASE,
         )
@@ -199,7 +208,11 @@ class VisionLocateTool(Tool):
             flags=re.IGNORECASE,
         )
 
-        if found_match is None or bbox_match is None or confidence_match is None:
+        if (
+            found_match is None
+            or confidence_match is None
+            or (bbox_list_match is None and bbox_object_match is None)
+        ):
             return None
 
         try:
@@ -207,7 +220,17 @@ class VisionLocateTool(Tool):
                 0.0,
                 min(1.0, float(confidence_match.group(1))),
             )
-            bbox = [float(bbox_match.group(index)) for index in range(1, 5)]
+            if bbox_list_match is not None:
+                bbox = [
+                    float(bbox_list_match.group(index))
+                    for index in range(1, 5)
+                ]
+            else:
+                x = float(bbox_object_match.group(1))
+                y = float(bbox_object_match.group(2))
+                box_width = float(bbox_object_match.group(3))
+                box_height = float(bbox_object_match.group(4))
+                bbox = [x, y, x + box_width, y + box_height]
         except (TypeError, ValueError):
             return None
 
