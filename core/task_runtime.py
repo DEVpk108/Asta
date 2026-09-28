@@ -1414,10 +1414,24 @@ class TaskRuntimeModule(Module):
         if not action:
             return None
 
-        grounded = self._ground_action_arguments(
-            task,
-            action=action,
-            target=target,
+        explicit_coordinates = {}
+        if action.lower() == "click":
+            if (
+                step.metadata.get("x") is not None
+                and step.metadata.get("y") is not None
+            ):
+                explicit_coordinates = {
+                    "x": step.metadata.get("x"),
+                    "y": step.metadata.get("y"),
+                }
+
+        grounded = (
+            explicit_coordinates
+            or self._ground_action_arguments(
+                task,
+                action=action,
+                target=target,
+            )
         )
         if grounded is None:
             return None
@@ -1426,13 +1440,34 @@ class TaskRuntimeModule(Module):
             "action": action,
             **({"target": target} if target else {}),
             **grounded,
-            **{
-                key: value
-                for key, value in step.metadata.items()
-                if key in {"operation", "query", "provider", "prompt"}
-                and value not in {None, ""}
-            },
         }
+
+        properties = {}
+        try:
+            definition = self.tool_request_builder.selector.select(
+                IntentResult(
+                    intent=IntentType.COMMAND,
+                    confidence=float(task.metadata.get("confidence", 0.98)),
+                    normalized_text=task.goal,
+                    entities=dict(intent_entities),
+                    requires_tools=True,
+                    classifier=str(task.metadata.get("classifier", "rules")),
+                )
+            )
+            properties = dict(
+                (definition.input_schema or {}).get("properties") or {}
+            )
+        except ValueError:
+            properties = {}
+
+        for key, value in step.metadata.items():
+            if (
+                key in properties
+                and key != "action"
+                and value not in {None, ""}
+                and key not in intent_entities
+            ):
+                intent_entities[key] = value
 
         intent = IntentResult(
             intent=IntentType.COMMAND,
@@ -1486,7 +1521,7 @@ class TaskRuntimeModule(Module):
 
         agent_state = task.metadata.get("agent_state")
         if not isinstance(agent_state, dict):
-            return {}
+            return None
 
         observations = list(agent_state.get("observations") or ())
         wanted = target.strip().lower()
