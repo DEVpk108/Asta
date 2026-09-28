@@ -17,6 +17,7 @@ class ActionType(str, Enum):
     TYPE_TEXT = "type_text"
     KEYPRESS = "keypress"
     HOTKEY = "hotkey"
+    LOCATE = "locate"
     SCROLL = "scroll"
     SCREENSHOT = "screenshot"
     MEDIA = "media"
