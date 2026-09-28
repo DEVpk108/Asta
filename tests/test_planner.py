@@ -201,6 +201,112 @@ def test_planner_expands_provider_media_play_into_open_and_play():
     assert plan.steps[1].metadata["provider"] == "spotify"
 
 
+class FakeCapabilityTool(Tool):
+    def __init__(self, name, action, properties=None, required=()):
+        self._name = name
+        self._action = action
+        self._properties = properties or {}
+        self._required = list(required)
+
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name=self._name,
+            description=f"{self._action} for tests.",
+            input_schema={
+                "type": "object",
+                "properties": self._properties,
+                "required": self._required,
+            },
+            risk_level="low",
+            requires_confirmation=False,
+            metadata={"actions": [self._action], "category": "computer"},
+        )
+
+    def execute(self, request):
+        raise AssertionError("planner tests must not execute tools")
+
+def test_planner_uses_generic_computer_control_for_explicit_app_media_flow():
+    kernel = Kernel()
+    kernel.register_tool(FakeTool())
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "vision.locate",
+            "locate",
+            {"target": {"type": "string"}},
+            required=("target",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.click",
+            "click",
+            {"target": {"type": "string"}},
+            required=("target",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.type_text",
+            "type_text",
+            {"text": {"type": "string"}},
+            required=("text",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.keypress",
+            "keypress",
+            {"key": {"type": "string"}},
+            required=("key",),
+        )
+    )
+    kernel.register_tool(FakeInspectTool())
+
+    planner = Planner(
+        kernel.tool_registry,
+        media_manager=MediaManager(),
+        application_manager=kernel.application_manager,
+    )
+    intent = IntentResult(
+        intent=IntentType.COMMAND,
+        confidence=0.98,
+        normalized_text="open spotify search for hanuman chalisa and play it",
+        entities={
+            "commands": [
+                {"action": "open", "target": "spotify"},
+                {
+                    "action": "media",
+                    "operation": "play",
+                    "query": "hanuman chalisa",
+                    "provider": "spotify",
+                },
+            ]
+        },
+        requires_tools=True,
+        classifier="rules",
+    )
+
+    plan = planner.plan(
+        "open spotify, search for hanuman chalisa, and play it",
+        intent=intent,
+    )
+
+    assert [step.metadata["tool"] for step in plan.steps] == [
+        "test.open",
+        "vision.locate",
+        "computer.click",
+        "computer.type_text",
+        "computer.keypress",
+        "vision.locate",
+        "computer.click",
+        "vision.inspect",
+    ]
+    assert plan.steps[3].metadata["text"] == "hanuman chalisa"
+    assert plan.steps[4].metadata["key"] == "enter"
+    assert plan.steps[6].metadata["target"] == "hanuman chalisa"
+    assert "Requested item: hanuman chalisa" in plan.steps[7].metadata["prompt"]
+
 def test_planner_collapses_adjacent_duplicate_cognitive_actions():
     planner = _planner()
 
