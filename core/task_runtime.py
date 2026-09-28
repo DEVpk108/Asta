@@ -1440,34 +1440,13 @@ class TaskRuntimeModule(Module):
             "action": action,
             **({"target": target} if target else {}),
             **grounded,
-        }
-
-        properties = {}
-        try:
-            definition = self.tool_request_builder.selector.select(
-                IntentResult(
-                    intent=IntentType.COMMAND,
-                    confidence=float(task.metadata.get("confidence", 0.98)),
-                    normalized_text=task.goal,
-                    entities=dict(intent_entities),
-                    requires_tools=True,
-                    classifier=str(task.metadata.get("classifier", "rules")),
-                )
-            )
-            properties = dict(
-                (definition.input_schema or {}).get("properties") or {}
-            )
-        except ValueError:
-            properties = {}
-
-        for key, value in step.metadata.items():
-            if (
-                key in properties
-                and key != "action"
+            **{
+                key: value
+                for key, value in step.metadata.items()
+                if key in {"operation", "query", "provider", "prompt", "text", "key", "button", "clicks", "interval", "amount"}
                 and value not in {None, ""}
-                and key not in intent_entities
-            ):
-                intent_entities[key] = value
+            },
+        }
 
         intent = IntentResult(
             intent=IntentType.COMMAND,
