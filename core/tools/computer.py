@@ -130,6 +130,8 @@ class ComputerClickTool(_ComputerTool):
                 error=f"Mouse click failed: {type(exc).__name__}: {exc}",
                 start=start,
             )
+        if "target" in request.arguments:
+            output["target"] = request.arguments.get("target")
         return _result(request, True, output=output, start=start)
 
 
