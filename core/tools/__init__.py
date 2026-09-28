@@ -26,6 +26,15 @@ from .vision_inspect import VisionInspectTool
 from .system import OpenApplicationTool
 from .notes import CreateNoteTool, ListNotesTool, ReadNoteTool, SearchNotesTool
 from .media import MediaControlTool
+from .computer import (
+    ComputerController,
+    ComputerMoveMouseTool,
+    ComputerClickTool,
+    ComputerTypeTextTool,
+    ComputerKeypressTool,
+    ComputerHotkeyTool,
+    ComputerScrollTool,
+)
 from .test_tool import EchoTool
 
 __all__ = [
@@ -38,4 +47,7 @@ __all__ = [
     "ScreenshotTool", "OpenScreenshotTool", "VisionInspectTool", "AudioControlTool", "EchoTool",
     "CreateNoteTool", "ReadNoteTool", "ListNotesTool", "SearchNotesTool",
     "MediaControlTool",
+    "ComputerController", "ComputerMoveMouseTool", "ComputerClickTool",
+    "ComputerTypeTextTool", "ComputerKeypressTool", "ComputerHotkeyTool",
+    "ComputerScrollTool",
 ]
