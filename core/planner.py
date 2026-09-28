@@ -513,7 +513,10 @@ class Planner:
                 and previous_target
             ):
                 expanded.extend(
-                    self._interactive_media_play_steps(query=query)
+                    self._interactive_media_play_steps(
+                        query=query,
+                        application=previous_target,
+                    )
                 )
                 continue
 
@@ -559,14 +562,24 @@ class Planner:
 
         return expanded
 
-    def _interactive_media_play_steps(self, *, query: str) -> list[dict[str, Any]]:
+    def _interactive_media_play_steps(
+        self,
+        *,
+        query: str,
+        application: str = "",
+    ) -> list[dict[str, Any]]:
         """Build a provider-agnostic GUI search/play sequence."""
         search_target = "Search"
         result_target = query
+        application_text = application.strip() or "the target application"
         verification_prompt = (
-            "Verify that the requested media is now playing in the currently "
-            f"open application. Requested item: {query}. Set visual_match=true "
-            "only when the screenshot shows evidence that playback is active."
+            f"Verify that '{query}' is actually playing in {application_text}. "
+            "Inspect only the target application's own UI. Ignore A.S.T.A.'s HUD, "
+            "conversation panel, assistant messages, subtitles, terminal output, "
+            "or any overlay/text that merely repeats the requested item or command. "
+            "Require concrete in-app playback evidence such as the requested track, "
+            "artist/title, and an active playback indicator or player state. "
+            "Set visual_match=true only when that evidence is visible in the supplied screenshot."
         )
         return [
             {
