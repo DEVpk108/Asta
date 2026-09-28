@@ -36,7 +36,7 @@ class ComputerMoveMouseTool(_ComputerTool):
                     "y": {"type": "number"},
                     "duration": {"type": "number", "minimum": 0},
                 },
-                "required": ["x", "y"],
+                "required": [],
                 "additionalProperties": False,
             },
             risk_level="low",
