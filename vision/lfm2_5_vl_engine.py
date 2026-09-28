@@ -197,6 +197,7 @@ class LFM25VLEngine:
         *,
         json_mode: bool = True,
         system_prompt: str | None = None,
+        response_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         model = self._discover_model()
         data_url = self._image_data_url(image_path)
@@ -241,7 +242,13 @@ class LFM25VLEngine:
             "cache_prompt": False,
         }
         if json_mode:
-            payload["response_format"] = {"type": "json_object"}
+            if isinstance(response_schema, dict) and response_schema:
+                payload["response_format"] = {
+                    "type": "json_object",
+                    "schema": response_schema,
+                }
+            else:
+                payload["response_format"] = {"type": "json_object"}
 
         request_start = time.perf_counter()
         first_delta_time = None
