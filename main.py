@@ -213,6 +213,10 @@ def main():
             kernel.vision_engine,
             capture=capture_screenshot,
         ),
+        VisionLocateTool(
+            kernel.vision_engine,
+            capture=capture_screenshot,
+        ),
         AudioControlTool("mute"),
         AudioControlTool("unmute"),
         CreateNoteTool(kernel.notes_manager),
