@@ -1257,9 +1257,8 @@ class TaskRuntimeModule(Module):
             operation = str(command.get("operation") or "").strip().lower()
             query = str(command.get("query") or "").strip()
             if operation == "play" and query:
-                provider = str(command.get("provider") or "").strip()
-                suffix = f" on {provider}" if provider else ""
-                return f"Okay, sir. Playing {query}{suffix}."
+                spoken_query = query.title()
+                return f"Okay, sir. Playing {spoken_query}."
 
         for command in candidates:
             if not isinstance(command, dict):
