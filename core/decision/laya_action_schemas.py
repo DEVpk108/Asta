@@ -19,6 +19,7 @@ ACTION_TYPES = {
     "click": "Click a screen location with the mouse.",
     "type_text": "Type, write, enter, or paste text into the currently focused application.",
     "keypress": "Press a keyboard key or shortcut such as enter, escape, copy, paste, save, or new tab.",
+    "locate": "Locate a visual target on the current screen and return grounded coordinates.",
     "scroll": "Scroll the current page or document up, down, to the top, or to the bottom.",
     "screenshot": "Capture a screenshot of the current screen.",
     "media": "Control media playback such as play, pause, next track, or previous track.",
