@@ -4,6 +4,7 @@ import base64
 import json
 import mimetypes
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -51,7 +52,7 @@ class LFM25VLEngine:
         self.max_output_tokens = int(
             max_output_tokens
             if max_output_tokens is not None
-            else os.getenv("ASTA_VISION_MAX_OUTPUT_TOKENS", "128")
+            else os.getenv("ASTA_VISION_MAX_OUTPUT_TOKENS", "64")
         )
         self.temperature = float(
             temperature
@@ -134,6 +135,50 @@ class LFM25VLEngine:
                 return parsed
         return None
 
+    @staticmethod
+    def _recover_truncated_json(text: str) -> dict[str, Any] | None:
+        """Recover the critical verification fields from a token-truncated JSON response."""
+        value = str(text or "").strip()
+        visual_match = re.search(
+            r'"visual_match"\s*:\s*(true|false)',
+            value,
+            flags=re.IGNORECASE,
+        )
+        confidence_match = re.search(
+            r'"confidence"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+            value,
+            flags=re.IGNORECASE,
+        )
+        summary_match = re.search(
+            r'"summary"\s*:\s*"((?:\\.|[^"\\])*)"',
+            value,
+            flags=re.IGNORECASE,
+        )
+
+        if visual_match is None or confidence_match is None:
+            return None
+
+        try:
+            confidence = max(
+                0.0,
+                min(1.0, float(confidence_match.group(1))),
+            )
+        except ValueError:
+            return None
+
+        summary = ""
+        if summary_match is not None:
+            try:
+                summary = json.loads('"{}"'.format(summary_match.group(1)))
+            except json.JSONDecodeError:
+                summary = summary_match.group(1).replace('\\"', '"')
+
+        return {
+            "visual_match": visual_match.group(1).lower() == "true",
+            "confidence": confidence,
+            "summary": summary,
+        }
+
     def warmup(self) -> bool:
         try:
             self._discover_model()
@@ -159,9 +204,9 @@ class LFM25VLEngine:
         if json_mode:
             system = system_prompt or (
                 "You are A.S.T.A.'s fast visual sensor. Inspect only the supplied image. "
-                "Do not invent unseen details. Return one JSON object with these fields: "
-                "visual_match (boolean), confidence (number 0 to 1), summary (string), "
-                "observations (array of concise strings)."
+                "Return ONLY one compact JSON object with exactly these fields: "
+                '{"visual_match":true,"confidence":0.95,"summary":"Calculator window is visible."}. '
+                "Rules: no markdown, no observations array, no extra keys, summary <= 12 words."
             )
         else:
             system = system_prompt or (
@@ -273,10 +318,16 @@ class LFM25VLEngine:
         )
 
         parsed = self._parse_json(text) if json_mode else None
+        recovered = False
+        if json_mode and parsed is None:
+            parsed = self._recover_truncated_json(text)
+            recovered = parsed is not None
+
         result: dict[str, Any] = {
             "model": model,
             "text": text,
             "json": parsed,
+            "json_recovered": recovered,
             "image_path": str(Path(image_path).resolve()),
             "ttft": ttft,
             "request_time": elapsed,

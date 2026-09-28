@@ -8,6 +8,15 @@ from core.contracts import ToolDefinition, ToolRequest, ToolResult
 from core.tools.base import Tool
 
 
+def _format_seconds(value) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.3f}s"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
 class VisionInspectTool(Tool):
     """Capture the current screen and inspect it with A.S.T.A.'s visual model."""
 
@@ -136,6 +145,20 @@ class VisionInspectTool(Tool):
             "output_tokens": inspection.get("output_tokens"),
             "tokens_per_second": inspection.get("tokens_per_second"),
         }
+
+        print(
+            "[Vision] Inspect: "
+            f"model={inspection.get('model') or 'unknown'} "
+            f"ttft={_format_seconds(inspection.get('ttft'))} "
+            f"request={_format_seconds(inspection.get('request_time'))} "
+            f"output={int(inspection.get('output_tokens') or 0)} tok "
+            f"speed={float(inspection.get('tokens_per_second') or 0.0):.2f} tok/s "
+            f"visual_match={str(visual_match).lower()} "
+            f"confidence={confidence:.2f} "
+            f"verified={str(verified).lower()} "
+            f"json_recovered={str(bool(inspection.get('json_recovered'))).lower()}",
+            flush=True,
+        )
 
         return ToolResult(
             success=True,
