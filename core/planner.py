@@ -569,9 +569,14 @@ class Planner:
         application: str = "",
     ) -> list[dict[str, Any]]:
         """Build a provider-agnostic GUI search/play sequence."""
-        search_target = "search input field"
-        result_target = query
         application_text = application.strip() or "the target application"
+        search_target = (
+            f"search field in {application_text} "
+            "(the text input used to enter a query)"
+        )
+        result_target = (
+            f"search result for '{query}' in {application_text}"
+        )
         verification_prompt = (
             f"Verify that '{query}' is actually playing in {application_text}. "
             "Inspect only the target application's own UI. Ignore A.S.T.A.'s HUD, "
