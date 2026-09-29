@@ -35,6 +35,7 @@ from .computer import (
     ComputerKeypressTool,
     ComputerHotkeyTool,
     ComputerScrollTool,
+    ComputerWaitTool,
 )
 from .test_tool import EchoTool
 
@@ -48,7 +49,7 @@ __all__ = [
     "ScreenshotTool", "OpenScreenshotTool", "VisionInspectTool", "VisionLocateTool", "AudioControlTool", "EchoTool",
     "CreateNoteTool", "ReadNoteTool", "ListNotesTool", "SearchNotesTool",
     "MediaControlTool",
-    "ComputerController", "ComputerMoveMouseTool", "ComputerClickTool",
+    "ComputerController", "ComputerWaitTool", "ComputerMoveMouseTool", "ComputerClickTool",
     "ComputerTypeTextTool", "ComputerKeypressTool", "ComputerHotkeyTool",
     "ComputerScrollTool",
 ]
