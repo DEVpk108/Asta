@@ -101,6 +101,7 @@ def test_locate_returns_grounded_image_and_screen_coordinates(tmp_path):
     assert "Do not copy coordinates" in system_prompt
     assert "target description is semantic" in system_prompt
     assert "search-field description may match" in system_prompt
+    assert "full clickable control" in system_prompt
     assert "matches this description" in vision.calls[0]["prompt"]
     schema = vision.calls[0]["response_schema"]
     assert schema["properties"]["bbox"]["anyOf"][1] == {"type": "null"}
