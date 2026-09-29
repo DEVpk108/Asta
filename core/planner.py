@@ -574,8 +574,9 @@ class Planner:
             f"the search input field used to enter a query in {application_text}"
         )
         result_target = (
-            f"the song title text '{query}' in the visible search results "
-            f"of {application_text}"
+            f"the search result row containing the song title '{query}' "
+            f"in {application_text}; exclude the search input, navigation bar, "
+            "player controls, and unrelated icons"
         )
         verification_prompt = (
             f"Verify that '{query}' is actually playing in {application_text}. "
@@ -608,6 +609,11 @@ class Planner:
                 "action": "keypress",
                 "tool": "computer.keypress",
                 "key": "enter",
+            },
+            {
+                "action": "wait",
+                "tool": "computer.wait",
+                "seconds": 1.0,
             },
             {
                 "action": "locate",
