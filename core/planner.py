@@ -574,8 +574,8 @@ class Planner:
             f"the search input field used to enter a query in {application_text}"
         )
         result_target = (
-            f"the visible song or track result titled '{query}' "
-            f"in {application_text}"
+            f"the song title text '{query}' in the visible search results "
+            f"of {application_text}"
         )
         verification_prompt = (
             f"Verify that '{query}' is actually playing in {application_text}. "
