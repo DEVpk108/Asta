@@ -321,7 +321,7 @@ def test_planner_uses_generic_computer_control_for_explicit_app_media_flow():
     assert plan.steps[6].metadata["target"] == (
         "the search result row containing the song title 'hanuman chalisa' in spotify; exclude the search input, navigation bar, player controls, and unrelated icons"
     )
-    verification_prompt = plan.steps[7].metadata["prompt"]
+    verification_prompt = plan.steps[8].metadata["prompt"]
     assert "Requested item: hanuman chalisa" not in verification_prompt
     assert "spotify" in verification_prompt
     assert "target application's own UI" in verification_prompt
