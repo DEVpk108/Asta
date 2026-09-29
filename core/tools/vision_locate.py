@@ -373,16 +373,19 @@ class VisionLocateTool(Tool):
             )
 
         prompt = (
-            "Provide bounding boxes for the UI element for this instruction: "
-            f"{target}"
+            "Locate the clickable UI element described by this instruction:\n"
+            f"{target}\n\n"
+            "Inspect the screenshot carefully, especially small or unlabeled controls. "
+            "Return only one tight bounding box whose center is the exact point you would click."
         )
         system_prompt = (
             "When asked for bounding boxes for objects, return a valid JSON array. "
             "Each array item must be an object with: "
             "image_id: the 0-based index of the image; "
             "bbox_2d: [xmin, ymin, xmax, ymax] normalized integer coordinates in [0, 1000]; "
-            "label: a concise label you choose for the predicted object or region. "
-            "For this task, return at most one item: the single best matching visible UI element. "
+            "label: a concise label you choose for the predicted object or region, and do not "
+            "copy the instruction verbatim. For this task, return at most one item: the single "
+            "best matching visible UI element. "
             "Ground the complete interactive control when the instruction refers to an input, "
             "button, or field. Use the visual role, visible label, placeholder text, icon, and "
             "control shape to identify the target. Do not return a nearby decorative icon or an "
