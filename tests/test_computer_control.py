@@ -79,3 +79,14 @@ def test_click_tool_allows_runtime_grounded_target():
 
     assert definition.input_schema["required"] == []
     assert "target" in definition.input_schema["properties"]
+
+
+def test_wait_tool_has_safe_default_and_limit():
+    from core.tools.computer import ComputerWaitTool
+
+    definition = ComputerWaitTool().definition
+
+    assert definition.name == "computer.wait"
+    assert definition.input_schema["properties"]["seconds"]["minimum"] == 0
+    assert definition.input_schema["properties"]["seconds"]["maximum"] == 10
+    assert definition.input_schema["required"] == []
