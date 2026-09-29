@@ -261,6 +261,14 @@ def test_planner_uses_generic_computer_control_for_explicit_app_media_flow():
             required=("key",),
         )
     )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.wait",
+            "wait",
+            {"seconds": {"type": "number"}},
+            required=(),
+        )
+    )
     kernel.register_tool(FakeInspectTool())
 
     planner = Planner(
@@ -298,6 +306,7 @@ def test_planner_uses_generic_computer_control_for_explicit_app_media_flow():
         "computer.click",
         "computer.type_text",
         "computer.keypress",
+        "computer.wait",
         "vision.locate",
         "computer.click",
         "vision.inspect",
@@ -308,8 +317,9 @@ def test_planner_uses_generic_computer_control_for_explicit_app_media_flow():
     assert plan.steps[2].metadata["target"] == plan.steps[1].metadata["target"]
     assert plan.steps[3].metadata["text"] == "hanuman chalisa"
     assert plan.steps[4].metadata["key"] == "enter"
+    assert plan.steps[5].metadata["seconds"] == 1.0
     assert plan.steps[6].metadata["target"] == (
-        "the song title text 'hanuman chalisa' in the visible search results of spotify"
+        "the search result row containing the song title 'hanuman chalisa' in spotify; exclude the search input, navigation bar, player controls, and unrelated icons"
     )
     verification_prompt = plan.steps[7].metadata["prompt"]
     assert "Requested item: hanuman chalisa" not in verification_prompt
