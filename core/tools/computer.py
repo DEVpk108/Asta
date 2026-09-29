@@ -250,6 +250,47 @@ class ComputerHotkeyTool(_ComputerTool):
         return _result(request, True, output=output, start=start)
 
 
+class ComputerWaitTool(_ComputerTool):
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name="computer.wait",
+            description="Wait briefly for the current application or interface to settle.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "seconds": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 10,
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+            risk_level="low",
+            metadata={
+                "actions": ["wait", "sleep", "settle"],
+                "category": "computer",
+            },
+        )
+
+    def execute(self, request):
+        start = time.perf_counter()
+        try:
+            output = self.controller.wait(
+                seconds=request.arguments.get("seconds", 0.5),
+            )
+        except Exception as exc:
+            return _result(
+                request,
+                False,
+                error=f"Wait failed: {type(exc).__name__}: {exc}",
+                start=start,
+            )
+        return _result(request, True, output=output, start=start)
+
+
 class ComputerScrollTool(_ComputerTool):
     @property
     def definition(self):
@@ -293,6 +334,7 @@ class ComputerScrollTool(_ComputerTool):
 
 __all__ = [
     "ComputerController",
+    "ComputerWaitTool",
     "ComputerMoveMouseTool",
     "ComputerClickTool",
     "ComputerTypeTextTool",
