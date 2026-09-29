@@ -143,8 +143,18 @@ class VisionServerManager:
             or "lfm2.5vl" in path.name.lower()
         ]
 
+        # Prefer the 3B checkpoint when multiple LFM2.5-VL variants are
+        # installed. The 3B model is explicitly trained for stronger
+        # grounding/object detection, while the 1.6B model is documented
+        # primarily for general vision/OCR workloads.
+        lfm_grounding_models = [
+            path for path in lfm_models
+            if "3b" in path.name.lower()
+        ]
         selected_model = (
-            lfm_models[0] if len(lfm_models) == 1
+            lfm_grounding_models[0]
+            if len(lfm_grounding_models) == 1
+            else lfm_models[0] if len(lfm_models) == 1
             else models[0] if len(models) == 1
             else None
         )
