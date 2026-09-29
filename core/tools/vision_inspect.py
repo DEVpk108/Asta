@@ -1,11 +1,33 @@
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Callable
 
 from core.contracts import ToolDefinition, ToolRequest, ToolResult
 from core.tools.base import Tool
+
+
+def _extract_required_playback_text(prompt: str) -> str | None:
+    """Extract an explicitly requested playback title from the verifier prompt."""
+    match = re.search(
+        r"Verify that ['\"](.+?)['\"] is actually playing",
+        str(prompt or ""),
+        flags=re.IGNORECASE,
+    )
+    return match.group(1).strip() if match else None
+
+
+def _text_contains_required_phrase(text: str, required: str) -> bool:
+    def normalize(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+    wanted = normalize(required)
+    haystack = normalize(text)
+    if not wanted or not haystack:
+        return False
+    return wanted in haystack
 
 
 def _format_seconds(value) -> str:
@@ -128,6 +150,29 @@ class VisionInspectTool(Tool):
         confidence = max(0.0, min(1.0, confidence))
 
         visual_match = bool(parsed.get("visual_match", False))
+        verification_guard = None
+        required_playback_text = _extract_required_playback_text(prompt)
+        evidence_text = " ".join(
+            [
+                str(parsed.get("summary") or ""),
+                str(parsed.get("observations") or ""),
+                str(inspection.get("text") or ""),
+            ]
+        )
+        if (
+            visual_match
+            and required_playback_text
+            and not _text_contains_required_phrase(
+                evidence_text,
+                required_playback_text,
+            )
+        ):
+            visual_match = False
+            verification_guard = (
+                "Model evidence did not contain the explicitly requested "
+                f"playback title '{required_playback_text}'."
+            )
+
         verified = bool(
             visual_match and confidence >= 0.70
         )
@@ -139,6 +184,8 @@ class VisionInspectTool(Tool):
             "visual_match": visual_match,
             "verified": verified,
             "confidence": confidence,
+            "required_playback_text": required_playback_text,
+            "verification_guard": verification_guard,
             "model": inspection.get("model"),
             "ttft": inspection.get("ttft"),
             "request_time": inspection.get("request_time"),
@@ -156,6 +203,7 @@ class VisionInspectTool(Tool):
             f"visual_match={str(visual_match).lower()} "
             f"confidence={confidence:.2f} "
             f"verified={str(verified).lower()} "
+            f"guarded={str(bool(verification_guard)).lower()} "
             f"json_recovered={str(bool(inspection.get('json_recovered'))).lower()}",
             flush=True,
         )
