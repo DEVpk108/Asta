@@ -102,7 +102,8 @@ def test_locate_returns_grounded_image_and_screen_coordinates(tmp_path):
     assert "normalized integer coordinates in [0, 1000]" in system_prompt
     assert "complete interactive control" in system_prompt
     assert "Return []" in system_prompt
-    assert "Provide bounding boxes for the UI element for this instruction" in vision.calls[0]["prompt"]
+    assert "Locate the clickable UI element described by this instruction" in vision.calls[0]["prompt"]
+    assert "one tight bounding box" in vision.calls[0]["prompt"]
     schema = vision.calls[0]["response_schema"]
     assert schema["type"] == "array"
     assert schema["maxItems"] == 1
