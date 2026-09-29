@@ -100,6 +100,7 @@ class Planner:
             print("[Agent] Cognitive planning disabled (ASTA_AGENT_MODE=0).", flush=True)
 
         commands = self._expand_media_commands(commands)
+        commands = self._expand_search_commands(commands)
         commands = self._normalize_grounded_computer_commands(commands)
 
         if planner_name == "cognitive_v1":
@@ -201,6 +202,119 @@ class Planner:
             flush=True,
         )
         return plan
+
+    def _expand_search_commands(
+        self,
+        commands: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Expand a generic semantic search into provider-agnostic GUI steps."""
+        expanded: list[dict[str, Any]] = []
+
+        for index, command in enumerate(commands):
+            normalized = dict(command)
+            action = str(normalized.get("action") or "").strip().lower()
+            if action != "search":
+                expanded.append(normalized)
+                continue
+
+            query = str(normalized.get("query") or "").strip()
+            if not query:
+                raise PlanningError("search command requires a non-empty query")
+
+            application = str(normalized.get("target") or "").strip()
+
+            # A compound command such as "open Chrome and search for X" already
+            # established the application immediately before the search step.
+            previous = expanded[-1] if expanded else None
+            previous_action = str(
+                (previous or {}).get("action") or ""
+            ).strip().lower()
+            previous_target = str(
+                (previous or {}).get("target") or ""
+            ).strip()
+            if (
+                not application
+                and previous_action in {"open", "launch", "start"}
+                and previous_target
+            ):
+                application = previous_target
+
+            if not application and self.application_manager is not None:
+                recent = getattr(
+                    self.application_manager,
+                    "last_opened_application",
+                    None,
+                )
+                recent_name = getattr(recent, "name", recent)
+                application = str(recent_name or "").strip()
+
+            application_text = application or "the current application"
+            search_target = (
+                f"the primary search input field in {application_text}; "
+                "for a browser, use its address/search bar when that is the "
+                "interface's search entry point"
+            )
+            verification_prompt = (
+                f"Verify that search results for '{query}' are visible in "
+                f"{application_text}. Inspect only the target application's "
+                "own UI. Ignore A.S.T.A.'s HUD, conversation panel, assistant "
+                "messages, terminal output, subtitles, and unrelated overlays. "
+                "Require concrete evidence that the requested search was "
+                "submitted and the application's result page or result content "
+                f"corresponds to '{query}'. Set visual_match=true only when "
+                "that evidence is visible."
+            )
+
+            if not (
+                previous_action in {"open", "launch", "start"}
+                and previous_target
+                and application
+                and previous_target.lower() == application.lower()
+            ):
+                if application:
+                    expanded.append(
+                        {
+                            "action": "open",
+                            "target": application,
+                        }
+                    )
+
+            expanded.extend(
+                (
+                    {
+                        "action": "locate",
+                        "tool": "vision.locate",
+                        "target": search_target,
+                    },
+                    {
+                        "action": "click",
+                        "tool": "computer.click",
+                        "target": search_target,
+                    },
+                    {
+                        "action": "type_text",
+                        "tool": "computer.type_text",
+                        "text": query,
+                    },
+                    {
+                        "action": "keypress",
+                        "tool": "computer.keypress",
+                        "key": "enter",
+                    },
+                    {
+                        "action": "wait",
+                        "tool": "computer.wait",
+                        "seconds": 1.0,
+                    },
+                    {
+                        "action": "inspect",
+                        "tool": "vision.inspect",
+                        "prompt": verification_prompt,
+                    },
+                )
+            )
+
+        return expanded
 
     def _normalize_grounded_computer_commands(
         self,
