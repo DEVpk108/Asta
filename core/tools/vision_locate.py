@@ -526,6 +526,49 @@ class VisionLocateTool(Tool):
                 metadata={"request_id": request.request_id},
             )
 
+        try:
+            bbox = self._normalize_bbox(
+                parsed.get("bbox"),
+                width=width,
+                height=height,
+            )
+        except ValueError as exc:
+            print(
+                "[Vision] Locate failed: "
+                f"target={target!r} reason=invalid_bbox error={str(exc)!r}",
+                flush=True,
+            )
+            return ToolResult(
+                success=False,
+                tool=request.tool,
+                output=base_output,
+                error=f"Invalid visual grounding: {exc}",
+                duration_seconds=time.perf_counter() - start,
+                metadata={"request_id": request.request_id},
+            )
+
+        if confidence is not None and confidence < self.confidence_threshold:
+            print(
+                "[Vision] Locate failed: "
+                f"target={target!r} reason=low_confidence "
+                f"confidence={confidence:.2f} threshold={self.confidence_threshold:.2f}",
+                flush=True,
+            )
+            return ToolResult(
+                success=False,
+                tool=request.tool,
+                output={
+                    **base_output,
+                    "bbox": bbox,
+                },
+                error=(
+                    f"Visual grounding confidence {confidence:.2f} is below "
+                    f"the required threshold {self.confidence_threshold:.2f}."
+                ),
+                duration_seconds=time.perf_counter() - start,
+                metadata={"request_id": request.request_id},
+            )
+
         center = {
             "x": int(round(bbox["x"] + bbox["width"] / 2)),
             "y": int(round(bbox["y"] + bbox["height"] / 2)),
