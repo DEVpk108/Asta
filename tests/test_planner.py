@@ -309,7 +309,7 @@ def test_planner_uses_generic_computer_control_for_explicit_app_media_flow():
     assert plan.steps[3].metadata["text"] == "hanuman chalisa"
     assert plan.steps[4].metadata["key"] == "enter"
     assert plan.steps[6].metadata["target"] == (
-        "the visible song or track result titled 'hanuman chalisa' in spotify"
+        "the song title text 'hanuman chalisa' in the visible search results of spotify"
     )
     verification_prompt = plan.steps[7].metadata["prompt"]
     assert "Requested item: hanuman chalisa" not in verification_prompt
