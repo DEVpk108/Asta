@@ -282,19 +282,25 @@ class VisionLocateTool(Tool):
             )
 
         prompt = (
-            f"Locate the visual target '{target}' in the supplied screenshot. "
+            f"Where is the single screen element that matches this description: {target}. "
             "Return its bounding box as normalized coordinates from 0 to 1000, "
             "with [x1, y1, x2, y2] measured from the screenshot top-left. "
-            "Return found=false and bbox=null when absent or ambiguous."
+            "The description is semantic: the element may be represented by an icon, "
+            "placeholder text, shape, or other visual affordance rather than the exact words "
+            "in the description. Return found=false and bbox=null only when the matching element "
+            "is absent or genuinely ambiguous."
         )
         system_prompt = (
-            "You are A.S.T.A.'s visual grounding sensor. Inspect only the supplied image. "
-            "Return exactly one compact JSON object with fields found, element, bbox, and confidence. "
-            "When found=true, bbox must be [x1, y1, x2, y2] using normalized 0-1000 image coordinates "
-            "(not desktop pixels). When found=false, bbox must be null. Only set found=true when the "
-            "requested target is actually visible and unambiguous. Do not copy coordinates, labels, "
-            "or conclusions from this prompt. Do not use prior context or assumed UI state. "
-            "Return no markdown and no extra fields."
+            "You are A.S.T.A.'s screen-grounding sensor. Inspect only the supplied screenshot "
+            "and ground the requested UI element. The target description is semantic, not necessarily "
+            "literal text: use visible labels, icons, placeholder text, control shape, and visual role "
+            "to identify the single matching element. For example, a search-field description may match "
+            "a text box with a magnifying-glass icon and a search placeholder. Return exactly one compact "
+            "JSON object with fields found, element, bbox, and confidence. When found=true, bbox must be "
+            "[x1, y1, x2, y2] using normalized 0-1000 image coordinates (not desktop pixels). When "
+            "found=false, bbox must be null. Only set found=true when the requested element is visibly "
+            "present and unambiguous. Do not copy coordinates, labels, or conclusions from this prompt. "
+            "Do not use prior context or assumed UI state. Return no markdown and no extra fields."
         )
 
         response_schema = {
