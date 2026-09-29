@@ -171,9 +171,96 @@ class VisionLocateTool(Tool):
         }
 
     @staticmethod
+    def _normalize_grounding_payload(payload: Any) -> dict[str, Any] | None:
+        """Normalize native grounding_json output and legacy object output."""
+        if isinstance(payload, list):
+            if not payload:
+                return {
+                    "found": False,
+                    "element": "",
+                    "bbox": None,
+                    "confidence": None,
+                    "grounding_protocol": "grounding_json",
+                }
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                bbox = item.get("bbox_2d")
+                if bbox is None:
+                    bbox = item.get("bbox")
+                if bbox is None:
+                    continue
+                return {
+                    "found": True,
+                    "element": str(item.get("label") or "").strip(),
+                    "bbox": bbox,
+                    "confidence": (
+                        item.get("confidence")
+                        if item.get("confidence") is not None
+                        else None
+                    ),
+                    "grounding_protocol": "grounding_json",
+                }
+            return None
+
+        if isinstance(payload, dict):
+            if "bbox_2d" in payload:
+                return {
+                    "found": True,
+                    "element": str(payload.get("label") or "").strip(),
+                    "bbox": payload.get("bbox_2d"),
+                    "confidence": payload.get("confidence"),
+                    "grounding_protocol": "grounding_json",
+                }
+            return payload
+
+        return None
+
+    @staticmethod
     def _recover_truncated_grounding(text: str) -> dict[str, Any] | None:
         """Recover critical grounding fields when JSON is cut off by token limits."""
         value = str(text or "").strip()
+
+        native_bbox_match = re.search(
+            r'"bbox_2d"\s*:\s*\[\s*'
+            r'([0-9]+(?:\.[0-9]+)?)\s*,\s*'
+            r'([0-9]+(?:\.[0-9]+)?)\s*,\s*'
+            r'([0-9]+(?:\.[0-9]+)?)\s*,\s*'
+            r'([0-9]+(?:\.[0-9]+)?)',
+            value,
+            flags=re.IGNORECASE,
+        )
+        native_label_match = re.search(
+            r'"label"\s*:\s*"((?:\\.|[^"\\])*)"',
+            value,
+            flags=re.IGNORECASE,
+        )
+        if native_bbox_match is not None:
+            try:
+                bbox = [
+                    float(native_bbox_match.group(index))
+                    for index in range(1, 5)
+                ]
+            except (TypeError, ValueError):
+                return None
+
+            label = ""
+            if native_label_match is not None:
+                try:
+                    label = json.loads(
+                        f'"{native_label_match.group(1)}"'
+                    )
+                except json.JSONDecodeError:
+                    label = native_label_match.group(1)
+
+            return {
+                "found": True,
+                "element": str(label).strip(),
+                "bbox": bbox,
+                "confidence": None,
+                "grounding_protocol": "grounding_json",
+            }
+
         found_match = re.search(
             r'"found"\s*:\s*(true|false)',
             value,
@@ -210,15 +297,18 @@ class VisionLocateTool(Tool):
 
         if (
             found_match is None
-            or confidence_match is None
             or (bbox_list_match is None and bbox_object_match is None)
         ):
             return None
 
         try:
-            confidence = max(
-                0.0,
-                min(1.0, float(confidence_match.group(1))),
+            confidence = (
+                max(
+                    0.0,
+                    min(1.0, float(confidence_match.group(1))),
+                )
+                if confidence_match is not None
+                else None
             )
             if bbox_list_match is not None:
                 bbox = [
@@ -246,6 +336,7 @@ class VisionLocateTool(Tool):
             "element": element,
             "bbox": bbox,
             "confidence": confidence,
+            "grounding_protocol": "legacy_json",
         }
 
     def execute(self, request: ToolRequest) -> ToolResult:
@@ -282,52 +373,42 @@ class VisionLocateTool(Tool):
             )
 
         prompt = (
-            f"Find the single visible UI element that best matches this description: {target}. "
-            "Return its bounding box as normalized coordinates from 0 to 1000, "
-            "with [x1, y1, x2, y2] measured from the screenshot top-left. "
-            "Use the whole interactive control when the description refers to an input, button, "
-            "or field, not a nearby decorative icon or unrelated control. "
-            "The description is semantic: the element may be represented by visible text, "
-            "placeholder text, an icon, shape, or visual role rather than the exact words "
-            "in the description. Prefer the most direct visual match and do not choose a "
-            "different control merely because its shape is similar. Return found=false and "
-            "bbox=null only when the matching element is absent or genuinely ambiguous."
+            "Provide bounding boxes for the UI element for this instruction: "
+            f"{target}"
         )
         system_prompt = (
-            "You are A.S.T.A.'s screen-grounding sensor. Inspect only the supplied screenshot "
-            "and ground the requested UI element. The target description is semantic, not necessarily "
-            "literal text: use visible labels, icons, placeholder text, control shape, and visual role "
-            "to identify the single matching element. When the target describes an input field or "
-            "button, ground the full clickable control rather than an adjacent decorative icon, avatar, "
-            "or unrelated control. For example, a search-field description may match a text box with "
-            "a magnifying-glass icon and a search placeholder. Return exactly one compact "
-            "JSON object with fields found, element, bbox, and confidence. When found=true, bbox must be "
-            "[x1, y1, x2, y2] using normalized 0-1000 image coordinates (not desktop pixels). When "
-            "found=false, bbox must be null. Only set found=true when the requested element is visibly "
-            "present and unambiguous. Do not copy coordinates, labels, or conclusions from this prompt. "
-            "Do not use prior context or assumed UI state. Return no markdown and no extra fields."
+            "When asked for bounding boxes for objects, return a valid JSON array. "
+            "Each array item must be an object with: "
+            "image_id: the 0-based index of the image; "
+            "bbox_2d: [xmin, ymin, xmax, ymax] normalized integer coordinates in [0, 1000]; "
+            "label: a concise label you choose for the predicted object or region. "
+            "For this task, return at most one item: the single best matching visible UI element. "
+            "Ground the complete interactive control when the instruction refers to an input, "
+            "button, or field. Use the visual role, visible label, placeholder text, icon, and "
+            "control shape to identify the target. Do not return a nearby decorative icon or an "
+            "unrelated control. Return [] when the requested element is not visible or is ambiguous. "
+            "Return only the JSON array and no markdown or explanation."
         )
 
         response_schema = {
-            "type": "object",
-            "properties": {
-                "found": {"type": "boolean"},
-                "element": {"type": "string"},
-                "bbox": {
-                    "anyOf": [
-                        {
-                            "type": "array",
-                            "items": {"type": "number"},
-                            "minItems": 4,
-                            "maxItems": 4,
-                        },
-                        {"type": "null"},
-                    ],
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 1,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "image_id": {"type": "integer"},
+                    "bbox_2d": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "minItems": 4,
+                        "maxItems": 4,
+                    },
+                    "label": {"type": "string"},
                 },
-                "confidence": {"type": "number"},
+                "required": ["image_id", "bbox_2d", "label"],
+                "additionalProperties": False,
             },
-            "required": ["found", "element", "bbox", "confidence"],
-            "additionalProperties": False,
         }
 
         try:
@@ -348,9 +429,11 @@ class VisionLocateTool(Tool):
                 metadata={"request_id": request.request_id},
             )
 
-        parsed = inspection.get("json")
+        parsed_payload = inspection.get("json")
+        parsed = self._normalize_grounding_payload(parsed_payload)
         json_recovered = False
-        if not isinstance(parsed, dict):
+
+        if parsed is None:
             recovered = self._recover_truncated_grounding(
                 inspection.get("text", "")
             )
@@ -389,13 +472,15 @@ class VisionLocateTool(Tool):
                 )
 
         found = bool(parsed.get("found", False))
+        raw_confidence = parsed.get("confidence")
         try:
-            confidence = max(
-                0.0,
-                min(1.0, float(parsed.get("confidence", 0.0))),
+            confidence = (
+                max(0.0, min(1.0, float(raw_confidence)))
+                if raw_confidence is not None
+                else None
             )
         except (TypeError, ValueError):
-            confidence = 0.0
+            confidence = None
 
         base_output = {
             "target": target,
@@ -407,19 +492,28 @@ class VisionLocateTool(Tool):
             "found": found,
             "element": str(parsed.get("element") or target).strip(),
             "confidence": confidence,
+            "confidence_source": (
+                "model"
+                if confidence is not None
+                else "grounding_protocol_presence"
+            ),
+            "grounding_protocol": str(
+                parsed.get("grounding_protocol") or "legacy_json"
+            ),
             "json_recovered": json_recovered,
             "model": inspection.get("model"),
             "ttft": inspection.get("ttft"),
             "request_time": inspection.get("request_time"),
             "output_tokens": inspection.get("output_tokens"),
             "tokens_per_second": inspection.get("tokens_per_second"),
+            "raw_response": inspection.get("text", ""),
         }
 
         if not found:
             print(
                 "[Vision] Locate failed: "
                 f"target={target!r} reason=target_not_found "
-                f"confidence={confidence:.2f} "
+                f"confidence={confidence if confidence is not None else 'n/a'} "
                 f"json_recovered={str(json_recovered).lower()}",
                 flush=True,
             )
@@ -428,49 +522,6 @@ class VisionLocateTool(Tool):
                 tool=request.tool,
                 output=base_output,
                 error=f"Target not found: {target}",
-                duration_seconds=time.perf_counter() - start,
-                metadata={"request_id": request.request_id},
-            )
-
-        try:
-            bbox = self._normalize_bbox(
-                parsed.get("bbox"),
-                width=width,
-                height=height,
-            )
-        except ValueError as exc:
-            print(
-                "[Vision] Locate failed: "
-                f"target={target!r} reason=invalid_bbox error={str(exc)!r}",
-                flush=True,
-            )
-            return ToolResult(
-                success=False,
-                tool=request.tool,
-                output=base_output,
-                error=f"Invalid visual grounding: {exc}",
-                duration_seconds=time.perf_counter() - start,
-                metadata={"request_id": request.request_id},
-            )
-
-        if confidence < self.confidence_threshold:
-            print(
-                "[Vision] Locate failed: "
-                f"target={target!r} reason=low_confidence "
-                f"confidence={confidence:.2f} threshold={self.confidence_threshold:.2f}",
-                flush=True,
-            )
-            return ToolResult(
-                success=False,
-                tool=request.tool,
-                output={
-                    **base_output,
-                    "bbox": bbox,
-                },
-                error=(
-                    f"Visual grounding confidence {confidence:.2f} is below "
-                    f"the required threshold {self.confidence_threshold:.2f}."
-                ),
                 duration_seconds=time.perf_counter() - start,
                 metadata={"request_id": request.request_id},
             )
@@ -501,7 +552,7 @@ class VisionLocateTool(Tool):
             "[Vision] Locate: "
             f"target={target!r} "
             f"found=true "
-            f"confidence={confidence:.2f} "
+            f"confidence={confidence if confidence is not None else 'n/a'} "
             f"element={str(parsed.get('element') or target).strip()!r} "
             f"center=({screen_center['x']},{screen_center['y']}) "
             f"json_recovered={str(json_recovered).lower()}",
