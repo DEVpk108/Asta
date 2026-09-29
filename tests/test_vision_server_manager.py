@@ -31,6 +31,24 @@ def test_discover_model_paths_prefers_lfm25_vl_3b_for_grounding(tmp_path):
     assert found_mmproj == mmproj_3
 
 
+def test_discover_model_paths_pairs_selected_1_6b_model_with_its_mmproj(tmp_path):
+    model_16 = tmp_path / "LFM2.5-VL-1.6B-Q8_0.gguf"
+    model_3 = tmp_path / "LFM2.5-VL-3B-Q4_K_M.gguf"
+    mmproj_16 = tmp_path / "mmproj-LFM2.5-VL-1.6b-F16.gguf"
+    mmproj_3 = tmp_path / "mmproj-LFM2.5-VL-3B-F16.gguf"
+    for path in (model_16, model_3, mmproj_16, mmproj_3):
+        path.write_bytes(b"")
+
+    # With only the 1.6B model present, its matching projector must be chosen.
+    model_3.unlink()
+    mmproj_3.unlink()
+
+    found_model, found_mmproj = VisionServerManager.discover_model_paths(tmp_path)
+
+    assert found_model == model_16
+    assert found_mmproj == mmproj_16
+
+
 def test_build_command_uses_local_model_and_mmproj(tmp_path):
     manager = VisionServerManager(
         base_url="http://127.0.0.1:8090/v1",
