@@ -68,7 +68,7 @@ class IntentRouter:
 
     _COMMA_COMMAND_PATTERN = re.compile(
         r",\s*(?=(?:please\s+|can you\s+|could you\s+|would you\s+|will you\s+)?"
-        r"(?:open|launch|start|close|run|stop|take|capture|screenshot|mute|unmute)\b)",
+        r"(?:open|launch|start|close|run|stop|take|capture|screenshot|mute|unmute|search|look\s+up)\b)",
         re.IGNORECASE,
     )
 
@@ -583,6 +583,10 @@ class IntentRouter:
         if media:
             return media
 
+        search = cls._extract_search_command(text)
+        if search:
+            return search
+
         computer = cls._extract_computer_command(text)
         if computer:
             return computer
@@ -614,6 +618,31 @@ class IntentRouter:
             return {"action": "unmute"}
 
         return {}
+
+    @classmethod
+    def _extract_search_command(cls, text: str) -> dict[str, Any]:
+        """Parse a generic GUI search request without naming a search engine."""
+        value = cls._normalize(text)
+        match = re.fullmatch(
+            r"(?:search(?:\s+for)?|look\s+up)\s+"
+            r"(?P<query>.+?)"
+            r"(?:\s+(?:on|in|using)\s+(?P<target>[^,]+?))?",
+            value,
+            re.IGNORECASE,
+        )
+        if not match:
+            return {}
+
+        query = match.group("query").strip(" ,.!?;:")
+        target = (match.group("target") or "").strip(" ,.!?;:")
+        if not query:
+            return {}
+
+        return {
+            "action": "search",
+            "query": query,
+            **({"target": target} if target else {}),
+        }
 
     @classmethod
     def _extract_computer_command(cls, text: str) -> dict[str, Any]:
