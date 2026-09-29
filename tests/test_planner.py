@@ -302,11 +302,11 @@ def test_planner_uses_generic_computer_control_for_explicit_app_media_flow():
         "computer.click",
         "vision.inspect",
     ]
-    assert plan.steps[1].metadata["target"] == "search input field"
-    assert plan.steps[2].metadata["target"] == "search input field"
+    assert plan.steps[1].metadata["target"] == "search field in spotify (the text input used to enter a query)"
+    assert plan.steps[2].metadata["target"] == "search field in spotify (the text input used to enter a query)"
     assert plan.steps[3].metadata["text"] == "hanuman chalisa"
     assert plan.steps[4].metadata["key"] == "enter"
-    assert plan.steps[6].metadata["target"] == "hanuman chalisa"
+    assert plan.steps[6].metadata["target"] == "search result for 'hanuman chalisa' in spotify"
     verification_prompt = plan.steps[7].metadata["prompt"]
     assert "Requested item: hanuman chalisa" not in verification_prompt
     assert "spotify" in verification_prompt
