@@ -152,6 +152,7 @@ def main():
         ComputerKeypressTool,
         ComputerHotkeyTool,
         ComputerScrollTool,
+        ComputerWaitTool,
         ToolRuntimeModule,
     )
     from speech.speech_module import SpeechModule
@@ -230,6 +231,7 @@ def main():
         ComputerKeypressTool(computer),
         ComputerHotkeyTool(computer),
         ComputerScrollTool(computer),
+        ComputerWaitTool(computer),
     ):
         kernel.register_tool(tool)
 
