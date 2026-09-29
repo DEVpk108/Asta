@@ -179,11 +179,24 @@ class VisionServerManager:
             else models[0] if len(models) == 1
             else None
         )
-        selected_mmproj = (
-            lfm_mmprojs[0] if len(lfm_mmprojs) == 1
-            else mmprojs[0] if len(mmprojs) == 1
-            else None
-        )
+
+        selected_mmproj = None
+        if selected_model is not None:
+            model_name = selected_model.name.lower()
+            matched_mmprojs = [
+                path for path in lfm_mmprojs
+                if ("3b" in model_name and "3b" in path.name.lower())
+                or ("1.6b" in model_name and "1.6b" in path.name.lower())
+            ]
+            if len(matched_mmprojs) == 1:
+                selected_mmproj = matched_mmprojs[0]
+
+        if selected_mmproj is None:
+            selected_mmproj = (
+                lfm_mmprojs[0] if len(lfm_mmprojs) == 1
+                else mmprojs[0] if len(mmprojs) == 1
+                else None
+            )
         return selected_model, selected_mmproj
 
     @property
