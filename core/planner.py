@@ -571,11 +571,14 @@ class Planner:
         """Build a provider-agnostic GUI search/play sequence."""
         application_text = application.strip() or "the target application"
         search_target = (
-            f"search field in {application_text} "
-            "(the text input used to enter a query)"
+            f"primary search input control in {application_text}: "
+            "the full clickable text field where a user types a query; "
+            "prefer the rectangular input control rather than an unrelated icon, "
+            "avatar, or profile control"
         )
         result_target = (
-            f"search result for '{query}' in {application_text}"
+            f"first interactive song or track result matching '{query}' "
+            f"in {application_text}"
         )
         verification_prompt = (
             f"Verify that '{query}' is actually playing in {application_text}. "
