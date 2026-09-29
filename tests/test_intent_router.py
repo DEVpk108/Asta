@@ -245,6 +245,46 @@ def test_search_notes_command_is_actionable():
     }
 
 
+def test_generic_search_command_is_actionable_with_application():
+    result = IntentRouter().analyze(
+        "Search for Christopher Nolan on Chrome."
+    )
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "search",
+        "query": "christopher nolan",
+        "target": "chrome",
+    }
+
+
+def test_generic_search_command_supports_look_up_and_in():
+    result = IntentRouter().analyze(
+        "Look up Christopher Nolan in Chrome."
+    )
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "search",
+        "query": "christopher nolan",
+        "target": "chrome",
+    }
+
+
+def test_compound_search_command_with_comma_is_sequenced():
+    result = IntentRouter().analyze(
+        "Open Chrome, search for Christopher Nolan."
+    )
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "commands": [
+            {"action": "open", "target": "chrome"},
+            {
+                "action": "search",
+                "query": "christopher nolan",
+            },
+        ]
+    }
+
+
 def test_collapsed_open_command_is_actionable():
     result = IntentRouter().analyze("OpenSpotify")
     assert result.intent == IntentType.COMMAND
