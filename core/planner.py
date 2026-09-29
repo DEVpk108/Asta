@@ -569,7 +569,7 @@ class Planner:
         application: str = "",
     ) -> list[dict[str, Any]]:
         """Build a provider-agnostic GUI search/play sequence."""
-        search_target = "Search"
+        search_target = "search input field"
         result_target = query
         application_text = application.strip() or "the target application"
         verification_prompt = (
