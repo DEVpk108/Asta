@@ -1471,7 +1471,7 @@ class TaskRuntimeModule(Module):
             **{
                 key: value
                 for key, value in step.metadata.items()
-                if key in {"operation", "query", "provider", "prompt", "text", "key", "button", "clicks", "interval", "amount"}
+                if key in {"operation", "query", "provider", "prompt", "text", "key", "button", "clicks", "interval", "amount", "seconds"}
                 and value not in {None, ""}
             },
         }
