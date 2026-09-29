@@ -58,12 +58,13 @@ def test_locate_returns_grounded_image_and_screen_coordinates(tmp_path):
     vision = FakeVisionEngine(
         {
             "model": "fake-vl",
-            "json": {
-                "found": True,
-                "element": "Create App",
-                "bbox": [700, 475, 820, 525],
-                "confidence": 0.92,
-            },
+            "json": [
+                {
+                    "image_id": 0,
+                    "bbox_2d": [700, 475, 820, 525],
+                    "label": "Create App",
+                }
+            ],
             "text": "",
             "ttft": 0.01,
             "request_time": 0.02,
@@ -96,20 +97,19 @@ def test_locate_returns_grounded_image_and_screen_coordinates(tmp_path):
     }
     assert vision.calls[0]["json_mode"] is True
     system_prompt = vision.calls[0]["system_prompt"]
-    assert "desktop pixels" in system_prompt
-    assert "normalized 0-1000" in system_prompt
-    assert "Do not copy coordinates" in system_prompt
-    assert "target description is semantic" in system_prompt
-    assert "search-field description may match" in system_prompt
+    assert "valid JSON array" in system_prompt
+    assert "bbox_2d" in system_prompt
+    assert "normalized integer coordinates in [0, 1000]" in system_prompt
     assert "full clickable control" in system_prompt
-    assert "matches this description" in vision.calls[0]["prompt"]
+    assert "Return []" in system_prompt
+    assert "Provide bounding boxes for the UI element for this instruction" in vision.calls[0]["prompt"]
     schema = vision.calls[0]["response_schema"]
-    assert schema["properties"]["bbox"]["anyOf"][1] == {"type": "null"}
-    assert schema["properties"]["bbox"]["anyOf"][0]["type"] == "array"
-    assert schema["properties"]["bbox"]["anyOf"][0]["minItems"] == 4
-    assert schema["properties"]["bbox"]["anyOf"][0]["maxItems"] == 4
-    assert schema["required"] == ["found", "element", "bbox", "confidence"]
-    assert schema["additionalProperties"] is False
+    assert schema["type"] == "array"
+    assert schema["maxItems"] == 1
+    assert schema["items"]["properties"]["bbox_2d"]["minItems"] == 4
+    assert schema["items"]["properties"]["bbox_2d"]["maxItems"] == 4
+    assert schema["items"]["required"] == ["image_id", "bbox_2d", "label"]
+    assert schema["items"]["additionalProperties"] is False
 
 
 def test_locate_rejects_low_confidence(tmp_path):
@@ -230,3 +230,61 @@ def test_locate_not_found_is_observable(tmp_path):
     assert result.success is False
     assert result.output["found"] is False
     assert result.error == "Target not found: missing"
+
+
+
+def test_locate_accepts_native_empty_grounding_array(tmp_path):
+    image = tmp_path / "screen.png"
+    make_png(image)
+
+    tool = VisionLocateTool(
+        FakeVisionEngine({"json": []}),
+        capture=lambda: {
+            "path": str(image),
+            "width": 100,
+            "height": 100,
+        },
+    )
+
+    result = tool.execute(make_request("missing"))
+
+    assert result.success is False
+    assert result.output["found"] is False
+    assert result.output["grounding_protocol"] == "grounding_json"
+    assert result.error == "Target not found: missing"
+
+
+def test_locate_recovers_truncated_native_grounding_json(tmp_path):
+    image = tmp_path / "screen.png"
+    make_png(image, width=1000, height=1000)
+
+    tool = VisionLocateTool(
+        FakeVisionEngine(
+            {
+                "json": None,
+                "text": (
+                    '[{"image_id":0,"bbox_2d":[100,100,300,300],'
+                    '"label":"Search"'
+                ),
+            }
+        ),
+        capture=lambda: {
+            "path": str(image),
+            "width": 1000,
+            "height": 1000,
+        },
+    )
+
+    result = tool.execute(make_request("Search"))
+
+    assert result.success is True
+    assert result.output["center"] == {"x": 200, "y": 200}
+    assert result.output["bbox"] == {
+        "x": 100,
+        "y": 100,
+        "width": 200,
+        "height": 200,
+    }
+    assert result.output["grounding_protocol"] == "grounding_json"
+    assert result.output["json_recovered"] is True
+    assert result.output["confidence"] is None
