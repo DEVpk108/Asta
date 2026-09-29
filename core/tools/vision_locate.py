@@ -282,20 +282,25 @@ class VisionLocateTool(Tool):
             )
 
         prompt = (
-            f"Where is the single screen element that matches this description: {target}. "
+            f"Find the single visible UI element that best matches this description: {target}. "
             "Return its bounding box as normalized coordinates from 0 to 1000, "
             "with [x1, y1, x2, y2] measured from the screenshot top-left. "
-            "The description is semantic: the element may be represented by an icon, "
-            "placeholder text, shape, or other visual affordance rather than the exact words "
-            "in the description. Return found=false and bbox=null only when the matching element "
-            "is absent or genuinely ambiguous."
+            "Use the whole interactive control when the description refers to an input, button, "
+            "or field, not a nearby decorative icon or unrelated control. "
+            "The description is semantic: the element may be represented by visible text, "
+            "placeholder text, an icon, shape, or visual role rather than the exact words "
+            "in the description. Prefer the most direct visual match and do not choose a "
+            "different control merely because its shape is similar. Return found=false and "
+            "bbox=null only when the matching element is absent or genuinely ambiguous."
         )
         system_prompt = (
             "You are A.S.T.A.'s screen-grounding sensor. Inspect only the supplied screenshot "
             "and ground the requested UI element. The target description is semantic, not necessarily "
             "literal text: use visible labels, icons, placeholder text, control shape, and visual role "
-            "to identify the single matching element. For example, a search-field description may match "
-            "a text box with a magnifying-glass icon and a search placeholder. Return exactly one compact "
+            "to identify the single matching element. When the target describes an input field or "
+            "button, ground the full clickable control rather than an adjacent decorative icon, avatar, "
+            "or unrelated control. For example, a search-field description may match a text box with "
+            "a magnifying-glass icon and a search placeholder. Return exactly one compact "
             "JSON object with fields found, element, bbox, and confidence. When found=true, bbox must be "
             "[x1, y1, x2, y2] using normalized 0-1000 image coordinates (not desktop pixels). When "
             "found=false, bbox must be null. Only set found=true when the requested element is visibly "
@@ -497,6 +502,7 @@ class VisionLocateTool(Tool):
             f"target={target!r} "
             f"found=true "
             f"confidence={confidence:.2f} "
+            f"element={str(parsed.get('element') or target).strip()!r} "
             f"center=({screen_center['x']},{screen_center['y']}) "
             f"json_recovered={str(json_recovered).lower()}",
             flush=True,
