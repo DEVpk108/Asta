@@ -1405,6 +1405,15 @@ class TaskRuntimeModule(Module):
             return "Moving the pointer to the selected location."
         if tool == "computer.scroll":
             return "Scrolling the current screen."
+        if tool == "computer.wait":
+            try:
+                seconds = float(args.get("seconds", 0.5))
+            except (TypeError, ValueError):
+                seconds = 0.5
+            return (
+                f"Waiting {max(0.0, seconds):.1f} seconds "
+                "for the interface to settle."
+            )
 
         return f"Working with {request.tool}."
 
