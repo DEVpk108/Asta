@@ -205,6 +205,27 @@ class ComputerController:
             backend.hotkey(*normalized)
         return {"keys": normalized, "pressed": True}
 
+    @staticmethod
+    def _wait_duration(value):
+        try:
+            duration = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ComputerControlError(
+                "seconds must be a non-negative finite number."
+            ) from exc
+        if not math.isfinite(duration) or duration < 0:
+            raise ComputerControlError(
+                "seconds must be a non-negative finite number."
+            )
+        return min(duration, 10.0)
+
+    def wait(self, *, seconds=0.5):
+        duration = self._wait_duration(seconds)
+        import time
+
+        time.sleep(duration)
+        return {"seconds": duration, "waited": True}
+
     def scroll(self, amount, *, x=None, y=None):
         backend = self._load_backend()
 
