@@ -249,3 +249,47 @@ def test_lfm_engine_uses_supplied_response_schema(tmp_path):
         "type": "json_object",
         "schema": schema,
     }
+
+
+
+def test_vision_inspect_rejects_playback_verification_without_requested_title(tmp_path):
+    image = tmp_path / "screen.png"
+    image.write_bytes(b"fake-png")
+
+    class MismatchPlaybackEngine:
+        def inspect(self, image_path, prompt, *, json_mode=True):
+            assert prompt == (
+                "Verify that 'hanuman chalisa' is actually playing in spotify."
+            )
+            return {
+                "model": "lfm2.5-vl-test",
+                "text": '{"visual_match":true,"confidence":1.0,"summary":"The current song is On Repeat."}',
+                "json": {
+                    "visual_match": True,
+                    "confidence": 1.0,
+                    "summary": "The current song is On Repeat.",
+                },
+            }
+
+    tool = VisionInspectTool(
+        MismatchPlaybackEngine(),
+        capture=lambda: image,
+    )
+
+    result = tool.execute(
+        ToolRequest(
+            tool="vision.inspect",
+            arguments={
+                "prompt": (
+                    "Verify that 'hanuman chalisa' is actually playing in spotify."
+                )
+            },
+            request_id="test-playback-mismatch",
+        )
+    )
+
+    assert result.success is True
+    assert result.output["visual_match"] is False
+    assert result.output["verified"] is False
+    assert result.output["required_playback_text"] == "hanuman chalisa"
+    assert result.output["verification_guard"]
