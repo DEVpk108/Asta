@@ -144,17 +144,38 @@ class VisionServerManager:
         ]
 
         # Prefer the 3B checkpoint when multiple LFM2.5-VL variants are
-        # installed. The 3B model is explicitly trained for stronger
-        # grounding/object detection, while the 1.6B model is documented
-        # primarily for general vision/OCR workloads.
+        # installed. Liquid AI documents the 3B release as having improved
+        # grounding/object detection, while the 1.6B card focuses on general
+        # vision-language, OCR, and document workloads.
         lfm_grounding_models = [
             path for path in lfm_models
             if "3b" in path.name.lower()
         ]
+        quant_preference = (
+            "q4_k_m",
+            "q5_k_m",
+            "q6_k",
+            "q8_0",
+            "q4_0",
+            "bf16",
+            "f16",
+        )
+
+        def _preferred_lfm_model(paths):
+            for quant in quant_preference:
+                matches = [
+                    path for path in paths
+                    if quant in path.name.lower()
+                ]
+                if len(matches) == 1:
+                    return matches[0]
+            return paths[0] if len(paths) == 1 else None
+
         selected_model = (
-            lfm_grounding_models[0]
-            if len(lfm_grounding_models) == 1
-            else lfm_models[0] if len(lfm_models) == 1
+            _preferred_lfm_model(lfm_grounding_models)
+            if lfm_grounding_models
+            else _preferred_lfm_model(lfm_models)
+            if lfm_models
             else models[0] if len(models) == 1
             else None
         )
