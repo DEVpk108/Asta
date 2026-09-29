@@ -582,9 +582,11 @@ class Planner:
             "Inspect only the target application's own UI. Ignore A.S.T.A.'s HUD, "
             "conversation panel, assistant messages, subtitles, terminal output, "
             "or any overlay/text that merely repeats the requested item or command. "
-            "Require concrete in-app playback evidence such as the requested track, "
-            "artist/title, and an active playback indicator or player state. "
-            "Set visual_match=true only when that evidence is visible in the supplied screenshot."
+            "Require concrete in-app playback evidence: the requested title must be "
+            "visible in the application's player or active track UI, together with "
+            "an active playback indicator or player state. Set visual_match=true only "
+            "when that evidence is visible. In your concise summary, include the exact "
+            f"requested title '{query}' only when you can actually see it."
         )
         return [
             {
