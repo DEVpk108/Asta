@@ -174,7 +174,7 @@ def test_locate_recovers_truncated_json(tmp_path):
                 "text": (
                     '{"found": true, "element": "Search", '
                     '"bbox": [100, 100, 300, 300], "confidence": 0.95, '
-                    '"element_note": "truncated'
+                    '"note": "truncated'
                 ),
                 "output_tokens": 64,
             }
