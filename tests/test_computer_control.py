@@ -47,6 +47,10 @@ def test_mouse_and_keyboard_primitives_use_backend():
     }
     assert controller.hotkey(["ctrl", "l"])["pressed"] is True
     assert controller.scroll(3)["scrolled"] is True
+    assert controller.wait(seconds=0.0) == {
+        "seconds": 0.0,
+        "waited": True,
+    }
 
     assert backend.calls == [
         ("moveTo", 100, 200, 0.0),
