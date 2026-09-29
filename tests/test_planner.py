@@ -302,11 +302,17 @@ def test_planner_uses_generic_computer_control_for_explicit_app_media_flow():
         "computer.click",
         "vision.inspect",
     ]
-    assert plan.steps[1].metadata["target"] == "search field in spotify (the text input used to enter a query)"
-    assert plan.steps[2].metadata["target"] == "search field in spotify (the text input used to enter a query)"
+    assert plan.steps[1].metadata["target"] == (
+        "primary search input control in spotify: the full clickable text field "
+        "where a user types a query; prefer the rectangular input control rather "
+        "than an unrelated icon, avatar, or profile control"
+    )
+    assert plan.steps[2].metadata["target"] == plan.steps[1].metadata["target"]
     assert plan.steps[3].metadata["text"] == "hanuman chalisa"
     assert plan.steps[4].metadata["key"] == "enter"
-    assert plan.steps[6].metadata["target"] == "search result for 'hanuman chalisa' in spotify"
+    assert plan.steps[6].metadata["target"] == (
+        "first interactive song or track result matching 'hanuman chalisa' in spotify"
+    )
     verification_prompt = plan.steps[7].metadata["prompt"]
     assert "Requested item: hanuman chalisa" not in verification_prompt
     assert "spotify" in verification_prompt
