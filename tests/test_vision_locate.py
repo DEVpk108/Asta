@@ -100,7 +100,7 @@ def test_locate_returns_grounded_image_and_screen_coordinates(tmp_path):
     assert "valid JSON array" in system_prompt
     assert "bbox_2d" in system_prompt
     assert "normalized integer coordinates in [0, 1000]" in system_prompt
-    assert "full clickable control" in system_prompt
+    assert "complete interactive control" in system_prompt
     assert "Return []" in system_prompt
     assert "Provide bounding boxes for the UI element for this instruction" in vision.calls[0]["prompt"]
     schema = vision.calls[0]["response_schema"]
