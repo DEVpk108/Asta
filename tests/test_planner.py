@@ -328,6 +328,178 @@ def test_planner_uses_generic_computer_control_for_explicit_app_media_flow():
     assert "A.S.T.A.'s HUD" in verification_prompt
     assert "merely repeats" in verification_prompt
 
+def test_planner_expands_generic_search_into_gui_workflow():
+    kernel = Kernel()
+    kernel.register_tool(FakeTool())
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "vision.locate",
+            "locate",
+            {"target": {"type": "string"}},
+            required=("target",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.click",
+            "click",
+            {"target": {"type": "string"}},
+            required=("target",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.type_text",
+            "type_text",
+            {"text": {"type": "string"}},
+            required=("text",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.keypress",
+            "keypress",
+            {"key": {"type": "string"}},
+            required=("key",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.wait",
+            "wait",
+            {"seconds": {"type": "number"}},
+            required=(),
+        )
+    )
+    kernel.register_tool(FakeInspectTool())
+
+    planner = Planner(
+        kernel.tool_registry,
+        application_manager=kernel.application_manager,
+    )
+    intent = IntentResult(
+        intent=IntentType.COMMAND,
+        confidence=0.98,
+        normalized_text="search for christopher nolan on chrome",
+        entities={
+            "action": "search",
+            "query": "christopher nolan",
+            "target": "chrome",
+        },
+        requires_tools=True,
+        classifier="rules",
+    )
+
+    plan = planner.plan(
+        "search for christopher nolan on chrome",
+        intent=intent,
+    )
+
+    assert [step.metadata["tool"] for step in plan.steps] == [
+        "test.open",
+        "vision.locate",
+        "computer.click",
+        "computer.type_text",
+        "computer.keypress",
+        "computer.wait",
+        "vision.inspect",
+    ]
+    assert plan.steps[0].metadata["target"] == "chrome"
+    assert plan.steps[1].metadata["target"] == (
+        "the primary search input field in chrome; "
+        "for a browser, use its address/search bar when that is the "
+        "interface's search entry point"
+    )
+    assert plan.steps[2].metadata["target"] == plan.steps[1].metadata["target"]
+    assert plan.steps[3].metadata["text"] == "christopher nolan"
+    assert plan.steps[4].metadata["key"] == "enter"
+    assert plan.steps[5].metadata["seconds"] == 1.0
+    assert "search results for 'christopher nolan'" in plan.steps[6].metadata["prompt"]
+    assert "A.S.T.A.'s HUD" in plan.steps[6].metadata["prompt"]
+
+
+def test_planner_does_not_reopen_same_application_for_compound_search():
+    kernel = Kernel()
+    kernel.register_tool(FakeTool())
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "vision.locate",
+            "locate",
+            {"target": {"type": "string"}},
+            required=("target",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.click",
+            "click",
+            {"target": {"type": "string"}},
+            required=("target",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.type_text",
+            "type_text",
+            {"text": {"type": "string"}},
+            required=("text",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.keypress",
+            "keypress",
+            {"key": {"type": "string"}},
+            required=("key",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.wait",
+            "wait",
+            {"seconds": {"type": "number"}},
+            required=(),
+        )
+    )
+    kernel.register_tool(FakeInspectTool())
+
+    planner = Planner(
+        kernel.tool_registry,
+        application_manager=kernel.application_manager,
+    )
+    intent = IntentResult(
+        intent=IntentType.COMMAND,
+        confidence=0.98,
+        normalized_text="open chrome and search for christopher nolan",
+        entities={
+            "commands": [
+                {"action": "open", "target": "chrome"},
+                {
+                    "action": "search",
+                    "query": "christopher nolan",
+                },
+            ]
+        },
+        requires_tools=True,
+        classifier="rules",
+    )
+
+    plan = planner.plan(
+        "open chrome and search for christopher nolan",
+        intent=intent,
+    )
+
+    assert [step.metadata["tool"] for step in plan.steps] == [
+        "test.open",
+        "vision.locate",
+        "computer.click",
+        "computer.type_text",
+        "computer.keypress",
+        "computer.wait",
+        "vision.inspect",
+    ]
+
+
 def test_planner_collapses_adjacent_duplicate_cognitive_actions():
     planner = _planner()
 
