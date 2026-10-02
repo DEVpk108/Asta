@@ -394,6 +394,38 @@ class Planner:
             if str(item).strip()
         )
         conditions_lower = conditions_text.lower()
+        goal_lower = " ".join(str(goal or "").strip().lower().split())
+
+        # A single app-open goal has a deterministic runtime verifier:
+        # ApplicationManager can confirm that the requested application process
+        # is actually running. Do not spend several seconds booting the vision
+        # model merely to prove an ordinary "open <app>" command succeeded.
+        # Keep explicit visual/verification requests on the visual path.
+        if (
+            len(commands) == 1
+            and str(commands[0].get("action") or "").strip().lower()
+            in {"open", "launch", "start"}
+            and str(commands[0].get("target") or "").strip()
+            and not any(
+                marker in goal_lower
+                for marker in (
+                    "verify",
+                    "confirm",
+                    "visible",
+                    "visually",
+                    "screenshot",
+                    "screen",
+                    "window",
+                    "display",
+                    "ui",
+                    "interface",
+                    "show",
+                )
+            )
+        ):
+            optimized = dict(commands[0])
+            optimized["verification"] = "application.running"
+            return [optimized]
 
         visual_required = any(
             marker in conditions_lower
