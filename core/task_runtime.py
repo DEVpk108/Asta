@@ -279,6 +279,20 @@ class TaskRuntimeModule(Module):
                 state = self._incremental_sessions.get(session_id)
                 if state is not None:
                     state["active_task_id"] = task.id
+
+            next_step = self._next_ready_plan_step(task)
+            if next_step is not None:
+                request = self.build_plan_request(task, next_step)
+                if request is not None:
+                    print(
+                        f"[Tasks] Incremental segment ready: "
+                        f"{next_step.id} -> {request.tool}",
+                        flush=True,
+                    )
+                    self.event_bus.emit(
+                        "tool_request",
+                        request=request,
+                    )
         return task
 
     def start_plan(
