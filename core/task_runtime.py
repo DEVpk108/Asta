@@ -36,6 +36,10 @@ class TaskRuntimeModule(Module):
 
     def initialize(self):
         self.event_bus.subscribe("user_message", self.on_user_message)
+        self.event_bus.subscribe(
+            "incremental_user_message",
+            self.on_incremental_user_message,
+        )
         self.event_bus.subscribe("tool_request", self.on_tool_request)
         self.event_bus.subscribe("tool_result", self.on_tool_result)
         self.event_bus.subscribe(
@@ -50,6 +54,10 @@ class TaskRuntimeModule(Module):
 
     def shutdown(self):
         self.event_bus.unsubscribe("user_message", self.on_user_message)
+        self.event_bus.unsubscribe(
+            "incremental_user_message",
+            self.on_incremental_user_message,
+        )
         self.event_bus.unsubscribe("tool_request", self.on_tool_request)
         self.event_bus.unsubscribe("tool_result", self.on_tool_result)
         self.event_bus.unsubscribe(
@@ -63,6 +71,15 @@ class TaskRuntimeModule(Module):
         print("[Tasks] Stopped", flush=True)
 
     def on_user_message(self, text):
+        self._handle_user_message(text, acknowledge=True)
+
+    def on_incremental_user_message(self, text, *args, **kwargs):
+        # Incremental commands are already being heard and acted on while the
+        # user is speaking. Do not inject a spoken acknowledgment into the
+        # same live utterance.
+        self._handle_user_message(text, acknowledge=False)
+
+    def _handle_user_message(self, text, *, acknowledge=True):
         if not text:
             return
 
@@ -70,17 +87,18 @@ class TaskRuntimeModule(Module):
         if intent.intent is not IntentType.COMMAND:
             return
 
-        acknowledgment = self._acknowledgment_for_intent(intent)
-        if acknowledgment:
-            self.event_bus.emit(
-                "command_acknowledged",
-                text=acknowledgment,
-                intent=intent.to_dict() if hasattr(intent, "to_dict") else None,
-            )
-            self.event_bus.emit(
-                "assistant_sentence",
-                text=acknowledgment,
-            )
+        if acknowledge:
+            acknowledgment = self._acknowledgment_for_intent(intent)
+            if acknowledgment:
+                self.event_bus.emit(
+                    "command_acknowledged",
+                    text=acknowledgment,
+                    intent=intent.to_dict() if hasattr(intent, "to_dict") else None,
+                )
+                self.event_bus.emit(
+                    "assistant_sentence",
+                    text=acknowledgment,
+                )
 
         self.start_plan(
             intent.normalized_text,
