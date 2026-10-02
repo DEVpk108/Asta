@@ -109,6 +109,10 @@ class AIModule(Module):
         if callable(warmup):
             warmup()
         self.event_bus.subscribe("user_message", self.on_user_message)
+        self.event_bus.subscribe(
+            "incremental_user_message",
+            self.on_incremental_user_message,
+        )
         self.event_bus.subscribe("tool_result", self.on_tool_result)
         self.event_bus.subscribe("task_failed", self.on_task_failed)
         self.event_bus.subscribe(
@@ -119,6 +123,10 @@ class AIModule(Module):
 
     def shutdown(self):
         self.event_bus.unsubscribe("user_message", self.on_user_message)
+        self.event_bus.unsubscribe(
+            "incremental_user_message",
+            self.on_incremental_user_message,
+        )
         self.event_bus.unsubscribe("tool_result", self.on_tool_result)
         self.event_bus.unsubscribe("task_failed", self.on_task_failed)
         self.event_bus.unsubscribe(
@@ -191,6 +199,10 @@ class AIModule(Module):
             setter(prompt)
         elif hasattr(self.engine, "system_prompt"):
             self.engine.system_prompt = prompt
+
+    def on_incremental_user_message(self, text, *args, **kwargs):
+        """Process a command segment committed before end-of-speech."""
+        self.on_user_message(text)
 
     def on_user_message(self, text):
         if not text:
