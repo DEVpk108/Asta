@@ -117,19 +117,20 @@ class IncrementalSpeechSession:
         if initial_audio is not None:
             seed = np.asarray(initial_audio, dtype=np.float32).flatten()
             if seed.size:
-                initial_seed = seed[
-                    -max(
+                seed_samples = min(
+                    max(1, int(self.sample_rate * self.pre_roll_seconds)),
+                    max(
                         1,
                         int(
-                            self.sample_rate
-                            * min(
-                                self.pre_roll_seconds,
-                                float(getattr(self.vad_engine, "pre_roll_samples", self.sample_rate)),
-                                )
-                            / self.sample_rate
+                            getattr(
+                                self.vad_engine,
+                                "pre_roll_samples",
+                                int(self.sample_rate * self.pre_roll_seconds),
+                            )
                         ),
-                    ) :
-                ].copy()
+                    ),
+                )
+                initial_seed = seed[-seed_samples:].copy()
 
         reset_states = getattr(self.vad_engine.vad, "reset_states", None)
         if callable(reset_states):
