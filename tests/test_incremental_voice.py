@@ -114,6 +114,20 @@ def test_detector_early_commit_accepts_natural_open_up_phrase():
     assert commit.source_text == "open up the notes app"
 
 
+def test_detector_finds_a_new_open_action_after_a_committed_action():
+    detector = IncrementalCommandDetector(
+        application_manager=FakeApplicationManager(),
+        stable_updates=1,
+    )
+
+    first = detector.observe("open chrome")
+    assert first is not None
+
+    second = detector.observe("open chrome and open arc")
+    assert second is not None
+    assert second.text == "open Arc"
+
+
 def test_detector_does_not_turn_follow_up_words_into_an_app_name():
     detector = IncrementalCommandDetector(
         application_manager=FakeApplicationManager(),
