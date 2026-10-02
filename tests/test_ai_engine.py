@@ -22,7 +22,7 @@ class FakeResponse:
         return self.json_data
 
     def iter_lines(self, chunk_size=None, decode_unicode=True):
-        assert chunk_size == 1
+        assert chunk_size is None
         assert decode_unicode is True
         for event in self.events:
             if isinstance(event, str):

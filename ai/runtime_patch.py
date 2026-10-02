@@ -177,7 +177,6 @@ def apply_ai_runtime_patch():
     original_on_tool_result = AIModule.on_tool_result
     original_creator_handler = AIModule._is_creator_identity_question
     original_format_tool_success = AIModule._format_tool_success
-    original_generate_response = AIModule._generate_response
     original_voice_on_conversation_mode_set = VoiceModule.on_conversation_mode_set
     original_voice_can_listen = VoiceModule._can_listen
 
@@ -324,7 +323,10 @@ def apply_ai_runtime_patch():
 
         original_on_user_message(self, text)
 
-    @classmethod
+    # Plain function wrapped exactly once below. Stacking @classmethod inside
+    # classmethod() relied on classmethod descriptor chaining, which Python
+    # 3.13 removed; the result was "'classmethod' object is not callable" on
+    # every user message.
     def patched_creator_handler(cls, text):
         if original_creator_handler(text):
             return True

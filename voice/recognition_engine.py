@@ -167,7 +167,7 @@ class RecognitionEngine:
         return False
 
 
-    def _transcribe_whisper(self, audio, *, strict=False):
+    def _transcribe_whisper(self, audio, *, strict=False, beam_size=None):
         if self.model is None:
             raise RuntimeError("Whisper backend is not initialized.")
 
@@ -175,7 +175,11 @@ class RecognitionEngine:
             segments, info = self.model.transcribe(
                 audio,
                 language=getattr(self, "language", "en"),
-                beam_size=getattr(self, "beam_size", 5),
+                beam_size=(
+                    int(beam_size)
+                    if beam_size is not None
+                    else getattr(self, "beam_size", 5)
+                ),
                 vad_filter=False,
                 condition_on_previous_text=False,
                 temperature=temperature,
@@ -337,7 +341,13 @@ class RecognitionEngine:
         self.last_backend = "whisper-fallback"
         return whisper_text
 
-    def transcribe(self, audio, *, strict=False):
+    def transcribe(self, audio, *, strict=False, beam_size=None):
+        """Transcribe audio.
+
+        ``beam_size`` overrides the configured beam for one call. Incremental
+        partial decodes use greedy decoding (1) because they run repeatedly
+        while the user is still speaking.
+        """
         if audio is None:
             return ""
 
@@ -349,7 +359,11 @@ class RecognitionEngine:
                 whisper_text = self._transcribe_whisper(audio)
                 text = self._use_indic(audio, whisper_text)
             else:
-                text = self._transcribe_whisper(audio, strict=strict)
+                text = self._transcribe_whisper(
+                    audio,
+                    strict=strict,
+                    beam_size=beam_size,
+                )
                 self.last_backend = "whisper"
 
             if self._is_hallucination(text):

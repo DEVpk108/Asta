@@ -12,11 +12,16 @@ from .llm_provider import create_llm_provider
 
 class AIModule(Module):
 
+    # Bare fillers such as "ok", "okay" and "sure" are deliberately not
+    # approvals: they are common conversational noise and must not be able to
+    # authorize a high-risk or critical action.
     _APPROVAL_CONFIRMATIONS = {
-        "yes", "yeah", "yep", "yup", "sure", "okay", "ok",
+        "yes", "yeah", "yep", "yup",
         "confirm", "confirmed", "i confirm", "go ahead", "do it",
-        "proceed", "yes proceed",
+        "proceed", "yes proceed", "yes do it", "yes go ahead",
     }
+
+    _REJECTED_ERROR = "Tool execution rejected by user."
 
     _APPROVAL_REJECTIONS = {
         "no", "nope", "nah", "cancel", "reject", "decline",
@@ -115,6 +120,7 @@ class AIModule(Module):
         )
         self.event_bus.subscribe("tool_result", self.on_tool_result)
         self.event_bus.subscribe("task_failed", self.on_task_failed)
+        self.event_bus.subscribe("speech_interrupt", self.on_speech_interrupt)
         self.event_bus.subscribe(
             "tool_confirmation_required",
             self.on_tool_confirmation_required,
@@ -129,6 +135,7 @@ class AIModule(Module):
         )
         self.event_bus.unsubscribe("tool_result", self.on_tool_result)
         self.event_bus.unsubscribe("task_failed", self.on_task_failed)
+        self.event_bus.unsubscribe("speech_interrupt", self.on_speech_interrupt)
         self.event_bus.unsubscribe(
             "tool_confirmation_required",
             self.on_tool_confirmation_required,
@@ -200,6 +207,16 @@ class AIModule(Module):
         elif hasattr(self.engine, "system_prompt"):
             self.engine.system_prompt = prompt
 
+    def on_speech_interrupt(self, *args, **kwargs):
+        """Stop the streaming answer when the user barges in.
+
+        Without this the LLM kept streaming, and the next sentence it produced
+        re-armed the speech worker, so A.S.T.A. resumed talking after "stop".
+        """
+        cancel = getattr(self.engine, "cancel", None)
+        if callable(cancel):
+            cancel()
+
     def on_incremental_user_message(self, text, *args, **kwargs):
         """Process non-command incremental speech without duplicating runtime plans."""
         # Sessionized incremental commands are orchestrated by TaskRuntime so
@@ -268,6 +285,16 @@ class AIModule(Module):
             return
         if result.intent == IntentType.MEMORY:
             self.event_bus.emit("memory_request", intent=result)
+            # Nothing used to answer memory requests, so "remember that..."
+            # produced complete silence.
+            memory = getattr(self.kernel, "memory", None)
+            if bool(getattr(memory, "available", False)):
+                self._emit_assistant_text("Got it. I'll remember that.")
+            else:
+                self._emit_assistant_text(
+                    "I heard you, but long-term memory isn't enabled right now, "
+                    "so I can't save that permanently."
+                )
             return
 
         capability_response = self._capability_response(text)
@@ -668,8 +695,26 @@ class AIModule(Module):
         return False
 
     def _handle_approval_response(self, text):
-        pending = self.kernel.approval_manager.list_pending()
-        if len(pending) != 1:
+        manager = self.kernel.approval_manager
+
+        # Expired approvals are rejected so their task fails cleanly and a
+        # later "yes" can never execute them.
+        list_expired = getattr(manager, "list_expired", None)
+        if callable(list_expired):
+            for stale in list_expired():
+                print(
+                    "[AI] Approval expired "
+                    f"(request_id={stale.request.request_id})",
+                    flush=True,
+                )
+                self.event_bus.emit(
+                    "tool_confirmation_response",
+                    request_id=stale.request.request_id,
+                    approved=False,
+                )
+
+        pending = manager.list_pending()
+        if not pending:
             return False
 
         normalized = self._normalize_question(text)
@@ -681,10 +726,34 @@ class AIModule(Module):
             approved = True
         if compact in {"no thanks", "cancel it", "don't do it", "do not do it"}:
             rejected = True
+
         if not (approved or rejected):
+            # The user moved on to something else. Cancel the pending request
+            # instead of leaving it armed for an unrelated future "yes".
+            for item in pending:
+                print(
+                    "[AI] Approval superseded by a new request "
+                    f"(request_id={item.request.request_id})",
+                    flush=True,
+                )
+                self.event_bus.emit(
+                    "tool_confirmation_response",
+                    request_id=item.request.request_id,
+                    approved=False,
+                )
             return False
 
-        request = pending[0].request
+        # A yes/no applies only to the most recent request. Older requests are
+        # cancelled so an answer cannot silently authorize the wrong action.
+        ordered = sorted(pending, key=lambda item: item.created_at)
+        for older in ordered[:-1]:
+            self.event_bus.emit(
+                "tool_confirmation_response",
+                request_id=older.request.request_id,
+                approved=False,
+            )
+
+        request = ordered[-1].request
         print(
             f"[AI] Approval response: {'approved' if approved else 'rejected'} "
             f"(request_id={request.request_id})",
@@ -746,7 +815,7 @@ class AIModule(Module):
             "I can communicate through voice, understand spoken commands, reason about questions, and respond conversationally.",
             capability_text,
             "My architecture is modular: voice input, AI reasoning, tool selection and execution, approval handling, speech output, and the HUD are connected through the kernel and event system.",
-            "For my current version, the AI runs locally through LM Studio, speech recognition uses Whisper, and speech synthesis uses Kokoro, so the core interaction can run locally on the machine.",
+            "For my current version, the AI runs locally through llama.cpp, speech recognition uses Whisper, and speech synthesis uses Kokoro, so the core interaction can run locally on the machine.",
             "This is still an early version. My future direction is to grow into a personal AI operating system with stronger memory, workflow awareness, proactive assistance, deeper engineering support, more tools, and specialized agents.",
             "For today’s demonstration, I can show you how I understand a spoken command, use an appropriate tool, report the result, and continue a conversation with the user.",
             "That is A.S.T.A. in its current stage, and I’m designed to keep evolving from here.",
@@ -768,15 +837,23 @@ class AIModule(Module):
         }
         return normalized in variants
 
+    # Only questions about executable abilities get the capability list.
+    # Previously any "can you ..." / "do you have ..." question matched, so
+    # "can you tell me a joke" answered with a list of tool names.
+    _CAPABILITY_QUESTION_PATTERN = re.compile(
+        r"^(?:"
+        r"what (?:can you do|are your capabilities|tools do you have|actions can you (?:do|perform|take))"
+        r"|what are you capable of"
+        r"|(?:which|what) (?:tools|capabilities|integrations) do you (?:have|support)"
+        r"|do you (?:have|support) (?:any )?(?:tools|capabilities|integrations)"
+        r"|(?:can|could) (?:you|asta) (?:control|automate) (?:my )?(?:computer|pc|apps|applications|system)"
+        r"|list (?:your )?(?:tools|capabilities)"
+        r")\b"
+    )
+
     def _capability_response(self, text):
         normalized = self._normalize_question(text)
-        prefixes = (
-            "can you ",
-            "can asta ",
-            "do you support ",
-            "do you have ",
-        )
-        if not normalized.startswith(prefixes):
+        if not self._CAPABILITY_QUESTION_PATTERN.match(normalized):
             return None
 
         definitions = self.kernel.tool_registry.definitions()
@@ -929,8 +1006,16 @@ class AIModule(Module):
         """Give the user an explicit terminal response when autonomous work fails."""
         if isinstance(task, dict):
             goal = str(task.get("goal") or "").strip()
+            error = str(task.get("error") or "")
         else:
             goal = str(getattr(task, "goal", "") or "").strip()
+            error = str(getattr(task, "error", "") or "")
+
+        # A user rejection (or a superseded/expired approval) is already
+        # acknowledged by the rejected tool result; do not also announce it as
+        # a task failure.
+        if error == self._REJECTED_ERROR:
+            return
 
         message = (
             "I couldn't complete that task."
@@ -1029,6 +1114,9 @@ class AIModule(Module):
     @staticmethod
     def _format_tool_failure(result: ToolResult) -> str:
         output = result.output if isinstance(result.output, dict) else {}
+
+        if str(result.error or "") == AIModule._REJECTED_ERROR:
+            return "Okay, I cancelled that."
 
         if result.tool == "system.close_application":
             target = output.get("target") or output.get("resolved_target")

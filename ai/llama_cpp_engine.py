@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -43,6 +44,22 @@ class LlamaCppEngine:
         self.models_url = f"{self.base_url}/models"
         self.previous_response_id = None
         self.warmed = False
+        # Set by cancel() (e.g. on a spoken barge-in) to stop the active stream.
+        self._cancel_event = threading.Event()
+        # Bound the replayed conversation so long sessions never exceed the
+        # server context window. Counted in user+assistant turn pairs.
+        try:
+            self.max_history_turns = max(
+                0, int(os.getenv("ASTA_LLM_HISTORY_TURNS", "12"))
+            )
+        except (TypeError, ValueError):
+            self.max_history_turns = 12
+        try:
+            self.max_history_chars = max(
+                0, int(os.getenv("ASTA_LLM_HISTORY_CHARS", "12000"))
+            )
+        except (TypeError, ValueError):
+            self.max_history_chars = 12000
 
         self.system_prompt = """
 You are A.S.T.A. (Adaptive System for Technical Assistance), a professional local-first AI engineering assistant.
@@ -217,6 +234,36 @@ Your goal is not merely to produce an answer. Help the user understand the probl
         self.warmed = False
         print("[AI] llama.cpp engine stopped.", flush=True)
 
+    def cancel(self):
+        """Stop the in-flight generation, if any, at the next stream chunk."""
+        self._cancel_event.set()
+
+    def _trim_history(self):
+        """Keep the system prompt plus the most recent bounded turns."""
+        if not self._messages:
+            return
+        system = self._messages[:1]
+        turns = self._messages[1:]
+
+        if self.max_history_turns >= 0:
+            turns = turns[-(self.max_history_turns * 2):] if self.max_history_turns else []
+
+        if self.max_history_chars:
+            total = 0
+            kept = []
+            for message in reversed(turns):
+                total += len(str(message.get("content") or ""))
+                if total > self.max_history_chars and kept:
+                    break
+                kept.append(message)
+            turns = list(reversed(kept))
+
+        # Never start the replayed history with an orphaned assistant turn.
+        while turns and turns[0].get("role") != "user":
+            turns = turns[1:]
+
+        self._messages = system + turns
+
     def reset_conversation(self):
         self._messages = [{"role": "system", "content": self.system_prompt}]
         self.previous_response_id = None
@@ -323,6 +370,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
         final_id = None
         server_usage = {}
         server_timings = {}
+        cancelled = False
 
         with self.session.post(
             self.chat_url,
@@ -338,7 +386,14 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             response.raise_for_status()
             response.encoding = "utf-8"
 
-            for raw_line in response.iter_lines(chunk_size=1, decode_unicode=True):
+            # chunk_size=None yields each HTTP chunk as soon as it arrives.
+            # llama-server streams with chunked transfer encoding, so this is
+            # just as responsive as the previous chunk_size=1 without doing a
+            # Python-level read for every single byte.
+            for raw_line in response.iter_lines(chunk_size=None, decode_unicode=True):
+                if self._cancel_event.is_set():
+                    cancelled = True
+                    break
                 if not raw_line or not raw_line.startswith("data:"):
                     continue
 
@@ -375,6 +430,8 @@ Your goal is not merely to produce an answer. Help the user understand the probl
                         if sentence is None:
                             break
                         sentence = self._normalize_text(sentence)
+                        if self._cancel_event.is_set():
+                            break
                         if on_sentence and self._is_speech_worthy(sentence):
                             on_sentence(sentence)
 
@@ -389,7 +446,12 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             final_result = {}
 
         remaining = self._normalize_text(sentence_buffer.strip())
-        if remaining and on_sentence and self._is_speech_worthy(remaining):
+        if (
+            not cancelled
+            and remaining
+            and on_sentence
+            and self._is_speech_worthy(remaining)
+        ):
             on_sentence(remaining)
 
         usage = server_usage or final_result.get("usage") or {}
@@ -458,14 +520,18 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             ),
             "request_to_first_delta": client_first_content,
             "exhausted_reasoning": (
-                not full_text.strip() and output_tokens >= max_output_tokens
+                not cancelled
+                and not full_text.strip()
+                and output_tokens >= max_output_tokens
             ),
+            "cancelled": cancelled,
         }
 
         self._messages.append({"role": "user", "content": text})
         self._messages.append(
             {"role": "assistant", "content": result["text"]}
         )
+        self._trim_history()
         return result
 
     def generate_response(self, text, on_sentence=None, context=None):
@@ -473,6 +539,9 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             return ""
 
         request_start = time.perf_counter()
+        # A new turn starts uncancelled; an interrupt that arrived while idle
+        # must not cancel the next answer.
+        self._cancel_event.clear()
         try:
             attempt = self._request(
                 text,
@@ -513,6 +582,11 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             )
             return ""
 
+        if attempt.get("cancelled"):
+            print(
+                f"[AI] Generation cancelled after {attempt['request_time']:.2f}s.",
+                flush=True,
+            )
         print(f"[AI] Request: {attempt['request_time']:.2f}s", flush=True)
         print(
             f"[AI] Context: cached_input={attempt['cached_tokens']} "

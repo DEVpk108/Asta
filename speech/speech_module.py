@@ -248,16 +248,14 @@ class SpeechModule(Module):
                 self._deferred_sentences.append(text)
                 return
 
-        is_presentation = text.startswith("Hello Sir. I’m A.S.T.A.,")
-        if is_presentation:
+        # The presentation is spoken exactly as the HUD shows it (this used to
+        # live in speech/presentation_patch.py, which replaced this whole
+        # method and silently dropped speech deferral, code filtering and
+        # emoji removal).
+        if text.startswith("Hello Sir. I’m A.S.T.A.,"):
             with self._state_lock:
                 self._presentation_mode_active = True
-            queued_text = self.PRESENTATION_SHORT_TEXT
-            print("[Speech] Presentation voice optimized for live demo.", flush=True)
-        elif self._presentation_mode_active:
-            return
-        else:
-            queued_text = text
+        queued_text = text
 
         # Keep the HUD/chat text untouched, but make the spoken channel
         # prose-only so code blocks and raw diagnostics are not read aloud.

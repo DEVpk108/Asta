@@ -222,8 +222,9 @@ after the final utterance decode.
 
 ## Configuration
 
-Every setting is read from the process environment. There is no `.env` loader
-yet, so export these before starting A.S.T.A.
+Every setting is read from the process environment. On startup, `main.py`
+also loads a `.env` file from the repository root (see `.env.example`); values
+already set in the environment take precedence.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -251,7 +252,6 @@ yet, so export these before starting A.S.T.A.
 | `ASTA_VISION_CONTEXT_SIZE` | `8192` | Context size for the managed vision server |
 | `ASTA_VISION_GPU_LAYERS` | `99` | GPU layer offload for the managed vision server |
 | `ASTA_VISION_MMPROJ_OFFLOAD` | `1` | GPU-offload the multimodal projector |
-
 | `ASTA_LLM_TIMEOUT` | `120` | LLM HTTP timeout in seconds |
 | `ASTA_LLM_MAX_OUTPUT_TOKENS` | `256` | Maximum generated tokens per response |
 | `ASTA_LLM_REASONING_RETRY_TOKENS` | `512` | Retry budget when the first generation exhausts the output budget |
@@ -262,6 +262,11 @@ yet, so export these before starting A.S.T.A.
 | `ASTA_LAYA_MAX_LOADED` | `1` | Maximum Laya checkpoints kept resident by its router |
 | `ASTA_HUD_HOST` | `127.0.0.1` | HUD transport bind address |
 | `ASTA_HUD_PORT` | `18765` | HUD transport port |
+| `ASTA_HUD_TOKEN` | random per run | Shared secret the HUD must present; generated automatically by `main.py` / the launcher |
+| `ASTA_LLM_HISTORY_TURNS` | `12` | Conversation turns replayed to the LLM |
+| `ASTA_LLM_HISTORY_CHARS` | `12000` | Character budget for replayed conversation history |
+| `ASTA_APPROVAL_TTL_SECONDS` | `30` | Seconds a pending tool approval stays valid |
+| `ASTA_INCREMENTAL_STT_BEAM_SIZE` | `1` | Whisper beam size for incremental partial decodes |
 | `ASTA_STT_BACKEND` | `whisper` | `whisper`, `indic` or `hybrid` |
 | `ASTA_CHAT_HISTORY_DB` | `data/chat_history.db` | SQLite chat history location |
 | `ASTA_VOICE_POST_TTS_GUARD_MS` | `80` | Short post-TTS settle window; speech during it is retained as VAD preroll |
@@ -361,14 +366,33 @@ Development Mode also requires the app owner to have Premium.
 | Tool | Risk |
 | --- | --- |
 | `system.close_application`, `vision.screenshot`, `vision.open_screenshot`, `audio.mute`, `audio.unmute` | low |
-| `system.open_application`, `system.launch_application` | medium |
-| `system.start_process`, `system.stop_process` | high |
+| `system.open_application`, `system.launch_application`, `computer.click` | medium |
+| `system.start_process`, `system.stop_process`, `computer.type_text`, `computer.keypress`, `computer.hotkey` | high |
 | `system.run_command` | critical |
 
 `AuthorityPolicy` runs tools up to **medium** risk automatically. Anything
 higher emits `tool_confirmation_required`, A.S.T.A. asks out loud, and the
 action only runs after a spoken confirmation. Subprocess calls never use a
 shell; they always pass argument lists.
+
+Approvals are deliberately strict:
+
+- A pending approval expires after `ASTA_APPROVAL_TTL_SECONDS` (default 30s).
+- Only explicit answers such as "yes", "confirm" or "go ahead" approve; bare
+  fillers like "ok" or "sure" do not.
+- Saying anything else cancels the pending request, so an unrelated "yes"
+  later can never run it.
+
+Keyboard tools are `high` risk because a key sequence such as Win+R, typing a
+command and Enter amounts to arbitrary command execution. To trust them for
+your own setup, grant them explicitly through `AuthorityManager.grant(...)`.
+
+### HUD transport security
+
+The HUD talks to the runtime over `127.0.0.1:18765`. Every client must first
+send `{"type": "hud.hello", "token": "<ASTA_HUD_TOKEN>"}`; unauthenticated
+clients, and anything that is not a JSON line (for example an HTTP request sent
+by a web page), are disconnected before they can send commands or read state.
 
 ## Layout
 

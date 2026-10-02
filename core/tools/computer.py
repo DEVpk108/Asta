@@ -151,7 +151,7 @@ class ComputerTypeTextTool(_ComputerTool):
                 "required": ["text"],
                 "additionalProperties": False,
             },
-            risk_level="medium",
+            risk_level="high",
             metadata={
                 "actions": ["type_text", "type"],
                 "category": "computer",
@@ -190,7 +190,7 @@ class ComputerKeypressTool(_ComputerTool):
                 "required": ["key"],
                 "additionalProperties": False,
             },
-            risk_level="medium",
+            risk_level="high",
             metadata={
                 "actions": ["keypress", "press_key"],
                 "category": "computer",
@@ -229,7 +229,7 @@ class ComputerHotkeyTool(_ComputerTool):
                 "required": ["keys"],
                 "additionalProperties": False,
             },
-            risk_level="medium",
+            risk_level="high",
             metadata={
                 "actions": ["hotkey", "key_combo"],
                 "category": "computer",

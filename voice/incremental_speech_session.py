@@ -70,6 +70,14 @@ class IncrementalSpeechSession:
             )
 
         self.pre_roll_seconds = max(0.20, float(pre_roll_seconds))
+        # Partial decodes repeat every interval while the user is talking, so
+        # they default to greedy decoding. The final decode keeps the full beam.
+        try:
+            self.partial_beam_size = max(
+                1, int(os.getenv("ASTA_INCREMENTAL_STT_BEAM_SIZE", "1"))
+            )
+        except (TypeError, ValueError):
+            self.partial_beam_size = 1
 
     @staticmethod
     def _env_float(name: str, default: float) -> float:
@@ -77,6 +85,16 @@ class IncrementalSpeechSession:
             return float(os.getenv(name, str(default)))
         except (TypeError, ValueError):
             return float(default)
+
+    def _transcribe_partial(self, audio):
+        try:
+            return self.recognition.transcribe(
+                audio,
+                beam_size=self.partial_beam_size,
+            )
+        except TypeError:
+            # Recognition backends without per-call beam control.
+            return self.recognition.transcribe(audio)
 
     def _should_continue(self, callback):
         return callback is None or bool(callback())
@@ -105,13 +123,13 @@ class IncrementalSpeechSession:
     ) -> IncrementalSessionResult | None:
         start_wait = time.monotonic()
         recording = False
-        recording_started_at = None
         # Partial STT cadence is measured in captured audio, not wall-clock
         # time. This keeps scheduling deterministic when STT or the microphone
         # callback runs at a different pace than real time.
         next_partial_audio_seconds = 0.0
         last_partial_audio_seconds = 0.0
         audio_parts: list[np.ndarray] = []
+        captured_samples: int | None = None
         pre_roll = deque(
             maxlen=max(1, int(self.sample_rate * self.pre_roll_seconds))
         )
@@ -142,7 +160,6 @@ class IncrementalSpeechSession:
         try:
             if initial_seed is not None and self._seed_contains_speech(initial_seed):
                 recording = True
-                recording_started_at = time.monotonic()
                 audio_parts.append(initial_seed)
                 next_partial_audio_seconds = (
                     self.min_partial_seconds + self.partial_interval_seconds
@@ -181,7 +198,6 @@ class IncrementalSpeechSession:
 
                 if not recording and self.vad_engine.is_speech_started(event):
                     recording = True
-                    recording_started_at = now
                     if pre_roll:
                         audio_parts.append(
                             np.asarray(pre_roll, dtype=np.float32)
@@ -198,9 +214,12 @@ class IncrementalSpeechSession:
                 if not recording:
                     continue
 
-                captured_seconds = sum(
-                    len(part) for part in audio_parts
-                ) / self.sample_rate
+                # Running total instead of re-summing every chunk (O(n^2)).
+                if captured_samples is None:
+                    captured_samples = sum(len(part) for part in audio_parts)
+                else:
+                    captured_samples += len(chunk)
+                captured_seconds = captured_samples / self.sample_rate
 
                 if (
                     captured_seconds >= self.min_partial_seconds
@@ -226,9 +245,7 @@ class IncrementalSpeechSession:
                     ).astype(np.float32, copy=False)
 
                     try:
-                        partial_text = self.recognition.transcribe(
-                            partial_audio
-                        )
+                        partial_text = self._transcribe_partial(partial_audio)
                     except Exception as exc:
                         print(
                             "[IncrementalSTT] Partial decode failed: "

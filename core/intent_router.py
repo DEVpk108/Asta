@@ -148,9 +148,11 @@ class IntentRouter:
                 classifier="rules",
             )
 
-        command_entities = self._extract_command_entities(
-            normalized,
-            known_providers=self._media_providers,
+        command_entities = self._refine_command_entities(
+            self._extract_command_entities(
+                normalized,
+                known_providers=self._media_providers,
+            )
         )
         if command_entities:
             return IntentResult(
@@ -162,7 +164,17 @@ class IntentRouter:
                 classifier="rules",
             )
 
-        recovered_media = self._recover_media_command(normalized)
+        recovered_media = self._refine_command_entities(
+            self._recover_media_command(normalized)
+        )
+        # "start a timer" is not a media request; only treat a bare "start X"
+        # as playback when a media provider is named explicitly.
+        if (
+            recovered_media
+            and normalized.startswith("start ")
+            and not recovered_media.get("provider")
+        ):
+            recovered_media = {}
         if recovered_media:
             return IntentResult(
                 intent=IntentType.COMMAND,
@@ -534,6 +546,11 @@ class IntentRouter:
             r"(?P<target>.+?)\s*$"
         )
         match = pattern.search(text)
+        # Only accept an action near the start of the utterance. Searching the
+        # whole sentence turned questions such as "tell me how to open excel
+        # files" into an "open" command.
+        if match and len(text[:match.start()].split()) > 2:
+            match = None
         if match:
             target = match.group("target").strip(" ,.!?;:")
             if target:
@@ -543,6 +560,67 @@ class IntentRouter:
                 }
 
         return {}
+
+    # Targets that make "run"/"start" conversational rather than a process.
+    _NON_EXECUTABLE_TARGET_LEADS = (
+        "me ", "us ", "through ", "by ", "over ", "into ", "away", "out ",
+        "a ", "an ", "some ", "with ", "from ", "again", "it again",
+    )
+    _MEDIA_STOP_TARGETS = {
+        "music", "the music", "song", "the song", "this song", "playback",
+        "the playback", "video", "the video", "audio", "the audio", "track",
+        "the track", "playing", "the player", "podcast", "the podcast",
+    }
+    _MEDIA_TRANSPORT_QUERY_WORDS = {
+        "", "song", "track", "one", "video", "music", "episode", "please",
+        "the song", "the track", "the video", "the music", "the episode",
+        "this song", "this track", "this video", "song please", "track please",
+    }
+    _TRAILING_POLITENESS = re.compile(
+        r"(?:\s*,?\s+(?:for me|for us|please|right now|now))+$"
+    )
+
+    @classmethod
+    def _refine_command_entities(cls, entities: dict[str, Any]) -> dict[str, Any]:
+        """Reject or correct common voice misroutes before tool selection."""
+        if not entities:
+            return entities
+
+        action = str(entities.get("action") or "")
+
+        if action == "media":
+            operation = str(entities.get("operation") or "").lower()
+            query = str(entities.get("query") or "").strip().lower()
+            # "next question" is conversation, not a media skip.
+            if (
+                operation in {"next", "previous", "pause", "resume", "stop", "toggle"}
+                and query not in cls._MEDIA_TRANSPORT_QUERY_WORDS
+                and not entities.get("provider")
+            ):
+                return {}
+            return entities
+
+        target = entities.get("target")
+        if action not in {"open", "launch", "start", "close", "run", "stop"} or not isinstance(target, str):
+            return entities
+
+        cleaned = cls._TRAILING_POLITENESS.sub("", target.strip()).strip(" ,.!?;:")
+        if action in {"open", "launch", "start"} and cleaned.startswith("up "):
+            cleaned = cleaned[3:].strip()
+        if not cleaned:
+            return {}
+
+        if action == "stop" and cleaned in cls._MEDIA_STOP_TARGETS:
+            return {"action": "media", "operation": "pause"}
+
+        if action in {"run", "start"} and (
+            cleaned + " "
+        ).startswith(cls._NON_EXECUTABLE_TARGET_LEADS):
+            return {}
+
+        refined = dict(entities)
+        refined["target"] = cleaned
+        return refined
 
     @classmethod
     def _extract_direct_command(

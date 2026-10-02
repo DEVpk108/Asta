@@ -7,24 +7,43 @@ communicate with the Electron HUD without coupling the Kernel to Electron.
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import socket
 import threading
+import time
 from dataclasses import asdict
 from typing import Any, Callable
 
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 18765
+TOKEN_ENV = "ASTA_HUD_TOKEN"
+
+# A client must authenticate within this window or it is disconnected.
+_AUTH_TIMEOUT_SECONDS = 5.0
+# Reject clients that stream data without line breaks (memory exhaustion).
+_MAX_BUFFER_BYTES = 256 * 1024
 
 
 class HUDTransport:
     """Small localhost JSON-lines server for HUD state and live telemetry."""
 
-    def __init__(self, host: str | None = None, port: int | None = None):
+    def __init__(
+        self,
+        host: str | None = None,
+        port: int | None = None,
+        token: str | None = None,
+    ):
         self.host = host or os.getenv("ASTA_HUD_HOST", DEFAULT_HOST)
         self.port = int(port or os.getenv("ASTA_HUD_PORT", DEFAULT_PORT))
+        # Every client must present this shared secret in a ``hud.hello``
+        # message before it receives state or may send commands. Without it,
+        # any local process -- or a web page issuing a cross-protocol HTTP
+        # request to 127.0.0.1 -- could inject commands into A.S.T.A.
+        self.token = token if token is not None else os.getenv(TOKEN_ENV, "")
+        self._authenticated: set[socket.socket] = set()
         self._server: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._clients: set[socket.socket] = set()
@@ -144,6 +163,7 @@ class HUDTransport:
         with self._clients_lock:
             clients = list(self._clients)
             self._clients.clear()
+            self._authenticated.clear()
         for client in clients:
             try:
                 client.shutdown(socket.SHUT_RDWR)
@@ -170,23 +190,41 @@ class HUDTransport:
             except OSError:
                 break
             client.settimeout(0.5)
-            with self._clients_lock:
-                self._clients.add(client)
-            for cached in (
-                self._last_state_message,
-                self._last_audio_message,
-                self._last_lifecycle_message,
-                self._last_chat_history_message,
-                self._last_chat_sessions_message,
-            ):
-                if cached is not None:
-                    self._send_to_client(client, cached)
             threading.Thread(target=self._client_loop, args=(client,), name="HUDTransportClient", daemon=True).start()
+
+    def _register_authenticated_client(self, client: socket.socket) -> None:
+        with self._clients_lock:
+            self._authenticated.add(client)
+            self._clients.add(client)
+        for cached in (
+            self._last_state_message,
+            self._last_audio_message,
+            self._last_lifecycle_message,
+            self._last_chat_history_message,
+            self._last_chat_sessions_message,
+        ):
+            if cached is not None:
+                self._send_to_client(client, cached)
+
+    def _is_valid_hello(self, message: Any) -> bool:
+        if not isinstance(message, dict) or message.get("type") != "hud.hello":
+            return False
+        if not self.token:
+            # No shared secret configured (tests / manual development).
+            return True
+        supplied = message.get("token")
+        if not isinstance(supplied, str):
+            return False
+        return hmac.compare_digest(supplied.encode("utf-8"), self.token.encode("utf-8"))
 
     def _client_loop(self, client: socket.socket) -> None:
         buffer = b""
+        authenticated = False
+        deadline = time.monotonic() + _AUTH_TIMEOUT_SECONDS
         try:
             while not self._stop.is_set():
+                if not authenticated and time.monotonic() > deadline:
+                    break
                 try:
                     data = client.recv(4096)
                 except socket.timeout:
@@ -196,14 +234,27 @@ class HUDTransport:
                 if not data:
                     break
                 buffer += data
+                if len(buffer) > _MAX_BUFFER_BYTES:
+                    break
                 lines = buffer.split(b"\n")
                 buffer = lines.pop() or b""
                 for line in lines:
-                    if not line:
+                    if not line.strip():
                         continue
                     try:
                         message = json.loads(line.decode("utf-8"))
                     except (UnicodeDecodeError, json.JSONDecodeError):
+                        if not authenticated:
+                            # Not a HUD client (e.g. an HTTP request). Drop it
+                            # instead of skipping lines until a JSON body.
+                            return
+                        continue
+                    if not authenticated:
+                        if not self._is_valid_hello(message):
+                            print("[HUD] Rejected unauthenticated transport client.", flush=True)
+                            return
+                        authenticated = True
+                        self._register_authenticated_client(client)
                         continue
                     self._handle_incoming(message)
         finally:
@@ -236,6 +287,7 @@ class HUDTransport:
     def _remove_client(self, client: socket.socket) -> None:
         with self._clients_lock:
             self._clients.discard(client)
+            self._authenticated.discard(client)
         try:
             client.close()
         except OSError:
