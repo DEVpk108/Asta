@@ -25,9 +25,9 @@ local TTS.
 ```
 
 Modules never call each other directly. They publish and subscribe to named
-events on the kernel's `EventBus`. `main.py` registers them in the order
-HUD -> Memory -> AI -> Speech -> Voice -> Tools, so the HUD can show `THINKING`
-before memory recall and model generation begin.
+events on the kernel's `EventBus`. `main.py` registers the runtime modules so
+HUD state and task progress can update independently from AI reasoning, voice
+capture, speech output, and tool execution.
 
 ### Request flow
 
@@ -162,6 +162,64 @@ cd hud
 npm start
 ```
 
+## Incremental voice execution (V1)
+
+A.S.T.A. can optionally begin executing safe actions before the user finishes a
+spoken sentence. This is the first step toward the mid-sentence interaction
+style demonstrated in the Jev workflow.
+
+When enabled, the voice path becomes:
+
+```text
+microphone
+  -> Silero VAD
+  -> rolling partial Whisper decode
+  -> incremental command detector
+  -> early action commitment
+  -> background dispatch
+  -> normal AI / Planner / ToolRuntime
+  -> continue listening
+  -> final Whisper decode
+  -> execute only the uncommitted remainder
+```
+
+V1 commits only application-open actions (`open`, `launch`, `start`) after the
+same semantic target is seen in consecutive partial transcripts and the target
+can be resolved by the generic `ApplicationManager`. It intentionally does not
+early-commit destructive actions.
+
+This first implementation uses repeated rolling-window faster-whisper decodes
+rather than a native streaming decoder. The goal is to validate the interaction
+model without replacing the existing local STT backend. The action detector and
+speech session are isolated so a later streaming STT backend can replace the
+partial decoder without changing TaskRuntime or the computer-control tools.
+
+Enable it for a local experiment:
+
+```powershell
+$env:ASTA_INCREMENTAL_VOICE="1"
+python main.py
+```
+
+Useful tuning variables:
+
+```text
+ASTA_INCREMENTAL_STABLE_UPDATES   # default 2
+ASTA_INCREMENTAL_STT_INTERVAL_MS  # default 800
+ASTA_INCREMENTAL_MIN_AUDIO_MS     # default 850
+ASTA_INCREMENTAL_STT_WINDOW_MS    # default 5000
+```
+
+A representative test utterance is:
+
+```text
+"Hey Asta, open up Chrome for me and once you're there search for Christopher Nolan"
+```
+
+A successful incremental trace should commit the application-open prefix while
+the user is still speaking, then process the remaining search instruction only
+after the final utterance decode.
+
 ## Configuration
 
 Every setting is read from the process environment. There is no `.env` loader
@@ -207,6 +265,11 @@ yet, so export these before starting A.S.T.A.
 | `ASTA_STT_BACKEND` | `whisper` | `whisper`, `indic` or `hybrid` |
 | `ASTA_CHAT_HISTORY_DB` | `data/chat_history.db` | SQLite chat history location |
 | `ASTA_VOICE_POST_TTS_GUARD_MS` | `80` | Short post-TTS settle window; speech during it is retained as VAD preroll |
+| `ASTA_INCREMENTAL_VOICE` | `0` | Enable mid-sentence safe action commitment |
+| `ASTA_INCREMENTAL_STABLE_UPDATES` | `2` | Consecutive matching partial STT updates required before early commit |
+| `ASTA_INCREMENTAL_STT_INTERVAL_MS` | `800` | Partial STT polling interval in milliseconds |
+| `ASTA_INCREMENTAL_MIN_AUDIO_MS` | `850` | Minimum captured speech before partial STT begins |
+| `ASTA_INCREMENTAL_STT_WINDOW_MS` | `5000` | Rolling audio window used for partial STT |
 | `ASTA_VAD_PRE_ROLL_MS` | `900` | Audio retained before VAD onset so first spoken words are not clipped |
 | `ASTA_MEDIA_DEFAULT_PROVIDER` | - | Optional default provider for media queries without an explicit provider |
 | `ASTA_SPOTIFY_CLIENT_ID` | - | Spotify developer app client ID for authenticated track playback |
