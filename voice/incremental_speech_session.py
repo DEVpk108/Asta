@@ -106,7 +106,10 @@ class IncrementalSpeechSession:
         start_wait = time.monotonic()
         recording = False
         recording_started_at = None
-        next_partial_at = 0.0
+        # Partial STT cadence is measured in captured audio, not wall-clock
+        # time. This keeps scheduling deterministic when STT or the microphone
+        # callback runs at a different pace than real time.
+        next_partial_audio_seconds = 0.0
         last_partial_audio_seconds = 0.0
         audio_parts: list[np.ndarray] = []
         pre_roll = deque(
@@ -141,8 +144,8 @@ class IncrementalSpeechSession:
                 recording = True
                 recording_started_at = time.monotonic()
                 audio_parts.append(initial_seed)
-                next_partial_at = (
-                    recording_started_at + self.partial_interval_seconds
+                next_partial_audio_seconds = (
+                    self.min_partial_seconds + self.partial_interval_seconds
                 )
 
             while self._should_continue(should_continue):
@@ -183,7 +186,9 @@ class IncrementalSpeechSession:
                         audio_parts.append(
                             np.asarray(pre_roll, dtype=np.float32)
                         )
-                    next_partial_at = now + self.partial_interval_seconds
+                    next_partial_audio_seconds = (
+                        captured_seconds + self.partial_interval_seconds
+                    )
 
                 if recording:
                     audio_parts.append(chunk)
@@ -199,7 +204,7 @@ class IncrementalSpeechSession:
 
                 if (
                     captured_seconds >= self.min_partial_seconds
-                    and now >= next_partial_at
+                    and captured_seconds >= next_partial_audio_seconds
                     and captured_seconds > last_partial_audio_seconds
                 ):
                     window_samples = max(
