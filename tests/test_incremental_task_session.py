@@ -177,19 +177,25 @@ def test_incremental_failed_segment_does_not_run_queued_continuation():
         )
         assert len(requests) == 1
 
-        first_request = requests[0]
-        kernel.event_bus.emit(
-            "tool_result",
-            result=ToolResult(
-                success=False,
-                tool=first_request.tool,
-                error="simulated failure",
-                metadata=dict(first_request.metadata),
-            ),
-        )
+        # RecoveryManager may retry/replan a failed step before the task
+        # reaches a terminal FAILED state. Keep feeding failures through every
+        # recovery-generated request, while ensuring the queued continuation
+        # never starts as a new task.
+        failure_count = 0
+        while first_task.status is TaskStatus.ACTIVE and failure_count < 8:
+            request = requests[-1]
+            kernel.event_bus.emit(
+                "tool_result",
+                result=ToolResult(
+                    success=False,
+                    tool=request.tool,
+                    error="simulated failure",
+                    metadata=dict(request.metadata),
+                ),
+            )
+            failure_count += 1
 
         assert first_task.status is TaskStatus.FAILED
-        assert len(requests) == 1
         assert len(kernel.task_manager.list()) == 1
     finally:
         ai.shutdown()
