@@ -249,8 +249,15 @@ class IncrementalSpeechSession:
                                 on_commit(commit)
 
                     last_partial_audio_seconds = captured_seconds
-
-                    next_partial_at = now + self.partial_interval_seconds
+                    # Schedule the next partial from captured audio duration.
+                    # The previous implementation accidentally stored this
+                    # deadline in a different local variable, so every audio
+                    # chunk after the first partial triggered another Whisper
+                    # decode. That could saturate the STT path and produce
+                    # unstable/noisy partial transcripts.
+                    next_partial_audio_seconds = (
+                        captured_seconds + self.partial_interval_seconds
+                    )
 
                 if (
                     self.vad_engine.is_speech_ended(event)
