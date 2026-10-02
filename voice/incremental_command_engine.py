@@ -24,7 +24,7 @@ class IncrementalCommandDetector:
     """
 
     EARLY_ACTIONS = frozenset({"open", "launch", "start"})
-    TARGET_FILLER = frozenset({"up", "the", "a", "an"})
+    # Only remove discourse padding from "open up X". Keep articles such as\n    # "the" because the application resolver may use them as part of a name.\n    TARGET_FILLER = frozenset({"up"})
     DISQUALIFYING_TARGET_WORDS = frozenset(
         {
             "and",
@@ -58,9 +58,13 @@ class IncrementalCommandDetector:
         self._commit_counter = 0
 
     @staticmethod
-    def _normalize(text: str) -> str:
-        value = " ".join(str(text or "").strip().lower().split())
+    def _normalize_preserve_case(text: str) -> str:
+        value = " ".join(str(text or "").strip().split())
         return value.rstrip(" .!?;:,")
+
+    @classmethod
+    def _normalize(cls, text: str) -> str:
+        return cls._normalize_preserve_case(text).lower()
 
     @classmethod
     def _clean_target(cls, words: list[str]) -> str:
@@ -176,7 +180,9 @@ class IncrementalCommandDetector:
 
     @classmethod
     def _strip_follow_up_leads(cls, text: str) -> str:
-        value = cls._normalize(text)
+        # Preserve the user's casing for the final remainder while matching
+        # discourse prefixes case-insensitively.
+        value = cls._normalize_preserve_case(text)
         if not value:
             return ""
 
@@ -202,7 +208,11 @@ class IncrementalCommandDetector:
 
     def finalize(self, transcript: str) -> str:
         """Return only the uncommitted tail of the final transcript."""
-        value = self._normalize(transcript)
+        # Search against a normalized lowercase copy, but slice from a
+        # same-shape, case-preserving copy so names such as "Christopher Nolan"
+        # remain intact for downstream intent parsing and UI display.
+        original = self._normalize_preserve_case(transcript)
+        value = original.lower()
         if not value or not self._commits:
             return transcript
 
@@ -227,5 +237,5 @@ class IncrementalCommandDetector:
             if found >= 0:
                 cursor = end
 
-        remainder = value[cursor:].strip()
+        remainder = original[cursor:].strip()
         return self._strip_follow_up_leads(remainder)
