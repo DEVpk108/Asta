@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 
 from .policy import AuthorizationResult, AuthorityPolicy
 from .authority_store import AuthorityStore
 from ..contracts import ToolDefinition
 
 
-class AuthorityMode(StrEnum):
+class AuthorityMode(str, Enum):
     """Explicit per-capability authority overrides."""
 
     AUTO = "auto"

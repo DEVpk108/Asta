@@ -93,5 +93,8 @@ def test_mixed_request_generates_response_then_executes_screenshot():
 def test_presentation_patch_does_not_replace_sentences_with_a_short_script():
     from speech.speech_module import SpeechModule
 
+    original = SpeechModule.on_assistant_sentence
     apply_presentation_patch()
-    assert getattr(SpeechModule, "_asta_presentation_patch_applied", False) is True
+    # The compatibility hook must not replace the real sentence handler, which
+    # owns speech deferral, code filtering and emoji removal.
+    assert SpeechModule.on_assistant_sentence is original

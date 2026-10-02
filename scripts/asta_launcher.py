@@ -1,5 +1,6 @@
 import ctypes
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -136,6 +137,9 @@ def main() -> int:
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
     env["ASTA_PRELAUNCHED_HUD"] = "1"
+    # Both the HUD and the Python runtime must share the transport secret.
+    if not env.get("ASTA_HUD_TOKEN"):
+        env["ASTA_HUD_TOKEN"] = secrets.token_urlsafe(32)
 
     hud_process = None
     python_process = None

@@ -4,10 +4,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from core.config import load_local_environment
+from core.config import ensure_hud_token, load_local_environment
 
 
 load_local_environment()
+# Generate the HUD transport secret before the Electron HUD is launched so it
+# inherits the same value through its environment.
+ensure_hud_token()
 
 
 _HUD_PROCESS = None
@@ -156,7 +159,6 @@ def main():
         ToolRuntimeModule,
     )
     from speech.speech_module import SpeechModule
-    from speech.presentation_patch import apply_presentation_patch
     from hud.hud_module import HUDModule
     from ai.ai_module import AIModule
     from ai.runtime_patch import apply_ai_runtime_patch
@@ -173,7 +175,6 @@ def main():
     apply_final_runtime_patch()
     apply_context_runtime_patch()
     apply_memory_runtime_patch()
-    apply_presentation_patch()
 
     kernel = Kernel()
     register_builtin_skills(kernel.skill_manager)

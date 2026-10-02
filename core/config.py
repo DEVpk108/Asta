@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 
 
-DEFAULT_ENV_PATH = Path(".env")
+# Resolve .env from the repository root, not the current working directory,
+# so A.S.T.A. behaves the same no matter where it is launched from.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
+HUD_TOKEN_ENV = "ASTA_HUD_TOKEN"
 
 
 def _parse_line(line: str) -> tuple[str, str] | None:
@@ -83,3 +88,16 @@ def update_local_environment(
 
     for key, value in updates.items():
         os.environ[key] = value
+
+
+def ensure_hud_token() -> str:
+    """Return the per-run HUD transport secret, generating one if needed.
+
+    The token is placed in the process environment so child processes (the
+    Electron HUD) inherit it. It is never written to disk.
+    """
+    token = os.environ.get(HUD_TOKEN_ENV, "").strip()
+    if not token:
+        token = secrets.token_urlsafe(32)
+        os.environ[HUD_TOKEN_ENV] = token
+    return token

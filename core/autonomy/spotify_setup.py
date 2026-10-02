@@ -38,11 +38,15 @@ class SpotifySetupOperator:
     def __init__(
         self,
         *,
-        config_path: str | Path = ".env",
+        config_path: str | Path | None = None,
         browser_factory=None,
         notify=None,
         timeout_seconds: float = 300.0,
     ):
+        if config_path is None:
+            from core.config import DEFAULT_ENV_PATH
+
+            config_path = DEFAULT_ENV_PATH
         self.config_path = Path(config_path)
         self.browser_factory = browser_factory
         self.notify = notify

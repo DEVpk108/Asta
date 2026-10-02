@@ -765,7 +765,6 @@ class VoiceModule(Module):
         finally:
             self.vad.min_rms = original["min_rms"]
             self.vad.min_peak = original["min_peak"]
-            self.vad.start_chunk_rms = original["min_rms"] if False else original["min_peak"]
             self.vad.start_chunk_rms = original["start_chunk_rms"]
             self.vad.min_speech_duration = original["min_speech_duration"]
 

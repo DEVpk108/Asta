@@ -4,6 +4,11 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from core.applications.manager import (
+    _abbreviation_match,
+    normalize_application_name,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class IncrementalCommit:
@@ -46,6 +51,40 @@ class IncrementalCommandDetector:
         }
     )
 
+    # Words that may precede the action at the start of an utterance. The
+    # action itself must come first (after these); "open"/"start" in the
+    # middle of a sentence such as "tell me how to open excel files" is not a
+    # command.
+    LEADING_FILLER_PHRASES = (
+        ("hey", "asta"),
+        ("hello", "asta"),
+        ("wake", "up", "asta"),
+        ("asta",),
+        ("can", "you"),
+        ("could", "you"),
+        ("would", "you"),
+        ("will", "you"),
+        ("go", "ahead", "and"),
+        ("please",),
+        ("okay",),
+        ("ok",),
+        ("hey",),
+        ("so",),
+        ("now",),
+        ("just",),
+    )
+    # A later command may follow one of these connectives once an earlier
+    # action in the same utterance has already been committed.
+    CONNECTIVES = frozenset({"and", "then", "also"})
+    # Tokens that can never identify an application on their own. They match
+    # inside many application names ("the" in "Weather", "new" in "News").
+    WEAK_TARGET_TOKENS = frozenset(
+        {"a", "an", "the", "my", "this", "that", "it", "some", "new", "of", "to", "in", "on"}
+    )
+    LEADING_ARTICLES = frozenset({"a", "an", "the", "my"})
+    # "the notes app" should match "Notes".
+    GENERIC_APP_WORDS = frozenset({"app", "application", "program", "software"})
+
     def __init__(
         self,
         *,
@@ -75,6 +114,67 @@ class IncrementalCommandDetector:
             cleaned.pop(0)
         return " ".join(cleaned).strip()
 
+    @classmethod
+    def _strip_leading_fillers(cls, words: list[str]) -> int:
+        """Return the index of the first word after leading filler phrases."""
+        index = 0
+        changed = True
+        while changed and index < len(words):
+            changed = False
+            for phrase in cls.LEADING_FILLER_PHRASES:
+                end = index + len(phrase)
+                if tuple(words[index:end]) == phrase:
+                    index = end
+                    changed = True
+                    break
+        return index
+
+    def _allowed_action_positions(self, words: list[str]) -> set[int]:
+        positions = {self._strip_leading_fillers(words)}
+        if self._commits:
+            for index, word in enumerate(words[:-1]):
+                if word in self.CONNECTIVES:
+                    positions.add(index + 1 + self._strip_leading_fillers(words[index + 1:]))
+        return positions
+
+    @classmethod
+    def _is_confident_application_match(cls, target: str, app_name: str) -> bool:
+        """Require a whole-word match, not a substring/fuzzy similarity.
+
+        ApplicationManager.resolve() is intentionally forgiving for explicit
+        commands, but an early commit fires while the user is still talking,
+        so it must only accept unambiguous names.
+        """
+        query_tokens = [
+            token
+            for token in normalize_application_name(target).split()
+            if token not in cls.GENERIC_APP_WORDS
+        ]
+        while query_tokens and query_tokens[0] in cls.LEADING_ARTICLES:
+            query_tokens.pop(0)
+        name_tokens = normalize_application_name(app_name).split()
+        if not query_tokens or not name_tokens:
+            return False
+        if all(token in cls.WEAK_TARGET_TOKENS for token in query_tokens):
+            return False
+        if query_tokens == name_tokens:
+            return True
+
+        strong = True
+        for token in query_tokens:
+            if token in name_tokens:
+                continue
+            if len(token) >= 4 and any(name.startswith(token) for name in name_tokens):
+                continue
+            strong = False
+            break
+        if strong:
+            return True
+
+        # Compact abbreviations such as "vscode" -> "Visual Studio Code".
+        compact = "".join(query_tokens)
+        return len(compact) >= 4 and _abbreviation_match(query_tokens, name_tokens)
+
     @staticmethod
     def _target_has_disqualifying_words(target: str) -> bool:
         return any(
@@ -97,8 +197,11 @@ class IncrementalCommandDetector:
         if len(words) < 2:
             return None
 
+        allowed_positions = self._allowed_action_positions(words)
         for action_index, word in enumerate(words):
             if word not in self.EARLY_ACTIONS:
+                continue
+            if action_index not in allowed_positions:
                 continue
 
             for end in range(action_index + 1, len(words) + 1):
@@ -121,6 +224,8 @@ class IncrementalCommandDetector:
 
                 app_name = str(getattr(application, "name", "") or target).strip()
                 if not app_name:
+                    continue
+                if not self._is_confident_application_match(target, app_name):
                     continue
 
                 source_text = " ".join(
@@ -188,6 +293,14 @@ class IncrementalCommandDetector:
         if not value:
             return ""
 
+        # Trailing politeness from the committed command ("open chrome for
+        # me and ...") is not part of the follow-up instruction.
+        value = re.sub(
+            r"^(?:(?:for\s+me|for\s+us|please)\s*,?\s*)+",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
         value = re.sub(
             r"^(?:(?:and|then|after that)\s+)+",
             "",

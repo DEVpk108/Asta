@@ -132,9 +132,29 @@ class Kernel:
     def start(self):
         print("[Kernel] Starting...")
 
-        for module in self.modules:
-            print(f"[Kernel] Initializing {module.name}...")
-            module.initialize()
+        initialized = []
+        try:
+            for module in self.modules:
+                print(f"[Kernel] Initializing {module.name}...")
+                module.initialize()
+                initialized.append(module)
+        except BaseException:
+            # Roll back modules that already started so managed child
+            # processes (llama-server, vision server, HUD transport) are not
+            # orphaned when a later module fails to initialize.
+            print("[Kernel] Startup failed; shutting down initialized modules.")
+            for module in reversed(initialized):
+                try:
+                    module.shutdown()
+                except Exception as exc:
+                    print(f"[Kernel] Error shutting down {module.name}: {exc}")
+            vision_shutdown = getattr(self.vision_engine, "shutdown", None)
+            if callable(vision_shutdown):
+                try:
+                    vision_shutdown()
+                except Exception as exc:
+                    print(f"[Kernel] Error shutting down vision engine: {exc}")
+            raise
 
         with self._shutdown_lock:
             self._shutdown_started = False
