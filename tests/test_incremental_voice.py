@@ -1,4 +1,5 @@
 from collections import deque
+import time
 
 import numpy as np
 
@@ -35,6 +36,7 @@ class FakeMicrophone:
     def get_chunk(self):
         if not self.chunks:
             raise RuntimeError("microphone exhausted")
+        time.sleep(0.08)
         return self.chunks.popleft().copy()
 
 
