@@ -122,6 +122,15 @@ class IncrementalCommandDetector:
                 ).strip()
                 canonical = f"{word} {app_name}".strip()
                 signature = (word, app_name.casefold())
+                committed_signatures = {
+                    (
+                        str(commit.entities.get("action") or "").strip().lower(),
+                        str(commit.entities.get("target") or "").casefold(),
+                    )
+                    for commit in self._commits
+                }
+                if signature in committed_signatures:
+                    continue
                 return signature, canonical, source_text
 
         return None
@@ -136,15 +145,6 @@ class IncrementalCommandDetector:
             return None
 
         signature, canonical, source_text = candidate
-        if any(
-            (commit.entities.get("action"), str(commit.entities.get("target", "")).casefold())
-            == signature
-            for commit in self._commits
-        ):
-            self._candidate_signature = None
-            self._candidate_hits = 0
-            return None
-
         if signature == self._candidate_signature:
             self._candidate_hits += 1
         else:
@@ -155,7 +155,7 @@ class IncrementalCommandDetector:
             return None
 
         self._commit_counter += 1
-        action, app_name_normalized = signature
+        action, _app_name_normalized = signature
         commit = IncrementalCommit(
             commit_id=f"inc-{self._commit_counter}",
             text=canonical,
