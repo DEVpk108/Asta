@@ -223,10 +223,13 @@ class VoiceModule(Module):
                 clear_buffer()
             print("[Voice] Conversation mode: OFF", flush=True)
 
-    def _start_conversation(self):
+    def _start_conversation(self, *, announce=True):
         self._conversation_active = True
         self._last_interaction = time.monotonic()
         print("[Voice] Conversation mode: ACTIVE", flush=True)
+
+        if not announce:
+            return
 
         if self._wakeword_greeting_used:
             greeting = self.wakeword_return_greeting
@@ -746,8 +749,10 @@ class VoiceModule(Module):
                     time.sleep(0.05)
                     continue
 
+                wakeword_audio = None
+
                 if not self._conversation_active:
-                    initial_audio = self.wakeword.wait_for_wakeword(
+                    wakeword_audio = self.wakeword.wait_for_wakeword(
                         self.microphone,
                         should_continue=self._can_listen,
                     )
@@ -755,10 +760,12 @@ class VoiceModule(Module):
                     if not self._running:
                         break
 
-                    if initial_audio is None or not self._can_listen():
+                    if wakeword_audio is None:
                         continue
 
-                    self._start_conversation()
+                    self._start_conversation(
+                        announce=not self._incremental_voice_enabled,
+                    )
                 else:
                     if self._conversation_expired():
                         self._conversation_active = False
@@ -778,7 +785,11 @@ class VoiceModule(Module):
                 if interrupted_audio is None:
                     interrupted_audio = self._take_post_tts_seed()
 
-                self.microphone.flush()
+                if wakeword_audio is not None and interrupted_audio is None:
+                    interrupted_audio = wakeword_audio
+
+                if wakeword_audio is None or not self._incremental_voice_enabled:
+                    self.microphone.flush()
 
                 if self._incremental_voice_enabled and not self._awaiting_confirmation:
                     session_result, session_id = self._collect_incremental_command(
