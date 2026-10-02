@@ -602,3 +602,47 @@ def test_planner_adds_semantic_visual_verification_to_cognitive_plan():
     assert plan.steps[1].metadata["action"] == "inspect"
     assert "Calculator window is visible" in plan.steps[1].metadata["prompt"]
 
+
+
+def test_planner_uses_process_verification_for_simple_cognitive_app_open():
+    kernel = Kernel()
+    kernel.register_tool(FakeTool())
+    kernel.register_tool(FakeInspectTool())
+
+    planner = Planner(
+        kernel.tool_registry,
+        application_manager=kernel.application_manager,
+    )
+
+    class CognitiveBrain:
+        enabled = True
+
+        @staticmethod
+        def plan(goal, *, intent):
+            from core.agent import AgentPlanProposal
+            return AgentPlanProposal(
+                goal_summary="Open calculator.",
+                success_conditions=("Calculator application is running.",),
+                rationale="Confirm the application through OS process state.",
+                steps=(
+                    {"action": "open", "tool": "test.open", "target": "calculator"},
+                ),
+                uncertainty=0.1,
+            )
+
+        @staticmethod
+        def task_metadata(proposal):
+            return {
+                "agent_mode": "cognitive_v1",
+                "agent_goal_summary": proposal.goal_summary,
+                "agent_success_conditions": list(proposal.success_conditions),
+            }
+
+    planner.agent_brain = CognitiveBrain()
+    plan = planner.plan(
+        "open calculator",
+        intent=_command_intent(action="open", target="calculator"),
+    )
+
+    assert [step.metadata["tool"] for step in plan.steps] == ["test.open"]
+    assert plan.steps[0].metadata["verification"] == "application.running"
