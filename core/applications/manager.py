@@ -354,7 +354,7 @@ class ApplicationManager:
             records.append(
                 ApplicationRecord(
                     name=name,
-                    launch_target=f"shell:AppsFolder\\{app_id}",
+                    launch_target=_start_app_launch_target(app_id),
                     provider="windows.start_apps",
                     app_id=app_id,
                     source="Get-StartApps",
@@ -390,6 +390,21 @@ class ApplicationManager:
                         )
                     )
         return records
+
+
+def _start_app_launch_target(app_id: str) -> str:
+    """Return a launchable Windows target for a Get-StartApps AppID."""
+    value = str(app_id or "").strip()
+    if not value:
+        return value
+
+    # Get-StartApps may return a direct executable path for classic desktop
+    # apps instead of a package-style AppID. Keep package IDs on the generic
+    # shell:AppsFolder path, but launch absolute paths directly.
+    if re.match(r"^[A-Za-z]:[\\/]", value) or value.startswith((r"\\", r"//")):
+        return value
+
+    return f"shell:AppsFolder\\{value}"
 
 
 def normalize_application_name(value: str) -> str:

@@ -109,7 +109,12 @@ class AIModule(Module):
         if callable(warmup):
             warmup()
         self.event_bus.subscribe("user_message", self.on_user_message)
+        self.event_bus.subscribe(
+            "incremental_user_message",
+            self.on_incremental_user_message,
+        )
         self.event_bus.subscribe("tool_result", self.on_tool_result)
+        self.event_bus.subscribe("task_failed", self.on_task_failed)
         self.event_bus.subscribe(
             "tool_confirmation_required",
             self.on_tool_confirmation_required,
@@ -118,7 +123,12 @@ class AIModule(Module):
 
     def shutdown(self):
         self.event_bus.unsubscribe("user_message", self.on_user_message)
+        self.event_bus.unsubscribe(
+            "incremental_user_message",
+            self.on_incremental_user_message,
+        )
         self.event_bus.unsubscribe("tool_result", self.on_tool_result)
+        self.event_bus.unsubscribe("task_failed", self.on_task_failed)
         self.event_bus.unsubscribe(
             "tool_confirmation_required",
             self.on_tool_confirmation_required,
@@ -189,6 +199,22 @@ class AIModule(Module):
             setter(prompt)
         elif hasattr(self.engine, "system_prompt"):
             self.engine.system_prompt = prompt
+
+    def on_incremental_user_message(self, text, *args, **kwargs):
+        """Process non-command incremental speech without duplicating runtime plans."""
+        # Sessionized incremental commands are orchestrated by TaskRuntime so
+        # queued continuations cannot bypass its serialization boundary.
+        session_id = str(kwargs.get("session_id") or "").strip()
+        if session_id:
+            intent = self.kernel.intent_router.analyze(text)
+            if intent.intent == IntentType.COMMAND:
+                print(
+                    "[AI] Incremental command already owned by TaskRuntime: "
+                    f"{text!r}",
+                    flush=True,
+                )
+                return
+        self.on_user_message(text)
 
     def on_user_message(self, text):
         if not text:
@@ -899,6 +925,21 @@ class AIModule(Module):
         )
         self.event_bus.emit("tool_request", request=request)
 
+    def on_task_failed(self, task=None, *args, **kwargs):
+        """Give the user an explicit terminal response when autonomous work fails."""
+        if isinstance(task, dict):
+            goal = str(task.get("goal") or "").strip()
+        else:
+            goal = str(getattr(task, "goal", "") or "").strip()
+
+        message = (
+            "I couldn't complete that task."
+            if not goal
+            else f"I couldn't complete that task: {goal}."
+        )
+        print(f"[AI] Task failed: {message}", flush=True)
+        self._emit_assistant_text(message)
+
     def on_tool_confirmation_required(self, request, reason):
         action = request.metadata.get("action")
         target = request.arguments.get("target")
@@ -952,6 +993,12 @@ class AIModule(Module):
                 if path:
                     print(f"[AI] Screenshot saved: {path}", flush=True)
                 return "Screenshot captured."
+            if result.tool == "vision.inspect":
+                if bool(output.get("verified")):
+                    return "I checked the screen. The requested visual condition is confirmed."
+                if bool(output.get("visual_match")):
+                    return "I checked the screen, but the visual verification was inconclusive."
+                return "I checked the screen, but could not verify the requested visual condition."
             if result.tool == "notes.create_note":
                 title = output.get("title")
                 return f"Saved note '{title}'." if title else "Saved note."
@@ -1003,8 +1050,17 @@ class AIModule(Module):
             return f"I couldn't start {target}." if target else "I couldn't start the process."
 
         if result.tool == "media.control":
-            if "ASTA_SPOTIFY_CLIENT_ID" in str(result.error or ""):
-                return "Spotify playback needs one-time authorization."
+            error = str(result.error or "").lower()
+            if "one-time setup" in error or "not configured" in error or "asta_spotify_client_id" in error:
+                return (
+                    "Spotify needs its initial developer setup. "
+                    "I’m setting that up now and will continue the original task."
+                )
+            if "spotify authorization" in error or "authorize a.s.t.a" in error:
+                return (
+                    "Spotify needs authorization. Please complete the Spotify authorization "
+                    "in the browser; I’ll continue the original task afterward."
+                )
             return "I couldn't control media playback."
 
         if result.tool == "system.stop_process":

@@ -68,7 +68,7 @@ class IntentRouter:
 
     _COMMA_COMMAND_PATTERN = re.compile(
         r",\s*(?=(?:please\s+|can you\s+|could you\s+|would you\s+|will you\s+)?"
-        r"(?:open|launch|start|close|run|stop|take|capture|screenshot|mute|unmute)\b)",
+        r"(?:open|launch|start|close|run|stop|take|capture|screenshot|mute|unmute|search|look\s+up)\b)",
         re.IGNORECASE,
     )
 
@@ -78,6 +78,12 @@ class IntentRouter:
         r"take the screenshot|take the screen shot|capture screenshot|capture a screenshot|"
         r"capture screen shot|capture a screen shot|capture the screenshot|"
         r"capture the screen shot|screenshot|screen shot))$",
+        re.IGNORECASE,
+    )
+
+    _VISUAL_VERIFICATION_SUFFIX_PATTERN = re.compile(
+        r"^(?P<command>.+?)\s+and\s+(?P<verification>"
+        r"(?:verify|check)\s+.+)$",
         re.IGNORECASE,
     )
 
@@ -94,6 +100,7 @@ class IntentRouter:
             )
 
         normalized = self._normalize(text)
+        normalized = self._strip_wakeword_prefix(normalized)
 
         memory_phrases = (
             "remember that",
@@ -127,7 +134,10 @@ class IntentRouter:
                 classifier="rules",
             )
 
-        compound_commands = self._extract_compound_commands(normalized)
+        compound_commands = self._extract_compound_commands(
+            normalized,
+            known_providers=self._media_providers,
+        )
         if compound_commands:
             return IntentResult(
                 intent=IntentType.COMMAND,
@@ -138,7 +148,10 @@ class IntentRouter:
                 classifier="rules",
             )
 
-        command_entities = self._extract_command_entities(normalized)
+        command_entities = self._extract_command_entities(
+            normalized,
+            known_providers=self._media_providers,
+        )
         if command_entities:
             return IntentResult(
                 intent=IntentType.COMMAND,
@@ -188,6 +201,23 @@ class IntentRouter:
             normalized_text=normalized,
             classifier="rules",
         )
+
+    @staticmethod
+    def _strip_wakeword_prefix(text: str) -> str:
+        """Remove a wake phrase already consumed by the voice runtime."""
+        value = str(text or "").strip()
+        prefixes = (
+            "hey asta, ",
+            "hey asta ",
+            "hello asta, ",
+            "hello asta ",
+            "wake up asta, ",
+            "wake up asta ",
+        )
+        for prefix in prefixes:
+            if value.startswith(prefix):
+                return value[len(prefix):].strip()
+        return value
 
     @staticmethod
     def _normalize(text: str) -> str:
@@ -289,8 +319,50 @@ class IntentRouter:
         return {}
 
     @classmethod
-    def _extract_compound_commands(cls, text: str) -> list[dict[str, Any]]:
+    def _extract_compound_commands(
+        cls,
+        text: str,
+        *,
+        known_providers=None,
+    ) -> list[dict[str, Any]]:
         """Parse sequential commands joined by explicit or natural separators."""
+        media_sequence = cls._extract_open_media_sequence(
+            text,
+            known_providers=known_providers,
+        )
+        if media_sequence:
+            return media_sequence
+        visual = cls._VISUAL_VERIFICATION_SUFFIX_PATTERN.match(text)
+        if visual:
+            first_text = visual.group("command").strip()
+            verification = visual.group("verification").strip()
+            first = cls._extract_command_entities(
+                first_text,
+                known_providers=known_providers,
+            )
+            if first:
+                target = str(first.get("target") or "").strip()
+                condition = verification
+                if target and re.search(r"\bit\b", condition, re.IGNORECASE):
+                    condition = re.sub(
+                        r"\bit\b",
+                        target,
+                        condition,
+                        count=1,
+                        flags=re.IGNORECASE,
+                    )
+                return [
+                    first,
+                    {
+                        "action": "inspect",
+                        "tool": "vision.inspect",
+                        "prompt": (
+                            "Verify the following condition from the current "
+                            f"screenshot: {condition}."
+                        ),
+                    },
+                ]
+
         first_parts = [
             part.strip(" ,")
             for part in cls._COMPOUND_SEPARATOR_PATTERN.split(text)
@@ -308,18 +380,63 @@ class IntentRouter:
 
         commands: list[dict[str, Any]] = []
         for part in parts:
+            visual = cls._VISUAL_VERIFICATION_SUFFIX_PATTERN.match(part)
+            if visual:
+                first_text = visual.group("command").strip()
+                verification = visual.group("verification").strip()
+
+                first = cls._extract_command_entities(
+                    first_text,
+                    known_providers=known_providers,
+                )
+                if first:
+                    target = str(first.get("target") or "").strip()
+                    condition = verification
+                    if target and re.search(r"\bit\b", condition, re.IGNORECASE):
+                        condition = re.sub(
+                            r"\bit\b",
+                            target,
+                            condition,
+                            count=1,
+                            flags=re.IGNORECASE,
+                        )
+                    prompt = (
+                        "Verify the following condition from the current "
+                        f"screenshot: {condition}."
+                    )
+                    commands.extend(
+                        (
+                            first,
+                            {
+                                "action": "inspect",
+                                "tool": "vision.inspect",
+                                "prompt": prompt,
+                            },
+                        )
+                    )
+                    continue
+
             # Spoken commands sometimes omit "and" before a screenshot phrase,
             # e.g. "open camera take screenshot". Check this before the generic
             # open/close parser so the suffix does not get swallowed into target.
             implicit = cls._IMPLICIT_SCREENSHOT_SUFFIX_PATTERN.match(part)
             if implicit:
-                first = cls._extract_command_entities(implicit.group("command").strip())
-                second = cls._extract_direct_command(implicit.group("screenshot").strip())
+                first = cls._extract_command_entities(
+                    implicit.group("command").strip(),
+                    known_providers=known_providers,
+                )
+                second = cls._extract_direct_command(
+                    implicit.group("screenshot").strip(),
+                    known_providers=known_providers,
+                )
                 if first and second:
                     commands.extend((first, second))
                     continue
 
-            direct = cls._extract_command_entities(part)
+            direct = cls._extract_command_entities(
+                part,
+                known_providers=known_providers,
+            )
             if direct and "commands" not in direct:
                 commands.append(direct)
                 continue
@@ -329,8 +446,67 @@ class IntentRouter:
         return commands if len(commands) >= 2 else []
 
     @classmethod
-    def _extract_command_entities(cls, text: str) -> dict[str, Any]:
-        direct = cls._extract_direct_command(text)
+    def _extract_open_media_sequence(
+        cls,
+        text: str,
+        *,
+        known_providers=None,
+    ) -> list[dict[str, Any]]:
+        """Parse a generic "open provider, search for query, and play it" flow.
+
+        Provider names come from the registered media providers; no application
+        name is hard-coded here.
+        """
+        match = re.fullmatch(
+            r"(?:please\s+)?(?:open|launch|start)\s+"
+            r"(?P<target>[^,]+?)\s*,\s*"
+            r"search\s+for\s+(?P<query>.+?)\s*,?\s*"
+            r"(?:and\s+)?play(?:\s+(?:it|that|this))?",
+            text,
+            re.IGNORECASE,
+        )
+        if not match:
+            return []
+
+        target = match.group("target").strip(" ,.!?;:")
+        query = match.group("query").strip(" ,.!?;:")
+        if not target or not query:
+            return []
+
+        normalized_target = cls._normalize(target)
+        providers = {
+            cls._normalize(str(name))
+            for name in (known_providers or ())
+            if str(name).strip()
+        }
+        provider = normalized_target if normalized_target in providers else None
+        if provider is None:
+            return []
+
+        return [
+            {
+                "action": "open",
+                "target": target,
+            },
+            {
+                "action": "media",
+                "operation": "play",
+                "query": query,
+                "provider": provider,
+            },
+        ]
+
+    @classmethod
+    def _extract_command_entities(
+        cls,
+        text: str,
+        *,
+        known_providers=None,
+    ) -> dict[str, Any]:
+        direct = cls._extract_direct_command(
+            text,
+            known_providers=known_providers,
+        )
         if direct:
             return direct
 
@@ -344,7 +520,10 @@ class IntentRouter:
                     changed = True
                     break
 
-        direct = cls._extract_direct_command(stripped)
+        direct = cls._extract_direct_command(
+            stripped,
+            known_providers=known_providers,
+        )
         if direct:
             return direct
 
@@ -366,7 +545,12 @@ class IntentRouter:
         return {}
 
     @classmethod
-    def _extract_direct_command(cls, text: str) -> dict[str, Any]:
+    def _extract_direct_command(
+        cls,
+        text: str,
+        *,
+        known_providers=None,
+    ) -> dict[str, Any]:
         for prefix, action in cls._COMMAND_PREFIXES:
             if text.startswith(prefix):
                 target = text[len(prefix):].strip(" ,.!?;:")
@@ -392,9 +576,20 @@ class IntentRouter:
                     "target": target,
                 }
 
-        media = cls._extract_media_command(text)
+        media = cls._extract_media_command(
+            text,
+            known_providers=known_providers,
+        )
         if media:
             return media
+
+        search = cls._extract_search_command(text)
+        if search:
+            return search
+
+        computer = cls._extract_computer_command(text)
+        if computer:
+            return computer
 
         if text in {"screenshot", "screen shot"}:
             return {"action": "screenshot"}
@@ -425,8 +620,115 @@ class IntentRouter:
         return {}
 
     @classmethod
-    def _extract_media_command(cls, text: str) -> dict[str, Any]:
-        request = parse_media_request(text)
+    def _extract_search_command(cls, text: str) -> dict[str, Any]:
+        """Parse a generic GUI search request without naming a search engine."""
+        value = cls._normalize(text)
+        match = re.fullmatch(
+            r"(?:search(?:\s+for)?|look\s+up)\s+"
+            r"(?P<query>.+?)"
+            r"(?:\s+(?:on|in|using)\s+(?P<target>[^,]+?))?",
+            value,
+            re.IGNORECASE,
+        )
+        if not match:
+            return {}
+
+        query = match.group("query").strip(" ,.!?;:")
+        target = (match.group("target") or "").strip(" ,.!?;:")
+        if not query:
+            return {}
+
+        return {
+            "action": "search",
+            "query": query,
+            **({"target": target} if target else {}),
+        }
+
+    @classmethod
+    def _extract_computer_command(cls, text: str) -> dict[str, Any]:
+        value = cls._normalize(text)
+
+        double_click_prefixes = (
+            "double click ",
+            "double-click ",
+            "doubleclick ",
+        )
+        for prefix in double_click_prefixes:
+            if value.startswith(prefix):
+                target = value[len(prefix):].strip(" ,.!?;:")
+                if target:
+                    return {
+                        "action": "click",
+                        "target": target,
+                        "clicks": 2,
+                    }
+
+        right_click_prefixes = (
+            "right click ",
+            "right-click ",
+            "rightclick ",
+        )
+        for prefix in right_click_prefixes:
+            if value.startswith(prefix):
+                target = value[len(prefix):].strip(" ,.!?;:")
+                if target:
+                    return {
+                        "action": "click",
+                        "target": target,
+                        "button": "right",
+                    }
+
+        for prefix in ("click ", "click on "):
+            if value.startswith(prefix):
+                target = value[len(prefix):].strip(" ,.!?;:")
+                if target:
+                    return {
+                        "action": "click",
+                        "target": target,
+                    }
+
+        for prefix in ("type text ", "type ", "write "):
+            if value.startswith(prefix):
+                text_value = value[len(prefix):].strip()
+                if text_value:
+                    return {
+                        "action": "type_text",
+                        "text": text_value,
+                    }
+
+        for prefix in ("press ", "press the "):
+            if value.startswith(prefix):
+                key = value[len(prefix):].strip(" ,.!?;:")
+                if key:
+                    return {
+                        "action": "keypress",
+                        "key": key,
+                    }
+
+        if value.startswith("scroll "):
+            direction = value[len("scroll "):].strip()
+            if direction in {"down", "lower"}:
+                return {"action": "scroll", "amount": -5}
+            if direction in {"up", "higher"}:
+                return {"action": "scroll", "amount": 5}
+            if direction in {"to top", "top"}:
+                return {"action": "scroll", "amount": 100}
+            if direction in {"to bottom", "bottom"}:
+                return {"action": "scroll", "amount": -100}
+
+        return {}
+
+    @classmethod
+    def _extract_media_command(
+        cls,
+        text: str,
+        *,
+        known_providers=None,
+    ) -> dict[str, Any]:
+        request = parse_media_request(
+            text,
+            known_providers=known_providers,
+        )
         return request.to_entities() if request is not None else {}
 
     def _recover_media_command(self, text: str) -> dict[str, Any]:

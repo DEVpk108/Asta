@@ -25,9 +25,9 @@ local TTS.
 ```
 
 Modules never call each other directly. They publish and subscribe to named
-events on the kernel's `EventBus`. `main.py` registers them in the order
-HUD -> Memory -> AI -> Speech -> Voice -> Tools, so the HUD can show `THINKING`
-before memory recall and model generation begin.
+events on the kernel's `EventBus`. `main.py` registers the runtime modules so
+HUD state and task progress can update independently from AI reasoning, voice
+capture, speech output, and tool execution.
 
 ### Request flow
 
@@ -91,7 +91,16 @@ Optional extras:
 pip install -r requirements-laya.txt          # Laya System 1 decision layer
 pip install -r requirements-mempalace.txt     # long-term memory
 pip install -r voice/requirements-indic.txt   # IndicConformer STT backend
+pip install -r requirements-browser.txt       # browser automation for capability setup
 ```
+
+For autonomous browser setup on Windows, the Spotify setup operator uses a
+dedicated persistent browser profile. If the optional browser package is
+installed, A.S.T.A. can open the Spotify Developer Dashboard, wait for the
+user-only login boundary when necessary, create/configure the A.S.T.A. app,
+capture its Client ID, persist it to the local ignored `.env`, refresh the
+Spotify provider, and resume the original task. Browser automation never
+handles the user's Spotify password, MFA codes, or CAPTCHA.
 
 ## Run
 
@@ -119,6 +128,21 @@ You can still start llama.cpp yourself. When A.S.T.A. detects an already-running
 server, it uses it but does not take ownership of or terminate that external
 process.
 
+### Managed LFM2.5-VL vision runtime
+
+A.S.T.A. manages LFM2.5-VL as a separate local llama-server runtime on
+`http://127.0.0.1:8090/v1`. The default is **lazy loading**: startup does not
+load the vision model or its multimodal projector. The first `vision.inspect`
+request starts the server and waits for `/v1/models` before sending the image.
+
+Set `ASTA_VISION_PRELOAD=1` when startup loading is preferred. As with the main
+llama.cpp runtime, A.S.T.A. stops the vision server only when it started that
+process itself; an already-running local server is reused.
+
+The managed vision runtime expects the LFM2.5-VL GGUF plus its `mmproj` GGUF.
+When several GGUFs are present in `ASTA_VISION_MODEL_DIR`, set
+`ASTA_VISION_MODEL_PATH` and `ASTA_VISION_MMPROJ_PATH` explicitly.
+
 2. From the repository root:
 
 ```bash
@@ -137,6 +161,64 @@ The HUD can also be run on its own:
 cd hud
 npm start
 ```
+
+## Incremental voice execution (V1)
+
+A.S.T.A. can optionally begin executing safe actions before the user finishes a
+spoken sentence. This is the first step toward the mid-sentence interaction
+style demonstrated in the Jev workflow.
+
+When enabled, the voice path becomes:
+
+```text
+microphone
+  -> Silero VAD
+  -> rolling partial Whisper decode
+  -> incremental command detector
+  -> early action commitment
+  -> background dispatch
+  -> normal AI / Planner / ToolRuntime
+  -> continue listening
+  -> final Whisper decode
+  -> execute only the uncommitted remainder
+```
+
+V1 commits only application-open actions (`open`, `launch`, `start`) after the
+same semantic target is seen in consecutive partial transcripts and the target
+can be resolved by the generic `ApplicationManager`. It intentionally does not
+early-commit destructive actions.
+
+This first implementation uses repeated rolling-window faster-whisper decodes
+rather than a native streaming decoder. The goal is to validate the interaction
+model without replacing the existing local STT backend. The action detector and
+speech session are isolated so a later streaming STT backend can replace the
+partial decoder without changing TaskRuntime or the computer-control tools.
+
+Enable it for a local experiment:
+
+```powershell
+$env:ASTA_INCREMENTAL_VOICE="1"
+python main.py
+```
+
+Useful tuning variables:
+
+```text
+ASTA_INCREMENTAL_STABLE_UPDATES   # default 2
+ASTA_INCREMENTAL_STT_INTERVAL_MS  # default 800
+ASTA_INCREMENTAL_MIN_AUDIO_MS     # default 850
+ASTA_INCREMENTAL_STT_WINDOW_MS    # default 5000
+```
+
+A representative test utterance is:
+
+```text
+"Hey Asta, open up Chrome for me and once you're there search for Christopher Nolan"
+```
+
+A successful incremental trace should commit the application-open prefix while
+the user is still speaking, then process the remaining search instruction only
+after the final utterance decode.
 
 ## Configuration
 
@@ -159,6 +241,17 @@ yet, so export these before starting A.S.T.A.
 | `ASTA_LLM_GPU_LAYERS` | `99` | llama.cpp GPU layer offload when A.S.T.A. starts the server |
 | `ASTA_LLM_JINJA` | `1` | Pass `--jinja` to llama-server |
 | `ASTA_LLM_REASONING` | `off` | Pass the reasoning mode to llama-server |
+| `ASTA_VISION_BASE_URL` | `http://127.0.0.1:8090/v1` | LFM2.5-VL OpenAI-compatible endpoint |
+| `ASTA_VISION_MODEL` | auto-discovered | Vision server model id/alias |
+| `ASTA_VISION_MODEL_PATH` | auto-discovered | LFM2.5-VL GGUF path |
+| `ASTA_VISION_MMPROJ_PATH` | auto-discovered | LFM2.5-VL multimodal projector GGUF path |
+| `ASTA_VISION_MODEL_DIR` | `E:\\Projects\\llama\\models` | Shared local vision model directory |
+| `ASTA_VISION_SERVER_PATH` | `E:\\Projects\\llama\\llama-server.exe` | llama-server executable for managed vision runtime |
+| `ASTA_VISION_PRELOAD` | `0` | Load LFM2.5-VL at startup (`1`) or lazily on first vision request (`0`) |
+| `ASTA_VISION_CONTEXT_SIZE` | `8192` | Context size for the managed vision server |
+| `ASTA_VISION_GPU_LAYERS` | `99` | GPU layer offload for the managed vision server |
+| `ASTA_VISION_MMPROJ_OFFLOAD` | `1` | GPU-offload the multimodal projector |
+
 | `ASTA_LLM_TIMEOUT` | `120` | LLM HTTP timeout in seconds |
 | `ASTA_LLM_MAX_OUTPUT_TOKENS` | `256` | Maximum generated tokens per response |
 | `ASTA_LLM_REASONING_RETRY_TOKENS` | `512` | Retry budget when the first generation exhausts the output budget |
@@ -172,6 +265,11 @@ yet, so export these before starting A.S.T.A.
 | `ASTA_STT_BACKEND` | `whisper` | `whisper`, `indic` or `hybrid` |
 | `ASTA_CHAT_HISTORY_DB` | `data/chat_history.db` | SQLite chat history location |
 | `ASTA_VOICE_POST_TTS_GUARD_MS` | `80` | Short post-TTS settle window; speech during it is retained as VAD preroll |
+| `ASTA_INCREMENTAL_VOICE` | `0` | Enable mid-sentence safe action commitment |
+| `ASTA_INCREMENTAL_STABLE_UPDATES` | `2` | Consecutive matching partial STT updates required before early commit |
+| `ASTA_INCREMENTAL_STT_INTERVAL_MS` | `800` | Partial STT polling interval in milliseconds |
+| `ASTA_INCREMENTAL_MIN_AUDIO_MS` | `850` | Minimum captured speech before partial STT begins |
+| `ASTA_INCREMENTAL_STT_WINDOW_MS` | `5000` | Rolling audio window used for partial STT |
 | `ASTA_VAD_PRE_ROLL_MS` | `900` | Audio retained before VAD onset so first spoken words are not clipped |
 | `ASTA_MEDIA_DEFAULT_PROVIDER` | - | Optional default provider for media queries without an explicit provider |
 | `ASTA_SPOTIFY_CLIENT_ID` | - | Spotify developer app client ID for authenticated track playback |

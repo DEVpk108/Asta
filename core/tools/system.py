@@ -48,6 +48,7 @@ class OpenApplicationTool(Tool):
             )
 
         target = target.strip()
+        resolved_target = None
         try:
             resolved_target = self.resolve_target(target)
             self._open(resolved_target)
@@ -57,20 +58,25 @@ class OpenApplicationTool(Tool):
                 tool=self.definition.name,
                 error=str(exc),
                 duration_seconds=time.perf_counter() - start,
+                metadata={"request_id": request.request_id},
             )
         except FileNotFoundError:
             return ToolResult(
                 success=False,
                 tool=self.definition.name,
+                output=self._failure_output(target, resolved_target),
                 error=f"Application '{target}' not found on this system.",
                 duration_seconds=time.perf_counter() - start,
+                metadata={"request_id": request.request_id},
             )
         except Exception as exc:
             return ToolResult(
                 success=False,
                 tool=self.definition.name,
+                output=self._failure_output(target, resolved_target),
                 error=f"Failed to open '{target}': {type(exc).__name__}: {exc}",
                 duration_seconds=time.perf_counter() - start,
+                metadata={"request_id": request.request_id},
             )
 
         return ToolResult(
@@ -82,7 +88,15 @@ class OpenApplicationTool(Tool):
                 "opened": True,
             },
             duration_seconds=time.perf_counter() - start,
+            metadata={"request_id": request.request_id},
         )
+
+    @staticmethod
+    def _failure_output(target, resolved_target):
+        output = {"target": target}
+        if resolved_target is not None:
+            output["resolved_target"] = resolved_target
+        return output
 
     def resolve_target(self, target: str) -> str:
         """Resolve an application through generic host discovery."""
@@ -113,7 +127,29 @@ class OpenApplicationTool(Tool):
     @staticmethod
     def _open(target: str) -> None:
         if os.name == "nt":
-            os.startfile(target)  # type: ignore[attr-defined]
+            try:
+                os.startfile(target)  # type: ignore[attr-defined]
+            except OSError:
+                # Microsoft Store/UWP applications resolve to shell:AppsFolder
+                # targets. If the shell handoff through startfile fails, let
+                # Explorer perform the same shell activation as a second native
+                # path before surfacing the failure to task recovery.
+                if str(target).lower().startswith("shell:appsfolder\\"):
+                    explorer = shutil.which("explorer.exe") or shutil.which("explorer")
+                    if explorer:
+                        subprocess.Popen(
+                            [explorer, target],
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            creationflags=getattr(
+                                subprocess,
+                                "CREATE_NO_WINDOW",
+                                0,
+                            ),
+                        )
+                        return
+                raise
             return
 
         if _platform_is_macos():

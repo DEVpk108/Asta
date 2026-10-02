@@ -30,6 +30,7 @@ class LlamaCppEngine:
         self.reasoning_retry_tokens = int(os.getenv(
             "ASTA_LLM_REASONING_RETRY_TOKENS", reasoning_retry_tokens
         ))
+        self.temperature = float(os.getenv("ASTA_LLM_TEMPERATURE", "0.7"))
         self.reasoning = reasoning
         self.session = requests.Session()
         self.server_manager = LlamaServerManager(base_url=self.base_url)
@@ -308,7 +309,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             "stream": True,
             "stream_options": {"include_usage": True},
             "max_tokens": max_output_tokens,
-            "temperature": 0.7,
+            "temperature": self.temperature,
             "cache_prompt": True,
         }
 

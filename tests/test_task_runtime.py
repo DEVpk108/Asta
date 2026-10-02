@@ -113,7 +113,7 @@ def test_command_task_is_created_from_a_plan():
         _shutdown(tasks, ai, tools)
 
 
-def test_failed_tool_marks_plan_step_failed():
+def test_failed_tool_exhausts_replan_budget_without_looping_forever():
     kernel, tasks, ai, tools = _build_runtime()
     try:
         original = kernel.tool_dispatcher.dispatch
@@ -132,6 +132,51 @@ def test_failed_tool_marks_plan_step_failed():
         assert task.status is TaskStatus.FAILED
         assert task.plan.status.value == "failed"
         assert task.plan.steps[0].status.value == "failed"
+        assert task.evidence[-1]["recovery"]["action"] == "replan"
+        assert task.evidence[-1]["replan_guard"]["max_replans"] == 3
+        assert task.evidence[-1]["replan_guard"]["attempt"] == 4
+
+        kernel.tool_dispatcher.dispatch = original
+    finally:
+        _shutdown(tasks, ai, tools)
+
+
+def test_failed_tool_can_complete_after_autonomous_replan():
+    kernel, tasks, ai, tools = _build_runtime()
+    calls = 0
+    try:
+        original = kernel.tool_dispatcher.dispatch
+
+        def recover_on_replan(request, *, confirmed=False):
+            nonlocal calls
+            calls += 1
+            if calls <= 2:
+                return ToolResult(
+                    success=False,
+                    tool=request.tool,
+                    error="simulated state failure",
+                )
+            return ToolResult(
+                success=True,
+                tool=request.tool,
+                output={"target": request.arguments.get("target")},
+            )
+
+        kernel.tool_dispatcher.dispatch = recover_on_replan
+        kernel.event_bus.emit("user_message", "open calculator")
+
+        task = kernel.task_manager.list()[0]
+        assert task.status is TaskStatus.COMPLETED
+        assert task.plan.status.value == "completed"
+        assert task.metadata["replan_attempts"] == 1
+        assert calls == 3
+        replans = [
+            item
+            for item in task.evidence
+            if "replan" in item
+        ]
+        assert replans
+        assert replans[-1]["replan"]["strategy"] == "rebuild_plan"
 
         kernel.tool_dispatcher.dispatch = original
     finally:
@@ -271,6 +316,26 @@ def test_task_runtime_executes_planner_generated_media_sequence():
     # Keep the real media-provider registry so the planner can derive the
     # application preparation step from the provider name.
     kernel.media_manager = MediaManager()
+    kernel.media_manager.verify_playback = lambda provider, query, *, expected_uri=None: {
+        "status": "verified",
+        "summary": "Test observer confirms the requested playback.",
+        "observed": {
+            "provider": provider,
+            "query": query,
+            "uri": expected_uri,
+            "is_playing": True,
+        },
+    }
+    # Kernel creates VerificationEngine against its original MediaManager.
+    # Rebind it after replacing the fixture manager so the planner, runtime,
+    # and verifier all observe the same provider registry.
+    from core.autonomy import VerificationEngine
+
+    kernel.verification_engine = VerificationEngine(
+        kernel.media_manager,
+        poll_attempts=1,
+        poll_delay=0,
+    )
     kernel.planner = __import__(
         "core.planner",
         fromlist=["Planner"],
@@ -324,3 +389,306 @@ def test_task_runtime_executes_planner_generated_media_sequence():
         }
     finally:
         _shutdown(tasks, ai, tools)
+
+
+def test_task_runtime_pauses_immediately_for_missing_integration_setup():
+    kernel, tasks, ai, tools = _build_runtime()
+    calls = 0
+    try:
+        original = kernel.tool_dispatcher.dispatch
+
+        def missing_setup(request, *, confirmed=False):
+            nonlocal calls
+            calls += 1
+            return ToolResult(
+                success=False,
+                tool=request.tool,
+                error=(
+                    "Spotify playback requires one-time setup. "
+                    "Set ASTA_SPOTIFY_CLIENT_ID and authorize A.S.T.A."
+                ),
+            )
+
+        kernel.tool_dispatcher.dispatch = missing_setup
+        kernel.event_bus.emit(
+            "user_message",
+            "open calculator",
+        )
+
+        task = kernel.task_manager.list()[0]
+        assert task.status is TaskStatus.PAUSED
+        assert calls == 1
+        assert task.metadata["replan_attempts"] == 0
+        assert task.evidence[-1]["recovery"]["action"] == "wait_for_user"
+    finally:
+        kernel.tool_dispatcher.dispatch = original
+        _shutdown(tasks, ai, tools)
+
+
+
+class CognitiveFakeBrain:
+    enabled = True
+
+    def __init__(self):
+        self.decisions = 0
+
+    def plan(self, goal, *, intent):
+        from core.agent import AgentPlanProposal
+        return AgentPlanProposal(
+            goal_summary="Open calculator and verify it.",
+            success_conditions=("Calculator is visible.",),
+            rationale="Open first, then verify with a screenshot.",
+            uncertainty=0.5,
+            steps=(
+                {"action": "open", "target": "calculator"},
+            ),
+        )
+
+    @staticmethod
+    def task_metadata(proposal):
+        return {
+            "agent_mode": "cognitive_v1",
+            "agent_goal_summary": proposal.goal_summary,
+            "agent_success_conditions": list(proposal.success_conditions),
+            "agent_rationale": proposal.rationale,
+            "agent_uncertainty": proposal.uncertainty,
+        }
+
+    def decide(self, state):
+        from core.agent import AgentDecision
+        self.decisions += 1
+        if self.decisions == 1:
+            return AgentDecision(
+                goal_satisfied=False,
+                needs_observation=True,
+                rationale="Tool success does not prove the calculator is visible.",
+                confidence=0.8,
+                uncertainty=0.3,
+                next_action={
+                    "action": "screenshot",
+                    "tool": "test.screenshot",
+                },
+                belief_updates=(
+                    {
+                        "key": "calculator_launch_succeeded",
+                        "value": True,
+                        "confidence": 0.9,
+                        "source": "tool",
+                    },
+                ),
+            )
+        return AgentDecision(
+            goal_satisfied=True,
+            needs_observation=False,
+            rationale="The screenshot confirms the calculator is visible.",
+            confidence=0.95,
+            uncertainty=0.05,
+        )
+
+
+class FakeScreenshotTool(Tool):
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name="test.screenshot",
+            description="Capture a screenshot for tests.",
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+            risk_level="low",
+            requires_confirmation=False,
+            metadata={"actions": ["screenshot"], "category": "vision"},
+        )
+
+    def execute(self, request: ToolRequest) -> ToolResult:
+        return ToolResult(
+            success=True,
+            tool=self.definition.name,
+            output={"path": "calculator.png", "visible": True},
+        )
+
+
+def test_cognitive_runtime_completes_only_after_follow_up_decision():
+    from core.agent import AgentDecision, AgentPlanProposal
+
+    kernel = Kernel()
+    kernel.register_tool(FakeCapabilityTool())
+    kernel.register_tool(FakeScreenshotTool())
+
+    brain = CognitiveFakeBrain()
+    kernel.agent_brain = brain
+    kernel.planner.agent_brain = brain
+
+    tasks = TaskRuntimeModule(kernel)
+    tools = ToolRuntimeModule(kernel)
+    ai = __import__("ai.ai_module", fromlist=["AIModule"]).AIModule(kernel)
+    ai.engine = RecordingEngine()
+
+    tasks.initialize()
+    ai.initialize()
+    tools.initialize()
+    try:
+        kernel.event_bus.emit(
+            "user_message",
+            "open calculator and verify that it is open",
+        )
+
+        task = kernel.task_manager.list()[0]
+        assert brain.decisions == 2
+        assert task.status is TaskStatus.COMPLETED
+        assert len(task.plan.steps) == 2
+        assert task.plan.steps[1].metadata["agent_generated"] is True
+        assert task.plan.steps[1].metadata["tool"] == "test.screenshot"
+        assert any("agent_decision" in item for item in task.evidence)
+        assert task.metadata["agent_state"]["beliefs"]["calculator_launch_succeeded"]["confidence"] == 0.9
+        assert task.result["agent_decision"]["goal_satisfied"] is True
+    finally:
+        _shutdown(tasks, ai, tools)
+
+class FakePromptInspectTool(Tool):
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name="test.inspect",
+            description="Inspect a visual target.",
+            input_schema={
+                "type": "object",
+                "properties": {"prompt": {"type": "string"}},
+                "required": ["prompt"],
+            },
+            risk_level="low",
+            requires_confirmation=False,
+            metadata={"actions": ["inspect"], "category": "vision"},
+        )
+
+    def execute(self, request: ToolRequest) -> ToolResult:
+        return ToolResult(
+            success=True,
+            tool=self.definition.name,
+            output={"prompt": request.arguments["prompt"]},
+        )
+
+
+def test_agent_generated_vision_prompt_is_passed_to_tool_request():
+    from types import SimpleNamespace
+
+    kernel = Kernel()
+    kernel.register_tool(FakePromptInspectTool())
+
+    tasks = TaskRuntimeModule(kernel)
+    task = SimpleNamespace(
+        id="task-1",
+        goal="verify calculator",
+        metadata={},
+        plan=None,
+    )
+    step = SimpleNamespace(
+        id="agent-step-1",
+        description="inspect screen",
+        metadata={
+            "action": "inspect",
+            "tool": "test.inspect",
+            "prompt": "Is Calculator visible?",
+        },
+    )
+
+    request = tasks.build_plan_request(task, step)
+
+    assert request is not None
+    assert request.tool == "test.inspect"
+    assert request.arguments["prompt"] == "Is Calculator visible?"
+
+def test_task_runtime_follows_planned_vision_step_without_extra_agent_decision():
+    from types import SimpleNamespace
+
+    task = SimpleNamespace(
+        plan=SimpleNamespace(
+            steps=[
+                SimpleNamespace(
+                    id="step-1",
+                    depends_on=[],
+                    metadata={"tool": "system.open_application"},
+                ),
+                SimpleNamespace(
+                    id="step-2",
+                    depends_on=["step-1"],
+                    metadata={"tool": "vision.inspect"},
+                ),
+            ]
+        )
+    )
+
+    assert TaskRuntimeModule._should_follow_planned_visual_verification(
+        task,
+        "step-1",
+    ) is True
+
+def test_task_runtime_completes_verified_visual_result_without_llm_decision():
+    from types import SimpleNamespace
+
+    class FakeTaskManager:
+        def __init__(self):
+            self.calls = []
+
+        def complete_step(self, step, task_id):
+            self.calls.append(("complete_step", step, task_id))
+
+        def set_plan_step_status(self, step_id, status, task_id):
+            self.calls.append(("set_plan_step_status", step_id, status, task_id))
+
+        def add_evidence(self, evidence, task_id):
+            self.calls.append(("add_evidence", evidence, task_id))
+
+        def complete(self, result, task_id):
+            self.calls.append(("complete", result, task_id))
+
+    class FakeEventBus:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, name, **payload):
+            self.events.append((name, payload))
+
+    manager = FakeTaskManager()
+    event_bus = FakeEventBus()
+    kernel = SimpleNamespace(
+        task_manager=manager,
+        event_bus=event_bus,
+        tool_registry=Kernel().tool_registry,
+    )
+    tasks = TaskRuntimeModule(kernel)
+    task = SimpleNamespace(
+        id="task-1",
+        metadata={
+            "agent_state": {
+                "success_conditions": ["Calculator window is visible."],
+            }
+        },
+    )
+    result = ToolResult(
+        success=True,
+        tool="vision.inspect",
+        output={
+            "verified": True,
+            "visual_match": True,
+            "confidence": 0.98,
+            "summary": "Calculator window is visible.",
+        },
+    )
+
+    handled = tasks._complete_from_verified_visual_result(
+        task,
+        result,
+        evidence={},
+        plan_step_id="step-2",
+        step_description="inspect",
+    )
+
+    assert handled is True
+    assert manager.calls[0][0] == "complete_step"
+    assert manager.calls[1][0] == "set_plan_step_status"
+    assert manager.calls[-1][0] == "complete"
+    assert event_bus.events[0][0] == "task_goal_verified"
+

@@ -1,3 +1,5 @@
+from ai.ai_module import AIModule
+from ai.runtime_patch import _is_intermediate_task_result, _verified_visual_response
 from core import Kernel
 from core.tools import OpenApplicationTool, ScreenshotTool
 
@@ -19,8 +21,6 @@ class RecordingEngine:
 
 
 def _make_ai():
-    from ai.ai_module import AIModule
-
     kernel = Kernel()
     kernel.register_tool(OpenApplicationTool())
     kernel.register_tool(ScreenshotTool(capture=lambda: {"path": "test.png"}))
@@ -67,3 +67,127 @@ def test_capability_prompt_contains_only_registered_tools():
     assert "vision.screenshot" in engine.system_prompt
     assert "play_music" not in engine.system_prompt
     ai.shutdown()
+
+
+def test_ai_formats_vision_inspection_success_concisely():
+    from core.contracts import ToolResult
+
+    result = ToolResult(
+        success=True,
+        tool="vision.inspect",
+        output={
+            "verified": True,
+            "visual_match": True,
+            "confidence": 0.95,
+            "summary": "Calculator window is visible.",
+        },
+    )
+
+    assert AIModule._format_tool_success(result) == (
+        "I checked the screen. The requested visual condition is confirmed."
+    )
+
+
+def test_runtime_patch_suppresses_intermediate_task_results():
+    from types import SimpleNamespace
+    from core.contracts import ToolResult
+
+    class TaskLookup:
+        def get(self, task_id):
+            assert task_id == "task-1"
+            return SimpleNamespace(
+                plan=SimpleNamespace(
+                    steps=[
+                        SimpleNamespace(id="step-1"),
+                        SimpleNamespace(id="step-2"),
+                    ]
+                )
+            )
+
+        def current(self):
+            raise AssertionError("task_id lookup should be used")
+
+    ai = SimpleNamespace(kernel=SimpleNamespace(task_manager=TaskLookup()))
+    result = ToolResult(
+        success=True,
+        tool="system.open_application",
+        metadata={
+            "task_id": "task-1",
+            "plan_step_id": "step-1",
+        },
+    )
+
+    assert _is_intermediate_task_result(ai, result) is True
+
+
+def test_runtime_patch_formats_verified_visual_completion_once():
+    from core.contracts import ToolResult
+
+    result = ToolResult(
+        success=True,
+        tool="vision.inspect",
+        output={
+            "verified": True,
+            "visual_match": True,
+            "confidence": 0.98,
+            "summary": "Calculator window is visible.",
+        },
+    )
+
+    assert _verified_visual_response(result) == "Done — Calculator window is visible."
+
+
+def test_runtime_patch_identifies_non_final_plan_step_as_intermediate():
+    from types import SimpleNamespace
+    from core.contracts import ToolResult
+
+    class TaskLookup:
+        def get(self, task_id):
+            return SimpleNamespace(
+                plan=SimpleNamespace(
+                    steps=[
+                        SimpleNamespace(id="step-1"),
+                        SimpleNamespace(id="step-2"),
+                    ]
+                )
+            )
+
+        def current(self):
+            return None
+
+    ai = SimpleNamespace(kernel=SimpleNamespace(task_manager=TaskLookup()))
+    result = ToolResult(
+        success=True,
+        tool="system.open_application",
+        metadata={"task_id": "task-1", "plan_step_id": "step-1"},
+    )
+
+    assert _is_intermediate_task_result(ai, result) is True
+
+
+def test_runtime_patch_keeps_final_plan_step_user_facing():
+    from types import SimpleNamespace
+    from core.contracts import ToolResult
+
+    class TaskLookup:
+        def get(self, task_id):
+            return SimpleNamespace(
+                plan=SimpleNamespace(
+                    steps=[
+                        SimpleNamespace(id="step-1"),
+                        SimpleNamespace(id="step-2"),
+                    ]
+                )
+            )
+
+        def current(self):
+            return None
+
+    ai = SimpleNamespace(kernel=SimpleNamespace(task_manager=TaskLookup()))
+    result = ToolResult(
+        success=True,
+        tool="vision.inspect",
+        metadata={"task_id": "task-1", "plan_step_id": "step-2"},
+    )
+
+    assert _is_intermediate_task_result(ai, result) is False

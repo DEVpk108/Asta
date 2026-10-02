@@ -50,6 +50,63 @@ def test_can_you_open_is_command_not_capability_question():
     assert result.entities == {"action": "open", "target": "spotify"}
 
 
+def test_open_media_search_and_play_sequence_is_generic():
+    result = IntentRouter(media_providers=("spotify",)).analyze(
+        "Open Spotify, search for Hanuman Chalisa, and play it."
+    )
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "commands": [
+            {"action": "open", "target": "spotify"},
+            {
+                "action": "media",
+                "operation": "play",
+                "query": "hanuman chalisa",
+                "provider": "spotify",
+            },
+        ]
+    }
+
+def test_open_command_with_visual_verification_is_sequenced():
+    result = IntentRouter().analyze(
+        "Open Calculator and verify that it is open."
+    )
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "commands": [
+            {"action": "open", "target": "calculator"},
+            {
+                "action": "inspect",
+                "tool": "vision.inspect",
+                "prompt": (
+                    "Verify the following condition from the current "
+                    "screenshot: verify that calculator is open."
+                ),
+            },
+        ]
+    }
+
+
+def test_launch_command_with_check_is_sequenced():
+    result = IntentRouter().analyze(
+        "Launch Chrome and check that it is visible."
+    )
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "commands": [
+            {"action": "launch", "target": "chrome"},
+            {
+                "action": "inspect",
+                "tool": "vision.inspect",
+                "prompt": (
+                    "Verify the following condition from the current "
+                    "screenshot: check that chrome is visible."
+                ),
+            },
+        ]
+    }
+
+
 def test_compound_command_with_and_is_sequenced():
     result = IntentRouter().analyze("Open WhatsApp and take screen shot.")
     assert result.intent == IntentType.COMMAND
@@ -188,6 +245,46 @@ def test_search_notes_command_is_actionable():
     }
 
 
+def test_generic_search_command_is_actionable_with_application():
+    result = IntentRouter().analyze(
+        "Search for Christopher Nolan on Chrome."
+    )
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "search",
+        "query": "christopher nolan",
+        "target": "chrome",
+    }
+
+
+def test_generic_search_command_supports_look_up_and_in():
+    result = IntentRouter().analyze(
+        "Look up Christopher Nolan in Chrome."
+    )
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "search",
+        "query": "christopher nolan",
+        "target": "chrome",
+    }
+
+
+def test_compound_search_command_with_comma_is_sequenced():
+    result = IntentRouter().analyze(
+        "Open Chrome, search for Christopher Nolan."
+    )
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "commands": [
+            {"action": "open", "target": "chrome"},
+            {
+                "action": "search",
+                "query": "christopher nolan",
+            },
+        ]
+    }
+
+
 def test_collapsed_open_command_is_actionable():
     result = IntentRouter().analyze("OpenSpotify")
     assert result.intent == IntentType.COMMAND
@@ -242,4 +339,66 @@ def test_intent_router_recovers_media_command_when_stt_drops_play():
         "operation": "play",
         "query": "hanuman chalisa",
         "provider": "spotify",
+    }
+
+
+def test_intent_router_strips_consumed_wakeword_from_command():
+    router = IntentRouter(media_providers=("spotify", "system"))
+
+    result = router.analyze("Hey Asta, play Hanuman Chalisa on Spotify")
+
+    assert result.intent == IntentType.COMMAND
+    assert result.normalized_text == "play hanuman chalisa on spotify"
+    assert result.entities == {
+        "action": "media",
+        "operation": "play",
+        "query": "hanuman chalisa",
+        "provider": "spotify",
+    }
+
+
+
+def test_click_command_is_actionable():
+    result = IntentRouter().analyze("Click the Create App button.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "click",
+        "target": "the create app button",
+    }
+
+
+def test_double_click_command_preserves_click_count():
+    result = IntentRouter().analyze("Double click the file.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "click",
+        "target": "the file",
+        "clicks": 2,
+    }
+
+
+def test_type_text_command_is_actionable():
+    result = IntentRouter().analyze("Type text hello world.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "type_text",
+        "text": "hello world",
+    }
+
+
+def test_keypress_command_is_actionable():
+    result = IntentRouter().analyze("Press Enter.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "keypress",
+        "key": "enter",
+    }
+
+
+def test_scroll_command_is_actionable():
+    result = IntentRouter().analyze("Scroll down.")
+    assert result.intent == IntentType.COMMAND
+    assert result.entities == {
+        "action": "scroll",
+        "amount": -5,
     }

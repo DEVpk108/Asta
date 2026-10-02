@@ -199,3 +199,450 @@ def test_planner_expands_provider_media_play_into_open_and_play():
     assert plan.steps[1].metadata["operation"] == "play"
     assert plan.steps[1].metadata["query"] == "hanuman chalisa"
     assert plan.steps[1].metadata["provider"] == "spotify"
+
+
+class FakeCapabilityTool(Tool):
+    def __init__(self, name, action, properties=None, required=()):
+        self._name = name
+        self._action = action
+        self._properties = properties or {}
+        self._required = list(required)
+
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name=self._name,
+            description=f"{self._action} for tests.",
+            input_schema={
+                "type": "object",
+                "properties": self._properties,
+                "required": self._required,
+            },
+            risk_level="low",
+            requires_confirmation=False,
+            metadata={"actions": [self._action], "category": "computer"},
+        )
+
+    def execute(self, request):
+        raise AssertionError("planner tests must not execute tools")
+
+def test_planner_uses_generic_computer_control_for_explicit_app_media_flow():
+    kernel = Kernel()
+    kernel.register_tool(FakeTool())
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "vision.locate",
+            "locate",
+            {"target": {"type": "string"}},
+            required=("target",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.click",
+            "click",
+            {"target": {"type": "string"}},
+            required=("target",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.type_text",
+            "type_text",
+            {"text": {"type": "string"}},
+            required=("text",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.keypress",
+            "keypress",
+            {"key": {"type": "string"}},
+            required=("key",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.wait",
+            "wait",
+            {"seconds": {"type": "number"}},
+            required=(),
+        )
+    )
+    kernel.register_tool(FakeInspectTool())
+
+    planner = Planner(
+        kernel.tool_registry,
+        media_manager=MediaManager(),
+        application_manager=kernel.application_manager,
+    )
+    intent = IntentResult(
+        intent=IntentType.COMMAND,
+        confidence=0.98,
+        normalized_text="open spotify search for hanuman chalisa and play it",
+        entities={
+            "commands": [
+                {"action": "open", "target": "spotify"},
+                {
+                    "action": "media",
+                    "operation": "play",
+                    "query": "hanuman chalisa",
+                    "provider": "spotify",
+                },
+            ]
+        },
+        requires_tools=True,
+        classifier="rules",
+    )
+
+    plan = planner.plan(
+        "open spotify, search for hanuman chalisa, and play it",
+        intent=intent,
+    )
+
+    assert [step.metadata["tool"] for step in plan.steps] == [
+        "test.open",
+        "vision.locate",
+        "computer.click",
+        "computer.type_text",
+        "computer.keypress",
+        "computer.wait",
+        "vision.locate",
+        "computer.click",
+        "vision.inspect",
+    ]
+    assert plan.steps[1].metadata["target"] == (
+        "the search input field used to enter a query in spotify"
+    )
+    assert plan.steps[2].metadata["target"] == plan.steps[1].metadata["target"]
+    assert plan.steps[3].metadata["text"] == "hanuman chalisa"
+    assert plan.steps[4].metadata["key"] == "enter"
+    assert plan.steps[5].metadata["seconds"] == 1.0
+    assert plan.steps[6].metadata["target"] == (
+        "the search result row containing the song title 'hanuman chalisa' in spotify; exclude the search input, navigation bar, player controls, and unrelated icons"
+    )
+    verification_prompt = plan.steps[8].metadata["prompt"]
+    assert "Requested item: hanuman chalisa" not in verification_prompt
+    assert "spotify" in verification_prompt
+    assert "target application's own UI" in verification_prompt
+    assert "A.S.T.A.'s HUD" in verification_prompt
+    assert "merely repeats" in verification_prompt
+
+def test_planner_expands_generic_search_into_gui_workflow():
+    kernel = Kernel()
+    kernel.register_tool(FakeTool())
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "vision.locate",
+            "locate",
+            {"target": {"type": "string"}},
+            required=("target",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.click",
+            "click",
+            {"target": {"type": "string"}},
+            required=("target",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.type_text",
+            "type_text",
+            {"text": {"type": "string"}},
+            required=("text",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.keypress",
+            "keypress",
+            {"key": {"type": "string"}},
+            required=("key",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.wait",
+            "wait",
+            {"seconds": {"type": "number"}},
+            required=(),
+        )
+    )
+    kernel.register_tool(FakeInspectTool())
+
+    planner = Planner(
+        kernel.tool_registry,
+        application_manager=kernel.application_manager,
+    )
+    intent = IntentResult(
+        intent=IntentType.COMMAND,
+        confidence=0.98,
+        normalized_text="search for christopher nolan on chrome",
+        entities={
+            "action": "search",
+            "query": "christopher nolan",
+            "target": "chrome",
+        },
+        requires_tools=True,
+        classifier="rules",
+    )
+
+    plan = planner.plan(
+        "search for christopher nolan on chrome",
+        intent=intent,
+    )
+
+    assert [step.metadata["tool"] for step in plan.steps] == [
+        "test.open",
+        "vision.locate",
+        "computer.click",
+        "computer.type_text",
+        "computer.keypress",
+        "computer.wait",
+        "vision.inspect",
+    ]
+    assert plan.steps[0].metadata["target"] == "chrome"
+    assert plan.steps[1].metadata["target"] == (
+        "the primary search input field in chrome; "
+        "for a browser, use its address/search bar when that is the "
+        "interface's search entry point"
+    )
+    assert plan.steps[2].metadata["target"] == plan.steps[1].metadata["target"]
+    assert plan.steps[3].metadata["text"] == "christopher nolan"
+    assert plan.steps[4].metadata["key"] == "enter"
+    assert plan.steps[5].metadata["seconds"] == 1.0
+    assert "search results for 'christopher nolan'" in plan.steps[6].metadata["prompt"]
+    assert "A.S.T.A.'s HUD" in plan.steps[6].metadata["prompt"]
+
+
+def test_planner_does_not_reopen_same_application_for_compound_search():
+    kernel = Kernel()
+    kernel.register_tool(FakeTool())
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "vision.locate",
+            "locate",
+            {"target": {"type": "string"}},
+            required=("target",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.click",
+            "click",
+            {"target": {"type": "string"}},
+            required=("target",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.type_text",
+            "type_text",
+            {"text": {"type": "string"}},
+            required=("text",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.keypress",
+            "keypress",
+            {"key": {"type": "string"}},
+            required=("key",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.wait",
+            "wait",
+            {"seconds": {"type": "number"}},
+            required=(),
+        )
+    )
+    kernel.register_tool(FakeInspectTool())
+
+    planner = Planner(
+        kernel.tool_registry,
+        application_manager=kernel.application_manager,
+    )
+    intent = IntentResult(
+        intent=IntentType.COMMAND,
+        confidence=0.98,
+        normalized_text="open chrome and search for christopher nolan",
+        entities={
+            "commands": [
+                {"action": "open", "target": "chrome"},
+                {
+                    "action": "search",
+                    "query": "christopher nolan",
+                },
+            ]
+        },
+        requires_tools=True,
+        classifier="rules",
+    )
+
+    plan = planner.plan(
+        "open chrome and search for christopher nolan",
+        intent=intent,
+    )
+
+    assert [step.metadata["tool"] for step in plan.steps] == [
+        "test.open",
+        "vision.locate",
+        "computer.click",
+        "computer.type_text",
+        "computer.keypress",
+        "computer.wait",
+        "vision.inspect",
+    ]
+
+
+def test_planner_collapses_adjacent_duplicate_cognitive_actions():
+    planner = _planner()
+
+    class DuplicateBrain:
+        enabled = True
+
+        @staticmethod
+        def plan(goal, *, intent):
+            from core.agent import AgentPlanProposal
+            return AgentPlanProposal(
+                goal_summary="Open calculator.",
+                success_conditions=("Calculator is open.",),
+                rationale="The model duplicated the same action.",
+                steps=(
+                    {"action": "open", "target": "calculator"},
+                    {"action": "open", "target": "calculator"},
+                ),
+                uncertainty=0.2,
+            )
+
+        @staticmethod
+        def task_metadata(proposal):
+            return {
+                "agent_mode": "cognitive_v1",
+                "agent_goal_summary": proposal.goal_summary,
+                "agent_success_conditions": list(proposal.success_conditions),
+                "agent_rationale": proposal.rationale,
+                "agent_uncertainty": proposal.uncertainty,
+            }
+
+    planner.agent_brain = DuplicateBrain()
+    plan = planner.plan(
+        "open calculator",
+        intent=_command_intent(action="open", target="calculator"),
+    )
+
+    assert len(plan.steps) == 1
+    assert plan.steps[0].description == "open calculator"
+
+class FakeInspectTool(Tool):
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name="vision.inspect",
+            description="Inspect the current screen.",
+            input_schema={
+                "type": "object",
+                "properties": {"prompt": {"type": "string"}},
+                "required": ["prompt"],
+            },
+            risk_level="low",
+            requires_confirmation=False,
+            metadata={"actions": ["inspect", "visual_verify"], "category": "vision"},
+        )
+
+    def execute(self, request):
+        raise AssertionError("planner tests must not execute tools")
+
+
+def test_planner_adds_semantic_visual_verification_to_cognitive_plan():
+    kernel = Kernel()
+    kernel.register_tool(FakeTool())
+    kernel.register_tool(FakeInspectTool())
+    planner = Planner(kernel.tool_registry)
+
+    class CognitiveBrain:
+        enabled = True
+
+        @staticmethod
+        def plan(goal, *, intent):
+            from core.agent import AgentPlanProposal
+            return AgentPlanProposal(
+                goal_summary="Open calculator and verify it is visible.",
+                success_conditions=("Calculator window is visible.",),
+                rationale="Open the calculator, then verify the visible window.",
+                steps=(
+                    {"action": "open", "tool": "test.open", "target": "calculator"},
+                ),
+                uncertainty=0.1,
+            )
+
+        @staticmethod
+        def task_metadata(proposal):
+            return {
+                "agent_mode": "cognitive_v1",
+                "agent_goal_summary": proposal.goal_summary,
+                "agent_success_conditions": list(proposal.success_conditions),
+            }
+
+    planner.agent_brain = CognitiveBrain()
+    plan = planner.plan(
+        "open calculator and verify that it is open",
+        intent=_command_intent(action="open", target="calculator"),
+    )
+
+    assert [step.metadata["tool"] for step in plan.steps] == [
+        "test.open",
+        "vision.inspect",
+    ]
+    assert plan.steps[1].metadata["action"] == "inspect"
+    assert "Calculator window is visible" in plan.steps[1].metadata["prompt"]
+
+
+
+def test_planner_uses_process_verification_for_simple_cognitive_app_open():
+    kernel = Kernel()
+    kernel.register_tool(FakeTool())
+    kernel.register_tool(FakeInspectTool())
+
+    planner = Planner(
+        kernel.tool_registry,
+        application_manager=kernel.application_manager,
+    )
+
+    class CognitiveBrain:
+        enabled = True
+
+        @staticmethod
+        def plan(goal, *, intent):
+            from core.agent import AgentPlanProposal
+            return AgentPlanProposal(
+                goal_summary="Open calculator.",
+                success_conditions=("Calculator application is running.",),
+                rationale="Confirm the application through OS process state.",
+                steps=(
+                    {"action": "open", "tool": "test.open", "target": "calculator"},
+                ),
+                uncertainty=0.1,
+            )
+
+        @staticmethod
+        def task_metadata(proposal):
+            return {
+                "agent_mode": "cognitive_v1",
+                "agent_goal_summary": proposal.goal_summary,
+                "agent_success_conditions": list(proposal.success_conditions),
+            }
+
+    planner.agent_brain = CognitiveBrain()
+    plan = planner.plan(
+        "open calculator",
+        intent=_command_intent(action="open", target="calculator"),
+    )
+
+    assert [step.metadata["tool"] for step in plan.steps] == ["test.open"]
+    assert plan.steps[0].metadata["verification"] == "application.running"

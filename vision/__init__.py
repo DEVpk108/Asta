@@ -7,10 +7,22 @@ screenshots do not require the optional face-recognition stack at import time.
 __all__ = [
     "FaceRecognition",
     "capture_screenshot",
+    "LFM25VLEngine",
+    "VisionEngineError",
+    "VisionServerManager",
 ]
 
 
 def __getattr__(name):
+    if name == "LFM25VLEngine":
+        from .lfm2_5_vl_engine import LFM25VLEngine
+        return LFM25VLEngine
+    if name == "VisionEngineError":
+        from .lfm2_5_vl_engine import VisionEngineError
+        return VisionEngineError
+    if name == "VisionServerManager":
+        from .vision_server_manager import VisionServerManager
+        return VisionServerManager
     if name == "FaceRecognition":
         from .face_recognition import FaceRecognizer
 

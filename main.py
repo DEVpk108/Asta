@@ -4,6 +4,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from core.config import load_local_environment
+
+
+load_local_environment()
+
 
 _HUD_PROCESS = None
 
@@ -135,9 +140,19 @@ def main():
         OpenScreenshotTool,
         RunCommandTool,
         ScreenshotTool,
+        VisionInspectTool,
+        VisionLocateTool,
         StartProcessTool,
         StopProcessTool,
         MediaControlTool,
+        ComputerController,
+        ComputerMoveMouseTool,
+        ComputerClickTool,
+        ComputerTypeTextTool,
+        ComputerKeypressTool,
+        ComputerHotkeyTool,
+        ComputerScrollTool,
+        ComputerWaitTool,
         ToolRuntimeModule,
     )
     from speech.speech_module import SpeechModule
@@ -163,6 +178,11 @@ def main():
     kernel = Kernel()
     register_builtin_skills(kernel.skill_manager)
 
+    # Vision is lazy by default so the 1.6B multimodal model and projector do
+    # not consume VRAM until A.S.T.A. actually needs visual perception.
+    if kernel.vision_engine.server_manager.preload:
+        kernel.vision_engine.warmup()
+
     # Construct the backend after the HUD is already visible. Heavy local model
     # loading can now happen in parallel with the user's visual boot animation.
     hud = HUDModule(kernel)
@@ -175,6 +195,11 @@ def main():
     tools = ToolRuntimeModule(kernel)
     text_input = TextInputModule(kernel) if _text_input_enabled() else None
 
+    # General computer-control capabilities are intentionally generic: the
+    # agent can reuse the same mouse/keyboard primitives for Spotify, browsers,
+    # settings, development tools, or any other interactive application.
+    computer = ComputerController()
+
     # Register capabilities before the runtime starts.
     for tool in (
         OpenApplicationTool(kernel.application_manager),
@@ -185,6 +210,14 @@ def main():
         CloseApplicationTool(kernel.application_manager),
         ScreenshotTool(capture=capture_screenshot),
         OpenScreenshotTool(),
+        VisionInspectTool(
+            kernel.vision_engine,
+            capture=capture_screenshot,
+        ),
+        VisionLocateTool(
+            kernel.vision_engine,
+            capture=capture_screenshot,
+        ),
         AudioControlTool("mute"),
         AudioControlTool("unmute"),
         CreateNoteTool(kernel.notes_manager),
@@ -192,6 +225,13 @@ def main():
         ListNotesTool(kernel.notes_manager),
         SearchNotesTool(kernel.notes_manager),
         MediaControlTool(kernel.media_manager),
+        ComputerMoveMouseTool(computer),
+        ComputerClickTool(computer),
+        ComputerTypeTextTool(computer),
+        ComputerKeypressTool(computer),
+        ComputerHotkeyTool(computer),
+        ComputerScrollTool(computer),
+        ComputerWaitTool(computer),
     ):
         kernel.register_tool(tool)
 

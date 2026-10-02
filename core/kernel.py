@@ -1,6 +1,14 @@
 import threading
 
+from .agent import AgentBrain
 from .applications import ApplicationManager
+from .autonomy import (
+    CapabilitySetupManager,
+    DiagnosisEngine,
+    ReplanEngine,
+    RecoveryManager,
+    VerificationEngine,
+)
 from .capability_discovery import CapabilityDiscovery
 from .decision import create_decision_engine
 from .event_bus import EventBus
@@ -18,6 +26,7 @@ from .tools import (
     ToolDispatcher,
     ToolRegistry,
 )
+from vision.lfm2_5_vl_engine import LFM25VLEngine
 
 
 class Kernel:
@@ -36,16 +45,30 @@ class Kernel:
         )
         self.decision_engine = create_decision_engine()
         self.task_manager = TaskManager(event_bus=self.event_bus)
-        self.workspace_manager = WorkspaceManager(event_bus=self.event_bus)
+        self.recovery_manager = RecoveryManager()
+        self.diagnosis_engine = DiagnosisEngine(self.decision_engine)
+        self.replan_engine = ReplanEngine(self.decision_engine)
         self.application_manager = ApplicationManager()
+        self.verification_engine = VerificationEngine(
+            self.media_manager,
+            application_manager=self.application_manager,
+        )
+        self.capability_setup_manager = CapabilitySetupManager(
+            self.media_manager,
+            event_bus=self.event_bus,
+        )
+        self.workspace_manager = WorkspaceManager(event_bus=self.event_bus)
         self.skill_manager = SkillManager(event_bus=self.event_bus)
         self.notes_manager = NotesManager()
+        self.vision_engine = LFM25VLEngine()
 
         self.tool_registry = ToolRegistry()
+        self.agent_brain = AgentBrain(self)
         self.planner = Planner(
             self.tool_registry,
             media_manager=self.media_manager,
             application_manager=self.application_manager,
+            agent_brain=self.agent_brain,
         )
         self.capability_discovery = CapabilityDiscovery(
             self.tool_registry,
@@ -173,6 +196,13 @@ class Kernel:
                     module.shutdown()
                 except Exception as exc:
                     print(f"[Kernel] Error shutting down {module.name}: {exc}")
+
+            vision_shutdown = getattr(self.vision_engine, "shutdown", None)
+            if callable(vision_shutdown):
+                try:
+                    vision_shutdown()
+                except Exception as exc:
+                    print(f"[Kernel] Error shutting down vision engine: {exc}")
 
             print("[Kernel] Stopped")
         finally:

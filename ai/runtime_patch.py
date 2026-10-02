@@ -106,6 +106,65 @@ def _is_creator_identity_question(text):
     )
 
 
+def _task_for_tool_result(ai, result):
+    task_manager = getattr(ai.kernel, "task_manager", None)
+    if task_manager is None or not isinstance(result, ToolResult):
+        return None
+
+    metadata = result.metadata if isinstance(result.metadata, dict) else {}
+    task_id = metadata.get("task_id")
+    try:
+        task = (
+            task_manager.get(task_id)
+            if task_id
+            else task_manager.current()
+        )
+    except Exception:
+        return None
+    return task
+
+
+def _is_intermediate_task_result(ai, result) -> bool:
+    task = _task_for_tool_result(ai, result)
+    if task is None:
+        return False
+
+    plan = getattr(task, "plan", None)
+    plan_step_id = (
+        result.metadata.get("plan_step_id")
+        if isinstance(result.metadata, dict)
+        else None
+    )
+    steps = getattr(plan, "steps", None) or []
+    if plan is None or not plan_step_id or not steps:
+        return False
+
+    for index, step in enumerate(steps):
+        if getattr(step, "id", None) != plan_step_id:
+            continue
+        # A result from any step with a later step is an internal progress
+        # update. Do not let synchronous nested EventBus dispatch turn it into
+        # user-facing speech before the final step has produced its answer.
+        return index < (len(steps) - 1)
+
+    return False
+
+
+def _verified_visual_response(result: ToolResult) -> str | None:
+    if not result.success or result.tool != "vision.inspect":
+        return None
+
+    output = result.output if isinstance(result.output, dict) else {}
+    if not bool(output.get("verified")):
+        return None
+
+    summary = " ".join(str(output.get("summary") or "").strip().split())
+    if summary:
+        return f"Done — {summary.rstrip(' .!?;:')}."
+
+    return "Done — the requested visual condition is confirmed."
+
+
 def apply_ai_runtime_patch():
     """Add deterministic mixed-request, voice-control, and screenshot behavior."""
     from ai.ai_module import AIModule
@@ -115,11 +174,28 @@ def apply_ai_runtime_patch():
         return
 
     original_on_user_message = AIModule.on_user_message
+    original_on_tool_result = AIModule.on_tool_result
     original_creator_handler = AIModule._is_creator_identity_question
     original_format_tool_success = AIModule._format_tool_success
     original_generate_response = AIModule._generate_response
     original_voice_on_conversation_mode_set = VoiceModule.on_conversation_mode_set
     original_voice_can_listen = VoiceModule._can_listen
+
+    def patched_on_tool_result(self, result):
+        if _is_intermediate_task_result(self, result):
+            print(
+                f"[AI] Suppressing intermediate task result: {result.tool}",
+                flush=True,
+            )
+            return
+
+        final_response = _verified_visual_response(result)
+        if final_response is not None:
+            print(f"[AI] Final visual verification response: {final_response}", flush=True)
+            self._emit_assistant_text(final_response)
+            return
+
+        original_on_tool_result(self, result)
 
     def patched_on_user_message(self, text):
         if isinstance(text, str) and text.strip():
@@ -302,6 +378,7 @@ def apply_ai_runtime_patch():
 
         return True
 
+    AIModule.on_tool_result = patched_on_tool_result
     AIModule.on_user_message = patched_on_user_message
     AIModule._is_creator_identity_question = classmethod(patched_creator_handler)
     AIModule._format_tool_success = staticmethod(patched_format_tool_success)

@@ -4,6 +4,8 @@ import os
 import time
 from typing import Any
 
+from core.autonomy.diagnosis import DiagnosisCategory, FailureDiagnosis
+from core.autonomy.replanning import ReplanDecision, ReplanStrategy
 from core.contracts.action import ActionDecision, ActionType
 from core.media import parse_media_request
 
@@ -11,6 +13,8 @@ from .base import DecisionEngine
 from .contracts import DecisionSnapshot
 from .laya_schemas import ASTA_DECISION_QUESTIONS
 from .laya_action_schemas import build_action_questions
+from .laya_diagnosis_schemas import build_diagnosis_questions
+from .laya_replan_schemas import build_replan_questions
 
 
 class LayaDecisionEngine(DecisionEngine):
@@ -233,6 +237,161 @@ class LayaDecisionEngine(DecisionEngine):
                 str(key): dict(answer)
                 for key, answer in answers.items()
                 if isinstance(answer, dict)
+            },
+        )
+
+    def diagnose_failure(self, state: dict[str, Any]) -> FailureDiagnosis:
+        """Classify one failure using one bounded Laya forward pass."""
+        questions = build_diagnosis_questions()
+        started = time.perf_counter()
+        result = self._get_router().predict(
+            state,
+            questions,
+            model=self.model,
+        )
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+
+        answers = result.get("answers") or {}
+        routing = result.get("routing") or {}
+        model = routing.get("model") or result.get("model") or self.model
+
+        def choice(question_id: str, default: str) -> str:
+            answer = answers.get(question_id) or {}
+            value = answer.get("choice")
+            return str(value or default).strip().lower()
+
+        def probability(question_id: str) -> float:
+            answer = answers.get(question_id) or {}
+            try:
+                return max(0.0, min(1.0, float(answer.get("noul", 0.0))))
+            except (TypeError, ValueError):
+                return 0.0
+
+        category_value = choice("category", DiagnosisCategory.UNKNOWN.value)
+        try:
+            category = DiagnosisCategory(category_value)
+        except ValueError:
+            category = DiagnosisCategory.UNKNOWN
+
+        recommended = choice("recommended_action", "replan")
+        allowed_actions = {"retry", "wait_for_user", "replan", "fail"}
+        if recommended not in allowed_actions:
+            recommended = "replan"
+
+        category_answer = answers.get("category") or {}
+        action_answer = answers.get("recommended_action") or {}
+        try:
+            category_confidence = float(category_answer.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            category_confidence = 0.0
+        try:
+            action_confidence = float(action_answer.get("confidence", category_confidence))
+        except (TypeError, ValueError):
+            action_confidence = category_confidence
+
+        confidence = max(0.0, min(1.0, min(category_confidence, action_confidence)))
+        requires_user = probability("requires_user") >= 0.50
+        if requires_user:
+            recommended = "wait_for_user"
+
+        tool = str(state.get("failed_tool") or "")
+        step_id = state.get("step_id")
+        task_id = state.get("task_id")
+        error = str(state.get("error") or "").strip()
+        summary = (
+            f"{tool or 'Tool execution'} appears to have failed because of "
+            f"{category.value.replace('_', ' ')}."
+        )
+
+        return FailureDiagnosis(
+            category=category,
+            summary=summary,
+            failed_tool=tool,
+            task_id=str(task_id) if task_id else None,
+            step_id=str(step_id) if step_id else None,
+            attempt=int(state.get("attempt") or 1),
+            confidence=confidence,
+            recommended_action=recommended,
+            requires_user=requires_user,
+            source=self.name,
+            model=str(model) if model is not None else None,
+            latency_ms=elapsed_ms,
+            evidence={
+                "error": error[:1200],
+                "output": str(state.get("output") or "")[:1200],
+            },
+            metadata={
+                "routing": dict(routing),
+                "raw_decisions": {
+                    str(key): dict(answer)
+                    for key, answer in answers.items()
+                    if isinstance(answer, dict)
+                },
+            },
+        )
+
+    def select_replan_strategy(
+        self,
+        diagnosis,
+        *,
+        plan_step=None,
+    ) -> ReplanDecision:
+        """Choose one bounded repair strategy with a single Laya pass."""
+        strategy_questions = build_replan_questions()
+        step_payload = {}
+        if plan_step is not None:
+            step_payload = {
+                "id": getattr(plan_step, "id", None),
+                "description": getattr(plan_step, "description", ""),
+                "status": getattr(getattr(plan_step, "status", None), "value", None),
+                "metadata": dict(getattr(plan_step, "metadata", {}) or {}),
+            }
+
+        diagnosis_payload = (
+            diagnosis.to_dict()
+            if hasattr(diagnosis, "to_dict")
+            else dict(diagnosis or {})
+        )
+        state = {
+            "diagnosis": diagnosis_payload,
+            "failed_step": step_payload,
+        }
+
+        started = time.perf_counter()
+        result = self._get_router().predict(
+            state,
+            strategy_questions,
+            model=self.model,
+        )
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+
+        answers = result.get("answers") or {}
+        routing = result.get("routing") or {}
+        model = routing.get("model") or result.get("model") or self.model
+        answer = answers.get("strategy") or {}
+        raw_strategy = str(answer.get("choice") or "rebuild_plan").strip().lower()
+        try:
+            strategy = ReplanStrategy(raw_strategy)
+        except ValueError:
+            strategy = ReplanStrategy.REBUILD_PLAN
+
+        try:
+            confidence = float(answer.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+
+        # The user boundary never belongs to Laya. It is enforced by the
+        # ReplanEngine before this provider is consulted.
+        return ReplanDecision(
+            strategy=strategy,
+            reason=f"Laya selected {strategy.value} for the diagnosed failure.",
+            confidence=max(0.0, min(1.0, confidence)),
+            source=self.name,
+            model=str(model) if model is not None else None,
+            latency_ms=elapsed_ms,
+            metadata={
+                "routing": dict(routing),
+                "raw_decision": dict(answer),
             },
         )
 

@@ -1,0 +1,2 @@
+# Optional browser automation for autonomous capability setup.
+playwright>=1.40,<2

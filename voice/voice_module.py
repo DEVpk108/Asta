@@ -1,8 +1,10 @@
 import os
+import queue
 import re
 import threading
 import time
 from collections import deque
+from uuid import uuid4
 
 import numpy as np
 
@@ -12,6 +14,8 @@ from .microphone_engine import MicrophoneEngine
 from .wakeword_engine import WakeWordEngine
 from .vad_engine import VADEngine
 from .recognition_engine import RecognitionEngine
+from .incremental_command_engine import IncrementalCommandDetector
+from .incremental_speech_session import IncrementalSpeechSession
 
 
 class VoiceModule(Module):
@@ -52,6 +56,14 @@ class VoiceModule(Module):
         self._speech_interrupted = threading.Event()
         self._interrupted_audio = None
         self._listener_ready_reported = False
+
+        self._incremental_voice_enabled = (
+            str(os.getenv("ASTA_INCREMENTAL_VOICE", "0")).strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        self._incremental_capture_active = False
+        self._incremental_dispatch_queue = queue.Queue()
+        self._incremental_dispatch_thread = None
 
         self.conversation_timeout = 30.0
         self._conversation_active = False
@@ -126,6 +138,18 @@ class VoiceModule(Module):
 
         self._running = True
         self._listener_ready_reported = False
+
+        if self._incremental_voice_enabled:
+            self._incremental_dispatch_thread = threading.Thread(
+                target=self._incremental_dispatch_loop,
+                name="IncrementalVoiceDispatchWorker",
+                daemon=True,
+            )
+            self._incremental_dispatch_thread.start()
+            print("[Voice] Incremental voice commitment: ENABLED", flush=True)
+        else:
+            print("[Voice] Incremental voice commitment: disabled", flush=True)
+
         self.microphone.start()
 
         self._thread = threading.Thread(
@@ -156,6 +180,12 @@ class VoiceModule(Module):
 
         self._running = False
         self._stop_barge_listener()
+
+        if self._incremental_dispatch_thread is not None:
+            self._incremental_dispatch_queue.put(None)
+            if self._incremental_dispatch_thread.is_alive():
+                self._incremental_dispatch_thread.join(timeout=3.0)
+            self._incremental_dispatch_thread = None
 
         try:
             self.microphone.stop()
@@ -193,10 +223,13 @@ class VoiceModule(Module):
                 clear_buffer()
             print("[Voice] Conversation mode: OFF", flush=True)
 
-    def _start_conversation(self):
+    def _start_conversation(self, *, announce=True):
         self._conversation_active = True
         self._last_interaction = time.monotonic()
         print("[Voice] Conversation mode: ACTIVE", flush=True)
+
+        if not announce:
+            return
 
         if self._wakeword_greeting_used:
             greeting = self.wakeword_return_greeting
@@ -215,6 +248,11 @@ class VoiceModule(Module):
         )
 
     def _on_assistant_sentence(self, *args, **kwargs):
+        # During incremental capture, assistant responses must not turn into
+        # a new TTS cycle or clear the live microphone stream. SpeechModule
+        # defers their audio until the user finishes the utterance.
+        if self._incremental_capture_active:
+            return
         self._tts_active = True
         self._tts_guard_until = time.monotonic() + 0.20
         self.microphone.clear_buffer()
@@ -463,6 +501,42 @@ class VoiceModule(Module):
         self._awaiting_confirmation = False
         print("[Voice] Confirmation listening: DISABLED", flush=True)
 
+    def _confirmation_listening_active(self):
+        """Return true only while an actual approval request is pending.
+
+        The voice module previously trusted a local boolean indefinitely. A
+        stale flag could force a fresh voice command back through the legacy
+        full-utterance path even though no approval was waiting. Tie the gate
+        to ApprovalManager state when available and self-heal stale state.
+        """
+        if not self._awaiting_confirmation:
+            return False
+
+        approval_manager = getattr(self.kernel, "approval_manager", None)
+        list_pending = getattr(approval_manager, "list_pending", None)
+        if not callable(list_pending):
+            return True
+
+        try:
+            pending = tuple(list_pending())
+        except Exception as exc:
+            print(
+                "[Voice] Confirmation state check failed: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            return True
+
+        if pending:
+            return True
+
+        self._awaiting_confirmation = False
+        print(
+            "[Voice] Confirmation listening: cleared stale state.",
+            flush=True,
+        )
+        return False
+
     def _can_listen(self):
         return (
             self._running
@@ -530,8 +604,140 @@ class VoiceModule(Module):
 
         return text
 
+    def _incremental_dispatch_loop(self):
+        while True:
+            item = self._incremental_dispatch_queue.get()
+            try:
+                if item is None:
+                    return
+
+                kind, text, commit_id, session_id = item
+                if kind == "session_finished":
+                    self.event_bus.emit(
+                        "incremental_voice_session_finished",
+                        session_id=session_id,
+                    )
+                    continue
+
+                value = str(text or "").strip()
+                if not value:
+                    continue
+
+                print(
+                    "[IncrementalVoice] Dispatching committed command: "
+                    f"{value!r} (commit_id={commit_id or 'final'})",
+                    flush=True,
+                )
+                self.event_bus.emit(
+                    "incremental_user_message",
+                    text=value,
+                    commit_id=commit_id,
+                    session_id=session_id,
+                )
+            except Exception as exc:
+                print(
+                    "[IncrementalVoice] Dispatch error: "
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+            finally:
+                self._incremental_dispatch_queue.task_done()
+
+    def _queue_incremental_user_message(
+        self,
+        text,
+        *,
+        commit_id=None,
+        session_id=None,
+    ):
+        value = str(text or "").strip()
+        if not value or not self._incremental_voice_enabled:
+            return
+        self._incremental_dispatch_queue.put(
+            ("message", value, commit_id, session_id)
+        )
+
+    def _queue_incremental_session_finished(self, session_id):
+        if not self._incremental_voice_enabled:
+            return
+        self._incremental_dispatch_queue.put(
+            ("session_finished", None, None, session_id)
+        )
+
+    def _on_incremental_commit(self, commit, *, session_id=None):
+        self._last_interaction = time.monotonic()
+        self.event_bus.emit(
+            "voice_action_committed",
+            commit_id=getattr(commit, "commit_id", None),
+            text=getattr(commit, "text", ""),
+            entities=dict(getattr(commit, "entities", {}) or {}),
+            session_id=session_id,
+        )
+        self._queue_incremental_user_message(
+            getattr(commit, "text", ""),
+            commit_id=getattr(commit, "commit_id", None),
+            session_id=session_id,
+        )
+
+    def _collect_incremental_command(self, initial_audio=None):
+        session_id = f"inc-{uuid4().hex}"
+        self.event_bus.emit(
+            "incremental_voice_session_started",
+            session_id=session_id,
+        )
+        try:
+            stable_updates = max(
+                1,
+                int(os.getenv("ASTA_INCREMENTAL_STABLE_UPDATES", "2")),
+            )
+        except (TypeError, ValueError):
+            stable_updates = 2
+
+        detector = IncrementalCommandDetector(
+            application_manager=getattr(
+                self.kernel,
+                "application_manager",
+                None,
+            ),
+            stable_updates=stable_updates,
+        )
+        session = IncrementalSpeechSession(
+            vad_engine=self.vad,
+            recognition_engine=self.recognition,
+            command_detector=detector,
+            sample_rate=self.microphone.sample_rate,
+        )
+
+        self._incremental_capture_active = True
+        self.event_bus.emit("incremental_voice_listening", enabled=True)
+        print("[IncrementalVoice] Listening to the active utterance.", flush=True)
+
+        try:
+            result = session.run(
+                self.microphone,
+                initial_audio=initial_audio,
+                should_continue=self._running_and_incremental_listenable,
+                speech_timeout=3.0,
+                on_commit=lambda commit: self._on_incremental_commit(
+                    commit,
+                    session_id=session_id,
+                ),
+            )
+            return result, session_id
+        finally:
+            self._incremental_capture_active = False
+            self.event_bus.emit(
+                "incremental_voice_listening",
+                enabled=False,
+                session_id=session_id,
+            )
+            print("[IncrementalVoice] Utterance capture finished.", flush=True)
+
+    def _running_and_incremental_listenable(self):
+        return self._running and not self._tts_active
+
     def _collect_command_audio(self, initial_audio=None):
-        if not self._awaiting_confirmation:
+        if not self._confirmation_listening_active():
             return self.vad.collect_utterance(
                 self.microphone,
                 initial_audio=initial_audio,
@@ -579,8 +785,10 @@ class VoiceModule(Module):
                     time.sleep(0.05)
                     continue
 
+                wakeword_audio = None
+
                 if not self._conversation_active:
-                    initial_audio = self.wakeword.wait_for_wakeword(
+                    wakeword_audio = self.wakeword.wait_for_wakeword(
                         self.microphone,
                         should_continue=self._can_listen,
                     )
@@ -588,10 +796,12 @@ class VoiceModule(Module):
                     if not self._running:
                         break
 
-                    if initial_audio is None or not self._can_listen():
+                    if wakeword_audio is None:
                         continue
 
-                    self._start_conversation()
+                    self._start_conversation(
+                        announce=not self._incremental_voice_enabled,
+                    )
                 else:
                     if self._conversation_expired():
                         self._conversation_active = False
@@ -607,11 +817,70 @@ class VoiceModule(Module):
                     interrupted_audio = self._interrupted_audio
                     self._interrupted_audio = None
                     self._speech_interrupted.clear()
-
-                if interrupted_audio is None:
+                elif wakeword_audio is None:
+                    # A post-TTS seed is useful when the user continues an
+                    # existing conversation, but it can contain stale room
+                    # audio when a fresh wake word starts a new command.
                     interrupted_audio = self._take_post_tts_seed()
+                elif self._post_tts_seed_pending:
+                    # Consume the one-shot marker without reusing the
+                    # wakeword/ring-buffer audio as command input.
+                    self._post_tts_seed_pending = False
 
-                self.microphone.flush()
+                if not self._can_listen():
+                    continue
+
+                if wakeword_audio is not None and self._incremental_voice_enabled:
+                    print(
+                        "[IncrementalVoice] Fresh wakeword handoff; "
+                        "starting command capture from live audio.",
+                        flush=True,
+                    )
+
+                if wakeword_audio is None or not self._incremental_voice_enabled:
+                    self.microphone.flush()
+
+                confirmation_active = self._confirmation_listening_active()
+                if self._incremental_voice_enabled and not confirmation_active:
+                    session_result, session_id = self._collect_incremental_command(
+                        initial_audio=interrupted_audio
+                    )
+
+                    if not self._running:
+                        break
+
+                    if session_result is None:
+                        self._queue_incremental_session_finished(session_id)
+                        if self._conversation_expired():
+                            self._conversation_active = False
+                            print("[Voice] Conversation mode: INACTIVE", flush=True)
+                            self.microphone.clear_buffer()
+                        continue
+
+                    text = str(session_result.remainder or "").strip()
+                    if not text:
+                        # Every actionable prefix was already committed and
+                        # dispatched while the user was speaking. Do not replay
+                        # it from the final end-of-speech decode.
+                        self._queue_incremental_session_finished(session_id)
+                        continue
+
+                    if self._is_duplicate_transcript(text):
+                        self._queue_incremental_session_finished(session_id)
+                        continue
+
+                    print(
+                        "[IncrementalVoice] Final uncommitted tail: "
+                        f"{text}",
+                        flush=True,
+                    )
+                    self._last_interaction = time.monotonic()
+                    self._queue_incremental_user_message(
+                        text,
+                        session_id=session_id,
+                    )
+                    self._queue_incremental_session_finished(session_id)
+                    continue
 
                 audio = self._collect_command_audio(
                     initial_audio=interrupted_audio
@@ -637,7 +906,7 @@ class VoiceModule(Module):
                 if not text:
                     continue
 
-                if self._awaiting_confirmation:
+                if self._confirmation_listening_active():
                     text = self._normalize_confirmation_transcript(text)
 
                 if self._is_duplicate_transcript(text):

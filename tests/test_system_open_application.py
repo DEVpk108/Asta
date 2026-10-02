@@ -79,6 +79,57 @@ def test_execute_reports_original_and_resolved_targets(monkeypatch):
     assert result.output["target"] == "demo"
     assert result.output["resolved_target"] == r"shell:AppsFolder\Demo.App"
     assert opened == [r"shell:AppsFolder\Demo.App"]
+    assert result.metadata["request_id"] == "test-open-app"
+
+
+def test_windows_store_target_falls_back_to_explorer(monkeypatch):
+    monkeypatch.setattr(system.os, "name", "nt")
+    monkeypatch.setattr(system.shutil, "which", lambda target: r"C:\Windows\explorer.exe")
+    calls = []
+
+    def fail_startfile(target):
+        raise OSError("startfile failed")
+
+    class FakePopen:
+        def __init__(self, args, **kwargs):
+            calls.append((args, kwargs))
+
+    monkeypatch.setattr(system.os, "startfile", fail_startfile, raising=False)
+    monkeypatch.setattr(system.subprocess, "Popen", FakePopen)
+
+    OpenApplicationTool._open(r"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App")
+
+    assert calls
+    assert calls[0][0] == [
+        r"C:\Windows\explorer.exe",
+        r"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
+    ]
+
+
+def test_execute_reports_original_and_resolved_targets_on_open_failure(monkeypatch):
+    monkeypatch.setattr(system.os, "name", "nt")
+
+    class FakeManager:
+        def resolve(self, target):
+            return ApplicationRecord(
+                name=target,
+                launch_target=r"shell:AppsFolder\Demo.App",
+                provider="windows.start_apps",
+            )
+
+    def fail_open(target):
+        raise OSError("native launch failed")
+
+    monkeypatch.setattr(OpenApplicationTool, "_open", staticmethod(fail_open))
+
+    result = OpenApplicationTool(FakeManager()).execute(make_request("demo"))
+
+    assert result.success is False
+    assert result.output == {
+        "target": "demo",
+        "resolved_target": r"shell:AppsFolder\Demo.App",
+    }
+    assert "native launch failed" in result.error
 
 
 def test_unknown_windows_application_returns_failure(monkeypatch):
