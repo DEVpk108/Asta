@@ -276,7 +276,6 @@ class TaskRuntimeModule(Module):
             incremental_session_id=session_id,
             incremental_commit_id=commit_id,
             incremental_segment_index=segment_index,
-            emit_first_request=False,
         )
         if task is not None:
             with self._incremental_session_lock:
@@ -307,7 +306,6 @@ class TaskRuntimeModule(Module):
         incremental_session_id: str | None = None,
         incremental_commit_id: str | None = None,
         incremental_segment_index: int | None = None,
-        emit_first_request: bool = False,
     ):
         """Create an executable task plan from any structured command intent."""
         self._emit_progress(
