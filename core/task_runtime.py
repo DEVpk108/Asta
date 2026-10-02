@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
+import threading
 
 from .contracts import (
     IntentResult,
@@ -32,6 +34,8 @@ class TaskRuntimeModule(Module):
             kernel=kernel,
         )
         self.tool_request_builder = ToolRequestBuilder(kernel.tool_registry)
+        self._incremental_sessions: dict[str, dict[str, Any]] = {}
+        self._incremental_session_lock = threading.RLock()
         kernel.task_runtime = self
 
     def initialize(self):
@@ -49,6 +53,26 @@ class TaskRuntimeModule(Module):
         self.event_bus.subscribe(
             "capability_setup_completed",
             self.on_capability_setup_completed,
+        )
+        self.event_bus.subscribe(
+            "incremental_voice_session_started",
+            self.on_incremental_voice_session_started,
+        )
+        self.event_bus.subscribe(
+            "incremental_voice_session_finished",
+            self.on_incremental_voice_session_finished,
+        )
+        self.event_bus.subscribe(
+            "task_completed",
+            self.on_task_completed,
+        )
+        self.event_bus.subscribe(
+            "task_failed",
+            self.on_task_failed,
+        )
+        self.event_bus.subscribe(
+            "task_cancelled",
+            self.on_task_cancelled,
         )
         print("[Tasks] Ready", flush=True)
 
@@ -68,16 +92,130 @@ class TaskRuntimeModule(Module):
             "capability_setup_completed",
             self.on_capability_setup_completed,
         )
+        self.event_bus.unsubscribe(
+            "incremental_voice_session_started",
+            self.on_incremental_voice_session_started,
+        )
+        self.event_bus.unsubscribe(
+            "incremental_voice_session_finished",
+            self.on_incremental_voice_session_finished,
+        )
+        self.event_bus.unsubscribe(
+            "task_completed",
+            self.on_task_completed,
+        )
+        self.event_bus.unsubscribe(
+            "task_failed",
+            self.on_task_failed,
+        )
+        self.event_bus.unsubscribe(
+            "task_cancelled",
+            self.on_task_cancelled,
+        )
         print("[Tasks] Stopped", flush=True)
 
     def on_user_message(self, text):
         self._handle_user_message(text, acknowledge=True)
 
+    def on_incremental_voice_session_started(self, session_id=None, *args, **kwargs):
+        value = str(session_id or "").strip()
+        if not value:
+            return
+        with self._incremental_session_lock:
+            self._incremental_sessions[value] = {
+                "closed": False,
+                "active_task_id": None,
+                "pending": deque(),
+                "next_segment": 0,
+            }
+        print(
+            f"[Tasks] Incremental session started: {value}",
+            flush=True,
+        )
+
+    def on_incremental_voice_session_finished(
+        self,
+        session_id=None,
+        *args,
+        **kwargs,
+    ):
+        value = str(session_id or "").strip()
+        if not value:
+            return
+        with self._incremental_session_lock:
+            state = self._incremental_sessions.get(value)
+            if state is None:
+                state = {
+                    "closed": True,
+                    "active_task_id": None,
+                    "pending": deque(),
+                    "next_segment": 0,
+                }
+                self._incremental_sessions[value] = state
+            else:
+                state["closed"] = True
+            self._cleanup_incremental_session_locked(value)
+        print(
+            f"[Tasks] Incremental session finished: {value}",
+            flush=True,
+        )
+
     def on_incremental_user_message(self, text, *args, **kwargs):
         # Incremental commands are already being heard and acted on while the
         # user is speaking. Do not inject a spoken acknowledgment into the
         # same live utterance.
-        self._handle_user_message(text, acknowledge=False)
+        session_id = str(kwargs.get("session_id") or "").strip()
+        commit_id = str(kwargs.get("commit_id") or "").strip() or None
+        if not session_id:
+            self._handle_user_message(text, acknowledge=False)
+            return
+
+        value = str(text or "").strip()
+        if not value:
+            return
+
+        with self._incremental_session_lock:
+            state = self._incremental_sessions.setdefault(
+                session_id,
+                {
+                    "closed": False,
+                    "active_task_id": None,
+                    "pending": deque(),
+                    "next_segment": 0,
+                },
+            )
+            active_task_id = state.get("active_task_id")
+
+        active_task = (
+            self.kernel.task_manager.get(active_task_id)
+            if active_task_id
+            else None
+        )
+        if active_task is not None and active_task.status not in {
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        }:
+            with self._incremental_session_lock:
+                state["pending"].append((value, commit_id))
+            self.event_bus.emit(
+                "task_progress",
+                task_id=active_task.id,
+                phase="queued",
+                text="I heard the next part. I’ll continue after this step.",
+            )
+            print(
+                f"[Tasks] Queued incremental continuation for "
+                f"{active_task.id}: {value}",
+                flush=True,
+            )
+            return
+
+        self._start_incremental_segment(
+            value,
+            session_id=session_id,
+            commit_id=commit_id,
+        )
 
     def _handle_user_message(self, text, *, acknowledge=True):
         if not text:
@@ -105,7 +243,53 @@ class TaskRuntimeModule(Module):
             intent,
         )
 
-    def start_plan(self, goal: str, intent: IntentResult):
+    def _start_incremental_segment(
+        self,
+        text: str,
+        *,
+        session_id: str,
+        commit_id: str | None = None,
+    ):
+        intent = self.kernel.intent_router.analyze(text)
+        if intent.intent is not IntentType.COMMAND:
+            return None
+
+        with self._incremental_session_lock:
+            state = self._incremental_sessions.setdefault(
+                session_id,
+                {
+                    "closed": False,
+                    "active_task_id": None,
+                    "pending": deque(),
+                    "next_segment": 0,
+                },
+            )
+            state["next_segment"] += 1
+            segment_index = state["next_segment"]
+
+        task = self.start_plan(
+            intent.normalized_text,
+            intent,
+            incremental_session_id=session_id,
+            incremental_commit_id=commit_id,
+            incremental_segment_index=segment_index,
+        )
+        if task is not None:
+            with self._incremental_session_lock:
+                state = self._incremental_sessions.get(session_id)
+                if state is not None:
+                    state["active_task_id"] = task.id
+        return task
+
+    def start_plan(
+        self,
+        goal: str,
+        intent: IntentResult,
+        *,
+        incremental_session_id: str | None = None,
+        incremental_commit_id: str | None = None,
+        incremental_segment_index: int | None = None,
+    ):
         """Create an executable task plan from any structured command intent."""
         self._emit_progress(
             "planning",
@@ -147,6 +331,12 @@ class TaskRuntimeModule(Module):
             "intent_entities": dict(intent.entities),
             "replan_attempts": 0,
         }
+        if incremental_session_id:
+            metadata["incremental_session"] = {
+                "session_id": incremental_session_id,
+                "commit_id": incremental_commit_id,
+                "segment_index": incremental_segment_index,
+            }
 
         if plan.metadata.get("agent_mode") == "cognitive_v1":
             metadata["agent_state"] = {
@@ -188,6 +378,95 @@ class TaskRuntimeModule(Module):
             text="I know what I need to do. Starting now.",
         )
         return task
+
+    def on_task_completed(self, task=None, *args, **kwargs):
+        self._advance_incremental_session_from_terminal(
+            task,
+            terminal_state=TaskStatus.COMPLETED,
+        )
+
+    def on_task_failed(self, task=None, *args, **kwargs):
+        self._advance_incremental_session_from_terminal(
+            task,
+            terminal_state=TaskStatus.FAILED,
+        )
+
+    def on_task_cancelled(self, task=None, *args, **kwargs):
+        self._advance_incremental_session_from_terminal(
+            task,
+            terminal_state=TaskStatus.CANCELLED,
+        )
+
+    def _advance_incremental_session_from_terminal(self, task, *, terminal_state):
+        if isinstance(task, dict):
+            task_id = str(task.get("id") or "").strip()
+            metadata = task.get("metadata") or {}
+        else:
+            task_id = str(getattr(task, "id", "") or "").strip()
+            metadata = getattr(task, "metadata", {}) or {}
+
+        session = metadata.get("incremental_session")
+        session_id = (
+            str(session.get("session_id") or "").strip()
+            if isinstance(session, dict)
+            else ""
+        )
+        if not task_id or not session_id:
+            return
+
+        with self._incremental_session_lock:
+            state = self._incremental_sessions.get(session_id)
+            if state is None or state.get("active_task_id") != task_id:
+                return
+
+            pending = state.get("pending")
+            if not pending:
+                state["active_task_id"] = None
+                self._cleanup_incremental_session_locked(session_id)
+                return
+
+            next_text, next_commit_id = pending.popleft()
+            state["active_task_id"] = None
+
+        if terminal_state is not TaskStatus.COMPLETED:
+            print(
+                f"[Tasks] Incremental session {session_id} stopped after "
+                f"{terminal_state.value} task {task_id}; "
+                f"{len(pending) + 1} continuation(s) remain queued.",
+                flush=True,
+            )
+            self.event_bus.emit(
+                "task_progress",
+                task_id=task_id,
+                phase="recovery",
+                text=(
+                    "That step did not complete, so I’m holding the next "
+                    "spoken steps instead of running them out of order."
+                ),
+            )
+            return
+
+        print(
+            f"[Tasks] Advancing incremental session {session_id}: "
+            f"continuing with {next_text!r}",
+            flush=True,
+        )
+        self._start_incremental_segment(
+            next_text,
+            session_id=session_id,
+            commit_id=next_commit_id,
+        )
+
+    def _cleanup_incremental_session_locked(self, session_id: str) -> None:
+        state = self._incremental_sessions.get(session_id)
+        if state is None or not state.get("closed"):
+            return
+        if state.get("active_task_id") is not None:
+            return
+        pending = state.get("pending")
+        if pending:
+            return
+        self._incremental_sessions.pop(session_id, None)
 
     def on_tool_request(self, request):
         if not isinstance(request, ToolRequest):
