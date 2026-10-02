@@ -31,6 +31,18 @@ class HUDModule(Module):
         self.event_bus.subscribe("command_acknowledged", self.on_command_acknowledged)
         self.event_bus.subscribe("task_progress", self.on_task_progress)
         self.event_bus.subscribe("user_message", self.on_user_message)
+        self.event_bus.subscribe(
+            "incremental_user_message",
+            self.on_incremental_user_message,
+        )
+        self.event_bus.subscribe(
+            "incremental_voice_listening",
+            self.on_incremental_voice_listening,
+        )
+        self.event_bus.subscribe(
+            "voice_action_committed",
+            self.on_voice_action_committed,
+        )
         self.event_bus.subscribe("conversation_mode_set", self.on_conversation_mode_set)
         self.event_bus.subscribe("speech_started", self.on_speech_started)
         self.event_bus.subscribe("speech_finished", self.on_speech_finished)
@@ -188,6 +200,50 @@ class HUDModule(Module):
         if not text:
             return
         self.event_bus.emit("user_message", text=text)
+
+    def on_incremental_user_message(self, text, *args, **kwargs):
+        # Early command segments are intentionally separate from user_message
+        # so AI/TaskRuntime can suppress mid-sentence acknowledgments without
+        # changing the normal chat event contract. Keep the transcript visible
+        # in the HUD regardless.
+        if isinstance(text, str) and text.strip():
+            value = text.strip()
+            self.chat_history.append("user", value)
+            self.transport.publish_chat(role="user", text=value)
+            self._publish_chat_index()
+
+    def on_incremental_voice_listening(self, enabled):
+        if bool(enabled):
+            self.set_state(
+                mode="listening",
+                intensity="high",
+                status="LISTENING",
+                progress=None,
+                activity="active_utterance",
+            )
+            return
+
+        task_manager = getattr(self.kernel, "task_manager", None)
+        current = task_manager.current() if task_manager is not None else None
+        if getattr(getattr(current, "status", None), "value", "") == "active":
+            self.set_state(
+                mode="executing",
+                intensity="high",
+                status="EXECUTING",
+                progress=None,
+                activity=getattr(current, "current_step", None) or "working",
+            )
+
+    def on_voice_action_committed(self, text="", *args, **kwargs):
+        value = str(text or "").strip()
+        if value:
+            self.set_state(
+                mode="executing",
+                intensity="high",
+                status="COMMITTING",
+                progress=None,
+                activity=value,
+            )
 
     def on_user_message(self, text):
         if isinstance(text, str) and text.strip():
