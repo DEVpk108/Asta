@@ -24,7 +24,9 @@ class IncrementalCommandDetector:
     """
 
     EARLY_ACTIONS = frozenset({"open", "launch", "start"})
-    # Only remove discourse padding from "open up X". Keep articles such as\n    # "the" because the application resolver may use them as part of a name.\n    TARGET_FILLER = frozenset({"up"})
+    # Only remove discourse padding from "open up X". Keep articles such as
+    # "the" because the application resolver may use them as part of a name.
+    TARGET_FILLER = frozenset({"up"})
     DISQUALIFYING_TARGET_WORDS = frozenset(
         {
             "and",
