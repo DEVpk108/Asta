@@ -46,8 +46,16 @@ class VerificationEngine:
     state before TaskRuntime can report the task as complete.
     """
 
-    def __init__(self, media_manager=None, *, poll_attempts: int = 3, poll_delay: float = 0.4):
+    def __init__(
+        self,
+        media_manager=None,
+        application_manager=None,
+        *,
+        poll_attempts: int = 3,
+        poll_delay: float = 0.2,
+    ):
         self.media_manager = media_manager
+        self.application_manager = application_manager
         self.poll_attempts = max(1, int(poll_attempts))
         self.poll_delay = max(0.0, float(poll_delay))
 
@@ -74,6 +82,13 @@ class VerificationEngine:
                 result,
             )
 
+        if verification == "application.running":
+            return self._verify_application_running(
+                task,
+                step,
+                result,
+            )
+
         return VerificationResult(
             status=VerificationStatus.UNKNOWN,
             summary=f"No verifier is registered for '{verification}'.",
@@ -81,6 +96,75 @@ class VerificationEngine:
             task_id=task_id,
             step_id=step_id,
             metadata={"verification": verification},
+        )
+
+    def _verify_application_running(self, task, step, result) -> VerificationResult:
+        """Verify an application launch with OS process state, not vision."""
+        task_id = getattr(task, "id", None)
+        step_id = getattr(step, "id", None)
+        manager = self.application_manager
+        checker = getattr(manager, "is_application_running", None)
+        if not callable(checker):
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                summary="Application runtime verification is unavailable.",
+                source="application_manager",
+                task_id=task_id,
+                step_id=step_id,
+            )
+
+        metadata = getattr(step, "metadata", {}) or {}
+        output = getattr(result, "output", None)
+        output = output if isinstance(output, dict) else {}
+        query = str(
+            metadata.get("target")
+            or output.get("target")
+            or output.get("resolved_target")
+            or ""
+        ).strip()
+
+        if not query:
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                summary="Application verification has no target.",
+                source="application_manager",
+                task_id=task_id,
+                step_id=step_id,
+            )
+
+        last_error = None
+        for attempt in range(1, self.poll_attempts + 1):
+            try:
+                if bool(checker(query)):
+                    return VerificationResult(
+                        status=VerificationStatus.VERIFIED,
+                        summary=f"Confirmed that {query} is running.",
+                        source="application_manager",
+                        task_id=task_id,
+                        step_id=step_id,
+                        metadata={
+                            "query": query,
+                            "attempt": attempt,
+                        },
+                    )
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+
+            if attempt < self.poll_attempts:
+                time.sleep(self.poll_delay)
+
+        summary = (
+            f"Could not confirm that {query} is running."
+            if not last_error
+            else f"Application runtime check failed: {last_error}"
+        )
+        return VerificationResult(
+            status=VerificationStatus.FAILED,
+            summary=summary,
+            source="application_manager",
+            task_id=task_id,
+            step_id=step_id,
+            metadata={"query": query},
         )
 
     def _verify_media_playback(self, task, step, result) -> VerificationResult:
