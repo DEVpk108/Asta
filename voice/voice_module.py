@@ -501,6 +501,42 @@ class VoiceModule(Module):
         self._awaiting_confirmation = False
         print("[Voice] Confirmation listening: DISABLED", flush=True)
 
+    def _confirmation_listening_active(self):
+        """Return true only while an actual approval request is pending.
+
+        The voice module previously trusted a local boolean indefinitely. A
+        stale flag could force a fresh voice command back through the legacy
+        full-utterance path even though no approval was waiting. Tie the gate
+        to ApprovalManager state when available and self-heal stale state.
+        """
+        if not self._awaiting_confirmation:
+            return False
+
+        approval_manager = getattr(self.kernel, "approval_manager", None)
+        list_pending = getattr(approval_manager, "list_pending", None)
+        if not callable(list_pending):
+            return True
+
+        try:
+            pending = tuple(list_pending())
+        except Exception as exc:
+            print(
+                "[Voice] Confirmation state check failed: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            return True
+
+        if pending:
+            return True
+
+        self._awaiting_confirmation = False
+        print(
+            "[Voice] Confirmation listening: cleared stale state.",
+            flush=True,
+        )
+        return False
+
     def _can_listen(self):
         return (
             self._running
@@ -701,7 +737,7 @@ class VoiceModule(Module):
         return self._running and not self._tts_active
 
     def _collect_command_audio(self, initial_audio=None):
-        if not self._awaiting_confirmation:
+        if not self._confirmation_listening_active():
             return self.vad.collect_utterance(
                 self.microphone,
                 initial_audio=initial_audio,
@@ -781,17 +817,31 @@ class VoiceModule(Module):
                     interrupted_audio = self._interrupted_audio
                     self._interrupted_audio = None
                     self._speech_interrupted.clear()
-
-                if interrupted_audio is None:
+                elif wakeword_audio is None:
+                    # A post-TTS seed is useful when the user continues an
+                    # existing conversation, but it can contain stale room
+                    # audio when a fresh wake word starts a new command.
                     interrupted_audio = self._take_post_tts_seed()
+                elif self._post_tts_seed_pending:
+                    # Consume the one-shot marker without reusing the
+                    # wakeword/ring-buffer audio as command input.
+                    self._post_tts_seed_pending = False
 
-                if wakeword_audio is not None and interrupted_audio is None:
-                    interrupted_audio = wakeword_audio
+                if not self._can_listen():
+                    continue
+
+                if wakeword_audio is not None and self._incremental_voice_enabled:
+                    print(
+                        "[IncrementalVoice] Fresh wakeword handoff; "
+                        "starting command capture from live audio.",
+                        flush=True,
+                    )
 
                 if wakeword_audio is None or not self._incremental_voice_enabled:
                     self.microphone.flush()
 
-                if self._incremental_voice_enabled and not self._awaiting_confirmation:
+                confirmation_active = self._confirmation_listening_active()
+                if self._incremental_voice_enabled and not confirmation_active:
                     session_result, session_id = self._collect_incremental_command(
                         initial_audio=interrupted_audio
                     )
@@ -856,7 +906,7 @@ class VoiceModule(Module):
                 if not text:
                     continue
 
-                if self._awaiting_confirmation:
+                if self._confirmation_listening_active():
                     text = self._normalize_confirmation_transcript(text)
 
                 if self._is_duplicate_transcript(text):
