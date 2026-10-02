@@ -193,12 +193,6 @@ class IncrementalSpeechSession:
                 if not recording:
                     continue
 
-                elapsed = (
-                    now - recording_started_at
-                    if recording_started_at is not None
-                    else 0.0
-                )
-
                 captured_seconds = sum(
                     len(part) for part in audio_parts
                 ) / self.sample_rate
@@ -255,9 +249,9 @@ class IncrementalSpeechSession:
 
                 if (
                     self.vad_engine.is_speech_ended(event)
-                    and elapsed >= max(
+                    and captured_seconds >= max(
                         float(self.vad_engine.min_speech_duration),
-                        0.35,
+                        0.30,
                     )
                 ):
                     break
