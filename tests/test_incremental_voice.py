@@ -190,3 +190,54 @@ def test_incremental_session_commits_before_final_end_of_speech():
     assert result.commits == tuple(committed)
     assert result.remainder == ""
     assert len(recognition.calls) >= 3
+
+
+def test_incremental_session_respects_partial_decode_cadence():
+    microphone = FakeMicrophone(
+        [np.full(1600, 0.08, dtype=np.float32) for _ in range(10)]
+    )
+
+    class CadenceRecognition:
+        def __init__(self):
+            self.calls = []
+
+        def transcribe(self, audio):
+            self.calls.append(len(audio))
+            return "utterance"
+
+    recognition = CadenceRecognition()
+    vad = FakeVADEngine()
+
+    class NeverCommitDetector:
+        def __init__(self):
+            self.commits = ()
+
+        def observe(self, _text):
+            return None
+
+        def finalize(self, text):
+            return text
+
+    session = IncrementalSpeechSession(
+        vad_engine=vad,
+        recognition_engine=recognition,
+        command_detector=NeverCommitDetector(),
+        partial_interval_seconds=0.20,
+        min_partial_seconds=0.30,
+        stt_window_seconds=2.0,
+    )
+
+    result = session.run(
+        microphone,
+        should_continue=lambda: True,
+        speech_timeout=1.0,
+    )
+
+    assert result is not None
+    assert recognition.calls == [
+        4800,
+        8000,
+        11200,
+        14400,
+        16000,
+    ]
