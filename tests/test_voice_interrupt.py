@@ -178,3 +178,20 @@ def test_barge_echo_baseline_requires_energy_rise_during_tts():
 
     assert 0.022 < echo_rms_gate
     assert 0.1483 < echo_peak_gate
+
+
+def test_stale_confirmation_state_is_cleared_without_pending_approval():
+    class ApprovalManager:
+        @staticmethod
+        def list_pending():
+            return ()
+
+    class Kernel:
+        approval_manager = ApprovalManager()
+
+    voice = object.__new__(VoiceModule)
+    voice.kernel = Kernel()
+    voice._awaiting_confirmation = True
+
+    assert voice._confirmation_listening_active() is False
+    assert voice._awaiting_confirmation is False
