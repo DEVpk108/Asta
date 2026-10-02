@@ -805,6 +805,7 @@ class VoiceModule(Module):
                         continue
 
                     if self._is_duplicate_transcript(text):
+                        self._queue_incremental_session_finished(session_id)
                         continue
 
                     print(
