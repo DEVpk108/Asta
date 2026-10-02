@@ -221,13 +221,15 @@ class SpeechModule(Module):
     def on_incremental_voice_listening(self, enabled):
         enabled = bool(enabled)
         if enabled:
-            self._defer_speech = True
+            with self._state_lock:
+                self._defer_speech = True
             print("[Speech] Deferring TTS while user is speaking.", flush=True)
             return
 
-        deferred = list(self._deferred_sentences)
-        self._deferred_sentences.clear()
-        self._defer_speech = False
+        with self._state_lock:
+            deferred = list(self._deferred_sentences)
+            self._deferred_sentences.clear()
+            self._defer_speech = False
 
         if deferred:
             print(
@@ -241,9 +243,10 @@ class SpeechModule(Module):
         if not text:
             return
 
-        if self._defer_speech:
-            self._deferred_sentences.append(text)
-            return
+        with self._state_lock:
+            if self._defer_speech:
+                self._deferred_sentences.append(text)
+                return
 
         is_presentation = text.startswith("Hello Sir. I’m A.S.T.A.,")
         if is_presentation:
