@@ -40,6 +40,8 @@ class SpeechModule(Module):
         self._queued_text = 0
         self._synthesis_inflight = 0
         self._presentation_mode_active = False
+        self._defer_speech = False
+        self._deferred_sentences = []
         self._interrupt_event = threading.Event()
         self._last_audio_level_at = 0.0
         self._audio_level_interval = 0.04  # ~25 HUD updates/sec
@@ -48,6 +50,10 @@ class SpeechModule(Module):
         print("[Speech] Initializing...", flush=True)
         self._running = True
         self.event_bus.subscribe("assistant_sentence", self.on_assistant_sentence)
+        self.event_bus.subscribe(
+            "incremental_voice_listening",
+            self.on_incremental_voice_listening,
+        )
         self.event_bus.subscribe("speech_interrupt", self.on_speech_interrupt)
 
         self._speech_thread = threading.Thread(
@@ -64,6 +70,10 @@ class SpeechModule(Module):
         self._interrupt_event.set()
         self._publish_audio_level(0.0, force=True)
         self.event_bus.unsubscribe("assistant_sentence", self.on_assistant_sentence)
+        self.event_bus.unsubscribe(
+            "incremental_voice_listening",
+            self.on_incremental_voice_listening,
+        )
         self.event_bus.unsubscribe("speech_interrupt", self.on_speech_interrupt)
 
         self._queue.put(None)
@@ -208,8 +218,31 @@ class SpeechModule(Module):
         cleaned = "".join(ch for ch in str(text) if not is_emoji_char(ch))
         return " ".join(cleaned.split())
 
+    def on_incremental_voice_listening(self, enabled):
+        enabled = bool(enabled)
+        if enabled:
+            self._defer_speech = True
+            print("[Speech] Deferring TTS while user is speaking.", flush=True)
+            return
+
+        deferred = list(self._deferred_sentences)
+        self._deferred_sentences.clear()
+        self._defer_speech = False
+
+        if deferred:
+            print(
+                f"[Speech] Releasing {len(deferred)} deferred sentence(s).",
+                flush=True,
+            )
+            for text in deferred:
+                self.on_assistant_sentence(text)
+
     def on_assistant_sentence(self, text):
         if not text:
+            return
+
+        if self._defer_speech:
+            self._deferred_sentences.append(text)
             return
 
         is_presentation = text.startswith("Hello Sir. I’m A.S.T.A.,")
@@ -248,6 +281,7 @@ class SpeechModule(Module):
         print("[Speech] Interrupt requested.", flush=True)
         self._interrupt_event.set()
         self._publish_audio_level(0.0, force=True)
+        self._deferred_sentences.clear()
 
         drained = 0
         while True:
