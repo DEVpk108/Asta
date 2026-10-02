@@ -201,7 +201,19 @@ class AIModule(Module):
             self.engine.system_prompt = prompt
 
     def on_incremental_user_message(self, text, *args, **kwargs):
-        """Process a command segment committed before end-of-speech."""
+        """Process non-command incremental speech without duplicating runtime plans."""
+        # Sessionized incremental commands are orchestrated by TaskRuntime so
+        # queued continuations cannot bypass its serialization boundary.
+        session_id = str(kwargs.get("session_id") or "").strip()
+        if session_id:
+            intent = self.kernel.intent_router.analyze(text)
+            if intent.intent == IntentType.COMMAND:
+                print(
+                    "[AI] Incremental command already owned by TaskRuntime: "
+                    f"{text!r}",
+                    flush=True,
+                )
+                return
         self.on_user_message(text)
 
     def on_user_message(self, text):
