@@ -4,6 +4,7 @@ import re
 import threading
 import time
 from collections import deque
+from uuid import uuid4
 
 import numpy as np
 
@@ -571,7 +572,14 @@ class VoiceModule(Module):
                 if item is None:
                     return
 
-                text, commit_id = item
+                kind, text, commit_id, session_id = item
+                if kind == "session_finished":
+                    self.event_bus.emit(
+                        "incremental_voice_session_finished",
+                        session_id=session_id,
+                    )
+                    continue
+
                 value = str(text or "").strip()
                 if not value:
                     continue
@@ -585,6 +593,7 @@ class VoiceModule(Module):
                     "incremental_user_message",
                     text=value,
                     commit_id=commit_id,
+                    session_id=session_id,
                 )
             except Exception as exc:
                 print(
@@ -595,26 +604,48 @@ class VoiceModule(Module):
             finally:
                 self._incremental_dispatch_queue.task_done()
 
-    def _queue_incremental_user_message(self, text, *, commit_id=None):
+    def _queue_incremental_user_message(
+        self,
+        text,
+        *,
+        commit_id=None,
+        session_id=None,
+    ):
         value = str(text or "").strip()
         if not value or not self._incremental_voice_enabled:
             return
-        self._incremental_dispatch_queue.put((value, commit_id))
+        self._incremental_dispatch_queue.put(
+            ("message", value, commit_id, session_id)
+        )
 
-    def _on_incremental_commit(self, commit):
+    def _queue_incremental_session_finished(self, session_id):
+        if not self._incremental_voice_enabled:
+            return
+        self._incremental_dispatch_queue.put(
+            ("session_finished", None, None, session_id)
+        )
+
+    def _on_incremental_commit(self, commit, *, session_id=None):
         self._last_interaction = time.monotonic()
         self.event_bus.emit(
             "voice_action_committed",
             commit_id=getattr(commit, "commit_id", None),
             text=getattr(commit, "text", ""),
             entities=dict(getattr(commit, "entities", {}) or {}),
+            session_id=session_id,
         )
         self._queue_incremental_user_message(
             getattr(commit, "text", ""),
             commit_id=getattr(commit, "commit_id", None),
+            session_id=session_id,
         )
 
     def _collect_incremental_command(self, initial_audio=None):
+        session_id = f"inc-{uuid4().hex}"
+        self.event_bus.emit(
+            "incremental_voice_session_started",
+            session_id=session_id,
+        )
         try:
             stable_updates = max(
                 1,
@@ -643,16 +674,24 @@ class VoiceModule(Module):
         print("[IncrementalVoice] Listening to the active utterance.", flush=True)
 
         try:
-            return session.run(
+            result = session.run(
                 self.microphone,
                 initial_audio=initial_audio,
                 should_continue=self._running_and_incremental_listenable,
                 speech_timeout=3.0,
-                on_commit=self._on_incremental_commit,
+                on_commit=lambda commit: self._on_incremental_commit(
+                    commit,
+                    session_id=session_id,
+                ),
             )
+            return result, session_id
         finally:
             self._incremental_capture_active = False
-            self.event_bus.emit("incremental_voice_listening", enabled=False)
+            self.event_bus.emit(
+                "incremental_voice_listening",
+                enabled=False,
+                session_id=session_id,
+            )
             print("[IncrementalVoice] Utterance capture finished.", flush=True)
 
     def _running_and_incremental_listenable(self):
@@ -742,7 +781,7 @@ class VoiceModule(Module):
                 self.microphone.flush()
 
                 if self._incremental_voice_enabled and not self._awaiting_confirmation:
-                    session_result = self._collect_incremental_command(
+                    session_result, session_id = self._collect_incremental_command(
                         initial_audio=interrupted_audio
                     )
 
@@ -750,6 +789,7 @@ class VoiceModule(Module):
                         break
 
                     if session_result is None:
+                        self._queue_incremental_session_finished(session_id)
                         if self._conversation_expired():
                             self._conversation_active = False
                             print("[Voice] Conversation mode: INACTIVE", flush=True)
@@ -761,6 +801,7 @@ class VoiceModule(Module):
                         # Every actionable prefix was already committed and
                         # dispatched while the user was speaking. Do not replay
                         # it from the final end-of-speech decode.
+                        self._queue_incremental_session_finished(session_id)
                         continue
 
                     if self._is_duplicate_transcript(text):
@@ -772,7 +813,11 @@ class VoiceModule(Module):
                         flush=True,
                     )
                     self._last_interaction = time.monotonic()
-                    self._queue_incremental_user_message(text)
+                    self._queue_incremental_user_message(
+                        text,
+                        session_id=session_id,
+                    )
+                    self._queue_incremental_session_finished(session_id)
                     continue
 
                 audio = self._collect_command_audio(
