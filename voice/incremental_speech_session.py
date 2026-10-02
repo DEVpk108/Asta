@@ -186,9 +186,9 @@ class IncrementalSpeechSession:
                         audio_parts.append(
                             np.asarray(pre_roll, dtype=np.float32)
                         )
-                    next_partial_audio_seconds = (
-                        captured_seconds + self.partial_interval_seconds
-                    )
+                    # Schedule the first partial from captured audio
+                    # duration. The current chunk is added immediately below.
+                    next_partial_audio_seconds = self.min_partial_seconds
 
                 if recording:
                     audio_parts.append(chunk)
