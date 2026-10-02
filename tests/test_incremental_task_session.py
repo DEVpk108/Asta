@@ -1,7 +1,7 @@
 from core import Kernel
 from core.contracts import ToolDefinition, ToolRequest, ToolResult, TaskStatus
 from core.task_runtime import TaskRuntimeModule
-from core.tools import Tool
+from core.tools import Tool, ToolRuntimeModule
 from ai.ai_module import AIModule
 
 
@@ -198,5 +198,56 @@ def test_incremental_failed_segment_does_not_run_queued_continuation():
         assert first_task.status is TaskStatus.FAILED
         assert len(kernel.task_manager.list()) == 1
     finally:
+        ai.shutdown()
+        tasks.shutdown()
+
+
+def test_incremental_segment_registers_before_synchronous_tool_completion():
+    kernel = Kernel()
+    kernel.register_tool(FakeCapabilityTool())
+
+    tasks = TaskRuntimeModule(kernel)
+    tools = ToolRuntimeModule(kernel)
+    ai = AIModule(kernel)
+    ai.engine = RecordingEngine()
+
+    tasks.initialize()
+    ai.initialize()
+    tools.initialize()
+
+    session_id = "inc-sync-session"
+
+    try:
+        kernel.event_bus.emit(
+            "incremental_voice_session_started",
+            session_id=session_id,
+        )
+        kernel.event_bus.emit(
+            "incremental_user_message",
+            text="open calculator",
+            commit_id="inc-1",
+            session_id=session_id,
+        )
+
+        created = kernel.task_manager.list()
+        assert len(created) == 1
+        task = created[0]
+        assert task.status is TaskStatus.COMPLETED
+        assert task.metadata["incremental_session"]["session_id"] == session_id
+
+        with tasks._incremental_session_lock:
+            state = tasks._incremental_sessions[session_id]
+            assert state["active_task_id"] is None
+
+        # A session finish arriving after synchronous completion can safely
+        # close and remove the session instead of resurrecting the task.
+        kernel.event_bus.emit(
+            "incremental_voice_session_finished",
+            session_id=session_id,
+        )
+        with tasks._incremental_session_lock:
+            assert session_id not in tasks._incremental_sessions
+    finally:
+        tools.shutdown()
         ai.shutdown()
         tasks.shutdown()
