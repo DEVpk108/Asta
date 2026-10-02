@@ -425,14 +425,21 @@ class TaskRuntimeModule(Module):
                 self._cleanup_incremental_session_locked(session_id)
                 return
 
-            next_text, next_commit_id = pending.popleft()
-            state["active_task_id"] = None
+            if terminal_state is not TaskStatus.COMPLETED:
+                state["active_task_id"] = None
+                pending.clear()
+                self._cleanup_incremental_session_locked(session_id)
+                queued_count = 0
+            else:
+                next_text, next_commit_id = pending.popleft()
+                state["active_task_id"] = None
+                queued_count = len(pending) + 1
 
         if terminal_state is not TaskStatus.COMPLETED:
             print(
                 f"[Tasks] Incremental session {session_id} stopped after "
                 f"{terminal_state.value} task {task_id}; "
-                f"{len(pending) + 1} continuation(s) remain queued.",
+                f"discarded {queued_count} queued continuation(s).",
                 flush=True,
             )
             self.event_bus.emit(
@@ -440,8 +447,8 @@ class TaskRuntimeModule(Module):
                 task_id=task_id,
                 phase="recovery",
                 text=(
-                    "That step did not complete, so I’m holding the next "
-                    "spoken steps instead of running them out of order."
+                    "That step did not complete, so I’m holding the remaining "
+                    "spoken steps rather than running them out of order."
                 ),
             )
             return
