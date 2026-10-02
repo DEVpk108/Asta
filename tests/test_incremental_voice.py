@@ -197,6 +197,25 @@ def test_incremental_session_respects_partial_decode_cadence():
         [np.full(1600, 0.08, dtype=np.float32) for _ in range(10)]
     )
 
+    class CadenceVADIterator:
+        def __init__(self):
+            self.calls = 0
+
+        def reset_states(self):
+            self.calls = 0
+
+        def __call__(self, _tensor):
+            self.calls += 1
+            if self.calls == 1:
+                return {"start": 0}
+            if self.calls == 10:
+                return {"end": 1}
+            return None
+
+    class CadenceVADEngine(FakeVADEngine):
+        def __init__(self):
+            self.vad = CadenceVADIterator()
+
     class CadenceRecognition:
         def __init__(self):
             self.calls = []
@@ -206,7 +225,7 @@ def test_incremental_session_respects_partial_decode_cadence():
             return "utterance"
 
     recognition = CadenceRecognition()
-    vad = FakeVADEngine()
+    vad = CadenceVADEngine()
 
     class NeverCommitDetector:
         def __init__(self):
