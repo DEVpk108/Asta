@@ -369,3 +369,47 @@ def test_dual_language_stream_feeds_both_and_picks_one():
     assert stream.english.samples == stream.hindi.samples == 320
     assert stream.finish() == "आज मौसम कैसा है और क्रोम खोलो"
     assert stream.language == "hi"
+
+
+def test_nemotron_stream_holds_engine_lock_for_every_recognizer_call():
+    """sherpa-onnx corrupts results if one stream is fed while another decodes."""
+    import threading
+
+    from voice.nemotron_streaming_engine import NemotronStream
+
+    engine = type("Engine", (), {})()
+    engine.decode_lock = threading.Lock()
+    violations = []
+
+    class Stream:
+        def set_option(self, *_):
+            if not engine.decode_lock.locked():
+                violations.append("set_option")
+
+        def accept_waveform(self, *_):
+            if not engine.decode_lock.locked():
+                violations.append("accept_waveform")
+
+        def input_finished(self):
+            if not engine.decode_lock.locked():
+                violations.append("input_finished")
+
+    class Recognizer:
+        def create_stream(self):
+            return Stream()
+
+        def is_ready(self, _stream):
+            if not engine.decode_lock.locked():
+                violations.append("is_ready")
+            return False
+
+        def get_result(self, _stream):
+            return "ok"
+
+    engine.recognizer = Recognizer()
+    streams = [NemotronStream(engine, "en"), NemotronStream(engine, "hi")]
+    for _ in range(20):
+        for stream in streams:
+            stream.accept(np.zeros(512, dtype=np.float32))
+    assert [stream.finish() for stream in streams] == ["ok", "ok"]
+    assert violations == []

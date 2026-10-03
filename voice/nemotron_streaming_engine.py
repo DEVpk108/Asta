@@ -57,12 +57,13 @@ class NemotronStream:
 
     def __init__(self, engine: "NemotronStreamingEngine", language: str):
         self._engine = engine
-        self._stream = engine.recognizer.create_stream()
-        if language:
-            try:
-                self._stream.set_option("language", language)
-            except Exception:  # Older sherpa-onnx builds without options.
-                pass
+        with engine.decode_lock:
+            self._stream = engine.recognizer.create_stream()
+            if language:
+                try:
+                    self._stream.set_option("language", language)
+                except Exception:  # Older sherpa-onnx builds without options.
+                    pass
         self._audio: "queue.Queue[np.ndarray | None]" = queue.Queue()
         self._lock = threading.Lock()
         self._partial = ""
@@ -138,17 +139,21 @@ class NemotronStream:
                         finished = True
                         break
                     parts.append(extra)
-                self._stream.accept_waveform(SAMPLE_RATE, np.concatenate(parts))
+                # sherpa-onnx is not safe to feed one stream while another is
+                # decoding, so every recognizer call holds the engine lock.
+                with self._engine.decode_lock:
+                    self._stream.accept_waveform(SAMPLE_RATE, np.concatenate(parts))
                 self._decode_ready()
                 if finished:
                     break
 
             if not self._cancelled:
-                self._stream.accept_waveform(
-                    SAMPLE_RATE,
-                    np.zeros(int(SAMPLE_RATE * TAIL_PADDING_SECONDS), dtype=np.float32),
-                )
-                self._stream.input_finished()
+                with self._engine.decode_lock:
+                    self._stream.accept_waveform(
+                        SAMPLE_RATE,
+                        np.zeros(int(SAMPLE_RATE * TAIL_PADDING_SECONDS), dtype=np.float32),
+                    )
+                    self._stream.input_finished()
                 self._decode_ready()
             with self._lock:
                 self._final = self._partial
