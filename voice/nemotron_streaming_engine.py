@@ -21,10 +21,14 @@ from pathlib import Path
 import numpy as np
 
 from core.config import PROJECT_ROOT
+from .language_choice import choose_transcript
 
 DEFAULT_MODEL_NAME = "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11"
 DEFAULT_MODEL_DIR = PROJECT_ROOT / "models" / "speech" / DEFAULT_MODEL_NAME
 SAMPLE_RATE = 16000
+# Decode English and Hindi side by side and keep the more plausible one.
+# Automatic language ID writes Indian-accented English in Devanagari.
+DUAL_LANGUAGE_MODES = {"en+hi", "hi+en", "dual"}
 # Trailing silence fed after the user stops so the model's right context is
 # filled and the final tokens are flushed (matches sherpa-onnx examples).
 TAIL_PADDING_SECONDS = 0.66
@@ -106,6 +110,16 @@ class NemotronStream:
             with self._lock:
                 self._partial = " ".join(text.split())
 
+    @property
+    def confidence(self) -> float | None:
+        """Mean token log-probability of the current result (None if empty)."""
+        try:
+            with self._engine.decode_lock:
+                probs = list(self._engine.recognizer.ys_probs(self._stream))
+        except Exception:
+            return None
+        return float(np.mean(probs)) if probs else None
+
     def _run(self) -> None:
         try:
             while True:
@@ -147,6 +161,49 @@ class NemotronStream:
             self._done.set()
 
 
+class DualLanguageStream:
+    """Feeds one utterance to an English and a Hindi stream in parallel."""
+
+    def __init__(self, engine: "NemotronStreamingEngine"):
+        self.english = NemotronStream(engine, "en")
+        self.hindi = NemotronStream(engine, "hi")
+        self.language = None
+
+    @property
+    def samples(self) -> int:
+        return self.english.samples
+
+    def accept(self, samples) -> None:
+        self.english.accept(samples)
+        self.hindi.accept(samples)
+
+    @property
+    def partial_text(self) -> str:
+        return choose_transcript(self.english.partial_text, self.hindi.partial_text)[1]
+
+    def finish(self, timeout: float = 10.0) -> str:
+        # Both workers flush concurrently; join them in turn.
+        self.english._audio.put(None)
+        self.hindi._audio.put(None)
+        english = self.english.finish(timeout)
+        hindi = self.hindi.finish(timeout)
+        self.language, text = choose_transcript(
+            english,
+            hindi,
+            english_confidence=self.english.confidence,
+            hindi_confidence=self.hindi.confidence,
+        )
+        print(
+            f"[STT/Nemotron] en={english!r} hi={hindi!r} -> {self.language}",
+            flush=True,
+        )
+        return text
+
+    def cancel(self) -> None:
+        self.english.cancel()
+        self.hindi.cancel()
+
+
 class NemotronStreamingEngine:
     """Owns the sherpa-onnx recognizer; create one stream per utterance."""
 
@@ -169,7 +226,7 @@ class NemotronStreamingEngine:
                 "Run: python scripts/download_speech_models.py"
             )
         self.language = (
-            language or os.getenv("ASTA_STT_LANGUAGE", "auto")
+            language or os.getenv("ASTA_STT_LANGUAGE", "en+hi")
         ).strip() or "auto"
         self.num_threads = max(
             1, num_threads or _env_int("ASTA_NEMOTRON_THREADS", 4)
@@ -200,12 +257,15 @@ class NemotronStreamingEngine:
         )
 
     def _warmup(self) -> None:
-        stream = self.create_stream()
+        stream = NemotronStream(self, "en")
         stream.accept(np.zeros(SAMPLE_RATE // 2, dtype=np.float32))
         stream.finish(timeout=30.0)
 
-    def create_stream(self, language: str | None = None) -> NemotronStream:
-        return NemotronStream(self, language or self.language)
+    def create_stream(self, language: str | None = None):
+        language = (language or self.language).strip().lower()
+        if language in DUAL_LANGUAGE_MODES:
+            return DualLanguageStream(self)
+        return NemotronStream(self, language)
 
     def transcribe(self, audio) -> str:
         stream = self.create_stream()

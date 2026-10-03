@@ -311,3 +311,61 @@ def test_kokoro_stream_play_stops_on_interrupt():
     engine.write = write
     assert engine.stream_play("hello") is False
     assert len(writes) == 2
+
+
+# --------------------------------------------------------------------------
+# English / Hindi transcript choice
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "english, hindi, expected",
+    [
+        # Indian-accented English that Nemotron auto-ID wrote in Devanagari.
+        ("Hello Aster Open Chrome and then check the weather",
+         "हेलो आस्टर ओपन क्रोम एंड देन चेक द वेदर", "en"),
+        ("Play some music on Spotify and increase the volume",
+         "प्ले सम म्यूजिक ऑन स्पॉटिफाई एंड इन्क्रीस द वॉल्यूम", "en"),
+        ("what time is it", "व्हाट टाइम इज इट", "en"),
+        ("open spotify", "ओपन स्पॉटिफाई", "en"),
+        # Hindi and Hinglish.
+        ("mca or kroom kholo", "आज मौसम कैसा है और क्रोम खोलो", "hi"),
+        ("", "क्या हालचाल है मुझे एक जोक सुनाओ", "hi"),
+        ("chrome kholo or music bajao", "क्रोम खोलो और म्यूजिक बजाओ", "hi"),
+        ("volume kam karo", "वॉल्यूम कम करो", "hi"),
+    ],
+)
+def test_choose_transcript_between_english_and_hindi(english, hindi, expected):
+    from voice.language_choice import choose_transcript
+
+    language, text = choose_transcript(english, hindi)
+    assert language == expected
+    assert text == (english if expected == "en" else hindi)
+
+
+def test_dual_language_stream_feeds_both_and_picks_one():
+    from voice.nemotron_streaming_engine import DualLanguageStream
+
+    class Half:
+        def __init__(self, text):
+            self.text = text
+            self.samples = 0
+            self.confidence = -0.1
+            self._audio = type("Q", (), {"put": lambda self, item: None})()
+
+        def accept(self, samples):
+            self.samples += len(samples)
+
+        @property
+        def partial_text(self):
+            return self.text
+
+        def finish(self, timeout=10.0):
+            return self.text
+
+    stream = object.__new__(DualLanguageStream)
+    stream.english = Half("mca or kroom kholo")
+    stream.hindi = Half("आज मौसम कैसा है और क्रोम खोलो")
+    stream.language = None
+    stream.accept(np.zeros(320, dtype=np.float32))
+    assert stream.english.samples == stream.hindi.samples == 320
+    assert stream.finish() == "आज मौसम कैसा है और क्रोम खोलो"
+    assert stream.language == "hi"

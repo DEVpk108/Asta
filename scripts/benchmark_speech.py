@@ -71,7 +71,11 @@ def bench_nemotron(audio: np.ndarray) -> None:
             time.sleep(delay)
     end_of_audio = time.perf_counter()
     text = stream.finish()
-    print(f"Nemotron  end-of-speech -> text: {time.perf_counter() - end_of_audio:.3f}s  {text!r}")
+    language = getattr(stream, "language", None) or engine.language
+    print(
+        f"Nemotron  end-of-speech -> text: {time.perf_counter() - end_of_audio:.3f}s  "
+        f"[{language}] {text!r}"
+    )
 
 
 def bench_whisper(audio: np.ndarray) -> None:

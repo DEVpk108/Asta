@@ -279,7 +279,7 @@ already set in the environment take precedence.
 | `ASTA_APPROVAL_TTL_SECONDS` | `30` | Seconds a pending tool approval stays valid |
 | `ASTA_INCREMENTAL_STT_BEAM_SIZE` | `1` | Whisper beam size for incremental partial decodes |
 | `ASTA_STT_BACKEND` | `auto` | `auto` (Nemotron when downloaded, else Whisper), `nemotron`, `whisper`, `indic` or `hybrid` |
-| `ASTA_STT_LANGUAGE` | `auto` | Nemotron language (`auto`, `en`, `hi`, ...). For Whisper, `auto` enables language detection |
+| `ASTA_STT_LANGUAGE` | `en+hi` | Nemotron language. `en+hi` decodes English and Hindi in parallel and keeps the transcript that reads as real English or real Hindi (Nemotron's own `auto` writes Indian-accented English in Devanagari). Also `auto`, `en`, `hi`, ... For Whisper, `auto` enables language detection |
 | `ASTA_NEMOTRON_MODEL_DIR` | `models/speech/...-560ms-...` | Nemotron model folder (pick another chunk size with `download_speech_models.py --chunk`) |
 | `ASTA_NEMOTRON_THREADS` | `4` | CPU threads for Nemotron |
 | `ASTA_NEMOTRON_PROVIDER` | `cpu` | `cpu`, or `cuda` with the GPU build of sherpa-onnx |
