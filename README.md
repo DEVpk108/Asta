@@ -80,6 +80,17 @@ npm install
 cd ..
 ```
 
+Then download the low-latency speech models (about 500 MB, stored in the
+git-ignored `models/speech/`):
+
+```bash
+python scripts/download_speech_models.py
+```
+
+This fetches NVIDIA Nemotron 3.5 ASR Streaming (English + Hindi, run on CPU
+through sherpa-onnx) and the Smart Turn end-of-turn model. Without them
+A.S.T.A. falls back to Whisper and plain silence detection.
+
 `requirements-kokoro.txt` is not optional for running the assistant:
 `speech/speech_module.py` imports `KokoroEngine` at import time. On an NVIDIA
 GPU, install the CUDA build of PyTorch before it (see the note inside that
@@ -267,7 +278,20 @@ already set in the environment take precedence.
 | `ASTA_LLM_HISTORY_CHARS` | `12000` | Character budget for replayed conversation history |
 | `ASTA_APPROVAL_TTL_SECONDS` | `30` | Seconds a pending tool approval stays valid |
 | `ASTA_INCREMENTAL_STT_BEAM_SIZE` | `1` | Whisper beam size for incremental partial decodes |
-| `ASTA_STT_BACKEND` | `whisper` | `whisper`, `indic` or `hybrid` |
+| `ASTA_STT_BACKEND` | `auto` | `auto` (Nemotron when downloaded, else Whisper), `nemotron`, `whisper`, `indic` or `hybrid` |
+| `ASTA_STT_LANGUAGE` | `auto` | Nemotron language (`auto`, `en`, `hi`, ...). For Whisper, `auto` enables language detection |
+| `ASTA_NEMOTRON_MODEL_DIR` | `models/speech/...-560ms-...` | Nemotron model folder (pick another chunk size with `download_speech_models.py --chunk`) |
+| `ASTA_NEMOTRON_THREADS` | `4` | CPU threads for Nemotron |
+| `ASTA_NEMOTRON_PROVIDER` | `cpu` | `cpu`, or `cuda` with the GPU build of sherpa-onnx |
+| `ASTA_SMART_TURN` | `1` | Smart Turn end-of-turn detection when its model is downloaded |
+| `ASTA_SMART_TURN_SILENCE_MS` | `200` | Silence before Smart Turn checks whether you finished |
+| `ASTA_SMART_TURN_THRESHOLD` | `0.5` | Completion probability needed to end the turn early |
+| `ASTA_VAD_SILENCE_MS` | `700` | Silence that always ends a turn (used when Smart Turn says "not finished" or is off) |
+| `ASTA_TTS_VOICE` | `am_michael` | Kokoro English voice |
+| `ASTA_TTS_HINDI` | `1` | Speak Devanagari replies with Kokoro's Hindi pipeline |
+| `ASTA_TTS_HINDI_VOICE` | `hf_alpha` | Kokoro Hindi voice (`hf_alpha`, `hf_beta`, `hm_omega`, `hm_psi`) |
+| `ASTA_TTS_FIRST_CLAUSE` | `1` | Speak a reply's first clause on its own so audio starts sooner |
+| `ASTA_TTS_OUTPUT_LATENCY` | `low` | Audio output buffer (`low`, `high` or seconds) |
 | `ASTA_CHAT_HISTORY_DB` | `data/chat_history.db` | SQLite chat history location |
 | `ASTA_VOICE_POST_TTS_GUARD_MS` | `80` | Short post-TTS settle window; speech during it is retained as VAD preroll |
 | `ASTA_INCREMENTAL_VOICE` | `0` | Enable mid-sentence safe action commitment |

@@ -13,7 +13,7 @@ class SpeechModule(Module):
         "Hello Sir. I’m A.S.T.A., a local-first AI engineering assistant. "
         "I understand voice commands, reason about technical questions, and use authorized tools to interact with the computer. "
         "My architecture connects voice, AI reasoning, tool execution, approvals, speech, and the HUD through the kernel. "
-        "My local AI stack uses LM Studio, Whisper, and Kokoro. "
+        "My local AI stack uses llama.cpp, Nemotron speech recognition, and Kokoro. "
         "My goal is to grow into a personal AI operating system with stronger memory, workflow awareness, proactive assistance, and specialized agents."
     )
 
@@ -43,6 +43,7 @@ class SpeechModule(Module):
         self._defer_speech = False
         self._deferred_sentences = []
         self._interrupt_event = threading.Event()
+        self._response_audio_started = False
         self._last_audio_level_at = 0.0
         self._audio_level_interval = 0.04  # ~25 HUD updates/sec
 
@@ -80,6 +81,10 @@ class SpeechModule(Module):
 
         if self._speech_thread is not None and self._speech_thread.is_alive():
             self._speech_thread.join(timeout=2.0)
+
+        close = getattr(self.engine, "close", None)
+        if callable(close):
+            close()
 
         self._speech_thread = None
         print("[Speech] Stopped", flush=True)
@@ -268,6 +273,8 @@ class SpeechModule(Module):
             self._queued_text += 1
             was_inactive = not self._speech_active
             self._speech_active = True
+            if was_inactive:
+                self._response_audio_started = False
 
         if was_inactive:
             # A new response is allowed to speak after a previous interrupt.
@@ -376,22 +383,33 @@ class SpeechModule(Module):
                 with self._state_lock:
                     self._synthesis_inflight += 1
 
+                # Only the first item of a response gets the early first
+                # clause; later (coalesced) sentences are already queued.
+                first_of_response = not getattr(self, "_response_audio_started", False)
+                self._response_audio_started = True
+
                 print(f"[Speech] Synthesizing: {text}", flush=True)
                 try:
-                    audio = self.engine.synthesize(text)
-                    if (
-                        audio is not None
-                        and self._running
-                        and not self._interrupt_event.is_set()
-                    ):
-                        completed = self.engine.play(
-                            audio,
-                            should_continue=lambda: (
-                                self._running
-                                and not self._interrupt_event.is_set()
-                            ),
-                            on_level=self._publish_audio_level,
+                    if self._running and not self._interrupt_event.is_set():
+                        should_continue = lambda: (
+                            self._running and not self._interrupt_event.is_set()
                         )
+                        stream_play = getattr(self.engine, "stream_play", None)
+                        if callable(stream_play):
+                            # Streamed: playback starts with the first chunk.
+                            completed = stream_play(
+                                text,
+                                should_continue=should_continue,
+                                on_level=self._publish_audio_level,
+                                first_clause=first_of_response,
+                            )
+                        else:
+                            audio = self.engine.synthesize(text)
+                            completed = audio is None or self.engine.play(
+                                audio,
+                                should_continue=should_continue,
+                                on_level=self._publish_audio_level,
+                            )
                         if not completed:
                             print("[Speech] Playback interrupted.", flush=True)
                 except Exception as exc:
@@ -402,6 +420,12 @@ class SpeechModule(Module):
                     )
                 finally:
                     self._publish_audio_level(0.0, force=True)
+                    if self._queue.empty():
+                        # Let the device drain before speech_finished so the
+                        # microphone does not reopen over the last syllable.
+                        idle = getattr(self.engine, "idle", None)
+                        if callable(idle):
+                            idle()
                     with self._state_lock:
                         self._synthesis_inflight -= 1
                     self._queue.task_done()

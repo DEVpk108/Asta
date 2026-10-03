@@ -70,3 +70,6 @@ data/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Downloaded speech models (scripts/download_speech_models.py)
+models/speech/

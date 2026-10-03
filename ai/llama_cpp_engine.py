@@ -296,8 +296,12 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             return False
 
         punctuation = buffer[punctuation_index]
-        if punctuation not in ".!?":
+        if punctuation not in ".!?\u0964\u0965":
             return False
+        if punctuation in "\u0964\u0965":
+            # Hindi danda / double danda always ends a sentence.
+            next_index = punctuation_index + 1
+            return next_index >= len(buffer) or buffer[next_index].isspace()
 
         next_index = punctuation_index + 1
         if next_index < len(buffer) and not buffer[next_index].isspace():
@@ -327,7 +331,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
     def _emit_sentence_chunks(cls, buffer):
         while True:
             sentence_end = None
-            for match in re.finditer(r"[.!?](?=\s|$)", buffer):
+            for match in re.finditer(r"[.!?\u0964\u0965](?=\s|$)", buffer):
                 if cls._is_sentence_boundary(buffer, match.start()):
                     sentence_end = match.start()
                     break

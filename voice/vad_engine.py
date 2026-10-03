@@ -5,6 +5,7 @@ from collections import deque
 
 import numpy as np
 import torch
+from .smart_turn import TurnEndTracker, load_smart_turn
 from silero_vad import (
     VADIterator,
     load_silero_vad,
@@ -49,12 +50,35 @@ class VADEngine:
         self.model = load_silero_vad()
         self.debug = False
 
+        # Smart Turn lets Silero report silence early; the turn then ends at
+        # once when the speech sounds complete and otherwise waits the full
+        # silence_ms. Without the model, behaviour is unchanged.
+        self.silence_ms = silence_ms
+        self.smart_turn = load_smart_turn()
+        iterator_silence_ms = silence_ms
+        if self.smart_turn is not None:
+            try:
+                short_ms = int(os.getenv("ASTA_SMART_TURN_SILENCE_MS", "200"))
+            except ValueError:
+                short_ms = 200
+            iterator_silence_ms = max(100, min(silence_ms, short_ms))
+        self.iterator_silence_ms = iterator_silence_ms
+
         self.vad = VADIterator(
             self.model,
             sampling_rate=self.sample_rate,
             threshold=threshold,
-            min_silence_duration_ms=silence_ms,
+            min_silence_duration_ms=iterator_silence_ms,
             speech_pad_ms=speech_pad_ms,
+        )
+
+    def new_turn_tracker(self):
+        silence_ms = int(getattr(self, "silence_ms", 700))
+        iterator_ms = int(getattr(self, "iterator_silence_ms", silence_ms))
+        extra_ms = max(0, silence_ms - iterator_ms)
+        return TurnEndTracker(
+            getattr(self, "smart_turn", None),
+            int(self.sample_rate * extra_ms / 1000),
         )
 
     def is_speech_started(self, event):
@@ -68,8 +92,20 @@ class VADEngine:
         microphone,
         initial_audio=None,
         speech_timeout=3.0,
+        on_audio=None,
     ):
+        """Record one utterance.
+
+        ``on_audio`` receives every captured chunk as it is recorded so a
+        streaming recognizer can decode while the user is still speaking.
+        """
         print("[VAD] Waiting for command...")
+        tracker = self.new_turn_tracker()
+
+        def capture(samples):
+            audio_buffer.append(samples)
+            if on_audio is not None:
+                on_audio(samples)
 
         start_wait = time.monotonic()
         audio_buffer = []
@@ -106,7 +142,7 @@ class VADEngine:
             if seed_rms >= seed_gate_rms and seed_peak >= seed_gate_peak:
                 recording = True
                 recording_started_at = time.monotonic()
-                audio_buffer.append(initial_seed)
+                capture(initial_seed)
                 initial_seed = None
                 used_initial_seed = True
                 print(
@@ -157,17 +193,25 @@ class VADEngine:
                     recording_started_at = time.monotonic()
 
                     if initial_seed is not None:
-                        audio_buffer.append(initial_seed)
+                        capture(initial_seed)
                         initial_seed = None
                     elif pre_roll:
-                        audio_buffer.append(np.asarray(pre_roll, dtype=np.float32))
+                        capture(np.asarray(pre_roll, dtype=np.float32))
+                    started_now = True
+                else:
+                    started_now = False
 
                 if recording:
-                    audio_buffer.append(chunk)
+                    capture(chunk)
                 else:
                     pre_roll.extend(chunk)
 
-                if recording and self.is_speech_ended(event):
+                if recording and tracker.update(
+                    started=started_now or self.is_speech_started(event),
+                    ended=self.is_speech_ended(event),
+                    chunk_samples=len(chunk),
+                    get_audio=lambda: np.concatenate(audio_buffer),
+                ):
                     elapsed = (
                         time.monotonic() - recording_started_at
                         if recording_started_at is not None

@@ -736,12 +736,13 @@ class VoiceModule(Module):
     def _running_and_incremental_listenable(self):
         return self._running and not self._tts_active
 
-    def _collect_command_audio(self, initial_audio=None):
+    def _collect_command_audio(self, initial_audio=None, on_audio=None):
         if not self._confirmation_listening_active():
             return self.vad.collect_utterance(
                 self.microphone,
                 initial_audio=initial_audio,
                 speech_timeout=3,
+                on_audio=on_audio,
             )
 
         original = {
@@ -761,6 +762,7 @@ class VoiceModule(Module):
                 self.microphone,
                 initial_audio=initial_audio,
                 speech_timeout=2.0,
+                on_audio=on_audio,
             )
         finally:
             self.vad.min_rms = original["min_rms"]
@@ -881,9 +883,36 @@ class VoiceModule(Module):
                     self._queue_incremental_session_finished(session_id)
                     continue
 
-                audio = self._collect_command_audio(
-                    initial_audio=interrupted_audio
-                )
+                # Streaming STT decodes while the user talks; the transcript
+                # is ready as soon as the VAD/Smart Turn ends the utterance.
+                stream = None
+                if getattr(self.recognition, "supports_streaming", False):
+                    try:
+                        stream = self.recognition.create_stream()
+                    except Exception as exc:
+                        print(
+                            f"[Voice] Streaming STT unavailable: {type(exc).__name__}: {exc}",
+                            flush=True,
+                        )
+                        stream = None
+
+                try:
+                    audio = self._collect_command_audio(
+                        initial_audio=interrupted_audio,
+                        on_audio=stream.accept if stream is not None else None,
+                    )
+                except Exception:
+                    if stream is not None:
+                        stream.cancel()
+                    raise
+
+                if (
+                    audio is None
+                    or not self._running
+                    or not self._can_listen()
+                ) and stream is not None:
+                    stream.cancel()
+                    stream = None
 
                 if not self._running:
                     break
@@ -899,9 +928,14 @@ class VoiceModule(Module):
                     continue
 
                 if not self._can_listen():
+                    if stream is not None:
+                        stream.cancel()
                     continue
 
-                text = self.recognition.transcribe(audio)
+                if stream is not None:
+                    text = self.recognition.finish_stream(stream)
+                else:
+                    text = self.recognition.transcribe(audio)
                 if not text:
                     continue
 
