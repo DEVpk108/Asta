@@ -398,3 +398,90 @@ def test_laya_recovers_application_command_from_unusual_phrasing():
     assert laya.applications == ["Google Chrome"]
     assert handled[0].entities == {"action": "open", "target": "Google Chrome"}
     assert handled[0].classifier == "laya_system1"
+
+
+# --------------------------------------------------------------------------
+# Second voice session fixes
+# --------------------------------------------------------------------------
+def test_choose_transcript_fuzzy_matches_misspelled_app_name():
+    from voice.language_choice import choose_transcript
+
+    assert choose_transcript("Open ground", "ओपन क्रम") == ("en", "open chrome")
+    # Common Hindi words are never fuzzy-matched to app names.
+    assert choose_transcript("volume kam karo", "वॉल्यूम कम करो")[0] == "hi"
+
+
+def test_clipped_search_query_does_not_type_filler():
+    result = IntentRouter().analyze("search for")
+    assert result.entities.get("action") != "search"
+    compound = IntentRouter().analyze("open chrome and search for")
+    commands = compound.entities.get("commands") or [compound.entities]
+    assert all(command.get("query") != "for" for command in commands)
+
+
+def test_user_directed_marker_only_confirms_keyboard_steps(monkeypatch):
+    from core.tools.module import ToolRuntimeModule
+
+    monkeypatch.delenv("ASTA_TRUST_USER_DIRECTED", raising=False)
+    typing = SimpleNamespace(tool="computer.type_text", metadata={"user_directed": True})
+    shell = SimpleNamespace(tool="system.run_command", metadata={"user_directed": True})
+    unmarked = SimpleNamespace(tool="computer.type_text", metadata={})
+    assert ToolRuntimeModule._is_user_directed(typing) is True
+    assert ToolRuntimeModule._is_user_directed(shell) is False
+    assert ToolRuntimeModule._is_user_directed(unmarked) is False
+    monkeypatch.setenv("ASTA_TRUST_USER_DIRECTED", "0")
+    assert ToolRuntimeModule._is_user_directed(typing) is False
+
+
+def test_deterministic_search_plan_marks_typing_user_directed():
+    planner = Planner(Kernel().tool_registry)
+    commands = planner._expand_search_commands(
+        [{"action": "open", "target": "chrome"},
+         {"action": "search", "query": "weather"}],
+        user_directed=True,
+    )
+    marked = {c["action"] for c in commands if c.get("user_directed")}
+    assert marked == {"type_text", "keypress"}
+    llm = planner._expand_search_commands(
+        [{"action": "search", "query": "weather", "target": "chrome"}],
+    )
+    assert not any(c.get("user_directed") for c in llm)
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("i just said yes", (True, False)),
+        ("yes please do it", (True, False)),
+        ("हाँ", (True, False)),
+        ("no don't", (False, True)),
+        ("okay", (False, False)),
+        ("yes no", (False, False)),
+        ("open chrome and search for the weather in delhi today please now", (False, False)),
+    ],
+)
+def test_short_approval_classification(text, expected):
+    from ai.ai_module import AIModule
+
+    assert AIModule._classify_short_approval(text) == expected
+
+
+def test_quiet_utterance_retry_boosts_short_audio():
+    from voice.voice_module import VoiceModule
+
+    seen = []
+    module = object.__new__(VoiceModule)
+    module.recognition = SimpleNamespace(
+        transcribe=lambda audio: seen.append(audio) or "yes"
+    )
+    audio = np.full(8000, 0.1, dtype=np.float32)
+    assert module._retry_quiet_utterance(audio) == "yes"
+    assert seen[0].size == 8000 + 4800
+    assert np.isclose(np.max(seen[0]), 0.6)
+    # Long utterances are not retried.
+    assert module._retry_quiet_utterance(np.full(16000 * 4, 0.1, dtype=np.float32)) == ""
+
+
+def test_dangling_clause_keeps_first_command():
+    result = IntentRouter().analyze("open chrome and search for")
+    assert result.entities == {"action": "open", "target": "chrome"}

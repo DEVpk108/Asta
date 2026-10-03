@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from difflib import SequenceMatcher
 
 # Devanagari spellings of English words that STT produces for English speech.
 _DEVANAGARI_ENGLISH = {
@@ -69,7 +70,7 @@ _DEVANAGARI_ENGLISH = {
     "hello": "हेलो हैलो",
     "asta": "अस्टा आस्टा एस्टा अस्ता आस्ता",
     # Applications and providers.
-    "chrome": "क्रोम क्रो क्रोम्ब क्रोमे",
+    "chrome": "क्रोम क्रो क्रोम्ब क्रोमे क्रम क्रोन",
     "camera": "कैमरा कैमेरा केमरा",
     "spotify": "स्पॉटिफाई स्पोटिफाई स्पॉटिफ़ाई स्पोटीफाई स्पॉटीफाई",
     "youtube": "यूट्यूब यूटयूब युट्यूब यूट्युब",
@@ -141,6 +142,83 @@ _DEVANAGARI_WAKE_LEADS = {"हे", "हेलो", "हैलो", "ओके",
 
 _DEVANAGARI = re.compile(r"[\u0900-\u097F]")
 
+# Rough Devanagari romanisation, used only to fuzzy-match an unknown
+# Devanagari word against the transliteration vocabulary above.
+_CONSONANTS = {
+    "क": "k", "ख": "kh", "ग": "g", "घ": "gh", "ङ": "n", "च": "ch", "छ": "chh",
+    "ज": "j", "झ": "jh", "ञ": "n", "ट": "t", "ठ": "th", "ड": "d", "ढ": "dh",
+    "ण": "n", "त": "t", "थ": "th", "द": "d", "ध": "dh", "न": "n", "प": "p",
+    "फ": "f", "ब": "b", "भ": "bh", "म": "m", "य": "y", "र": "r", "ल": "l",
+    "व": "v", "श": "sh", "ष": "sh", "स": "s", "ह": "h", "ड़": "r", "ढ़": "rh",
+    "क़": "k", "ख़": "kh", "ग़": "g", "ज़": "z", "फ़": "f",
+}
+_VOWELS = {
+    "अ": "a", "आ": "aa", "इ": "i", "ई": "i", "उ": "u", "ऊ": "u", "ए": "e",
+    "ऐ": "ai", "ओ": "o", "औ": "au", "ऑ": "o", "ऋ": "ri",
+}
+_MATRAS = {
+    "ा": "aa", "ि": "i", "ी": "i", "ु": "u", "ू": "u", "े": "e", "ै": "ai",
+    "ो": "o", "ौ": "au", "ॉ": "o", "ृ": "ri",
+}
+_VIRAMA = "\u094d"
+_NASALS = {"ं": "n", "ँ": "n", "ः": "h"}
+
+
+def romanize(token: str) -> str:
+    """Very small Hindi romaniser (schwa dropped at the end of the word)."""
+    token = unicodedata.normalize("NFC", token)
+    out = []
+    pending_schwa = False
+    for char in token:
+        if char in _CONSONANTS:
+            if pending_schwa:
+                out.append("a")
+            out.append(_CONSONANTS[char])
+            pending_schwa = True
+        elif char in _MATRAS:
+            out.append(_MATRAS[char])
+            pending_schwa = False
+        elif char == _VIRAMA:
+            pending_schwa = False
+        elif char in _VOWELS:
+            if pending_schwa:
+                out.append("a")
+            out.append(_VOWELS[char])
+            pending_schwa = False
+        elif char in _NASALS:
+            if pending_schwa:
+                out.append("a")
+            out.append(_NASALS[char])
+            pending_schwa = False
+        elif char == "\u093c":  # nukta
+            continue
+        else:
+            if pending_schwa:
+                out.append("a")
+            pending_schwa = False
+            out.append(char)
+    return "".join(out)
+
+
+_ROMAN_VOCABULARY = tuple(
+    (romanize(spelling), english)
+    for spelling, english in DEVANAGARI_TO_ENGLISH.items()
+    if len(spelling) >= 3
+)
+
+
+def fuzzy_devanagari_english(token: str, *, minimum: float = 0.75) -> str | None:
+    """Closest vocabulary word for an unknown Devanagari token, if close."""
+    if len(token) < 3 or not _DEVANAGARI.search(token):
+        return None
+    roman = romanize(token)
+    best, best_score = None, 0.0
+    for candidate, english in _ROMAN_VOCABULARY:
+        score = SequenceMatcher(None, roman, candidate, autojunk=False).ratio()
+        if score > best_score:
+            best, best_score = english, score
+    return best if best_score >= minimum else None
+
 
 def words(text: str) -> list[str]:
     """Split text into lowercase words, keeping Devanagari vowel signs."""
@@ -195,7 +273,12 @@ def strip_wake_remnant(text: str) -> str:
     return remainder or value
 
 
-def devanagari_english(text: str) -> tuple[str, float]:
+def devanagari_english(
+    text: str,
+    *,
+    fuzzy: bool = False,
+    exclude: frozenset[str] | set[str] = frozenset(),
+) -> tuple[str, float]:
     """Map a Devanagari transcript of English speech back to English.
 
     Returns ``(english_text, coverage)`` where coverage is the share of words
@@ -208,6 +291,8 @@ def devanagari_english(text: str) -> tuple[str, float]:
     known = 0
     for token in tokens:
         english = DEVANAGARI_TO_ENGLISH.get(token)
+        if english is None and fuzzy and token not in exclude:
+            english = fuzzy_devanagari_english(token)
         if english is None and not _DEVANAGARI.search(token):
             # Latin words inside a Devanagari transcript are already English.
             english = token

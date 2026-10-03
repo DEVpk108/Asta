@@ -1915,6 +1915,12 @@ class TaskRuntimeModule(Module):
             )
         if "sequence_index" in step.metadata:
             request.metadata["sequence_index"] = step.metadata["sequence_index"]
+        if (
+            step.metadata.get("user_directed") is True
+            and task.plan is not None
+            and task.plan.metadata.get("planner") == "deterministic"
+        ):
+            request.metadata["user_directed"] = True
         return request
 
     @staticmethod

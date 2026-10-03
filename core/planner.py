@@ -193,7 +193,10 @@ class Planner:
             print("[Agent] Cognitive planning disabled (ASTA_AGENT_MODE=0).", flush=True)
 
         commands = self._expand_media_commands(commands)
-        commands = self._expand_search_commands(commands)
+        commands = self._expand_search_commands(
+            commands,
+            user_directed=planner_name == "deterministic",
+        )
         commands = self._normalize_grounded_computer_commands(commands)
 
         if planner_name == "cognitive_v1":
@@ -299,6 +302,8 @@ class Planner:
     def _expand_search_commands(
         self,
         commands: list[dict[str, Any]],
+        *,
+        user_directed: bool = False,
     ) -> list[dict[str, Any]]:
         """Expand a generic semantic search into provider-agnostic GUI steps."""
         expanded: list[dict[str, Any]] = []
@@ -388,11 +393,17 @@ class Planner:
                         "action": "type_text",
                         "tool": "computer.type_text",
                         "text": query,
+                        # The user spoke this exact query; typing it and
+                        # pressing Enter is what they asked for, so it does not
+                        # need a second spoken confirmation (deterministic
+                        # plans only, never LLM-generated text).
+                        **({"user_directed": True} if user_directed else {}),
                     },
                     {
                         "action": "keypress",
                         "tool": "computer.keypress",
                         "key": "enter",
+                        **({"user_directed": True} if user_directed else {}),
                     },
                     {
                         "action": "wait",

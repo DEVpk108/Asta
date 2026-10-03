@@ -67,6 +67,13 @@ class IntentRouter:
         re.IGNORECASE,
     )
 
+    _DANGLING_CLAUSE_PATTERN = re.compile(
+        r"(?<=\S)\s*,?\s+(?:and then|and|then)\s+"
+        r"(?:search(?:\s+for)?|look\s+up|open|launch|start|close|play|type)"
+        r"(?:\s+(?:for|the|a|about))?$",
+        re.IGNORECASE,
+    )
+
     _COMMA_COMMAND_PATTERN = re.compile(
         r",\s*(?=(?:please\s+|can you\s+|could you\s+|would you\s+|will you\s+)?"
         r"(?:open|launch|start|close|run|stop|take|capture|screenshot|mute|unmute|search|look\s+up)\b)",
@@ -107,6 +114,9 @@ class IntentRouter:
         normalized = self._normalize(
             canonicalize_command(strip_wake_remnant(normalized))
         )
+        # Drop a dangling clause the STT cut off ("open chrome and search
+        # for"), so the complete first command still runs.
+        normalized = self._DANGLING_CLAUSE_PATTERN.sub("", normalized).strip()
 
         memory_phrases = (
             "remember that",
@@ -719,7 +729,8 @@ class IntentRouter:
 
         query = match.group("query").strip(" ,.!?;:")
         target = (match.group("target") or "").strip(" ,.!?;:")
-        if not query:
+        # "search for" with the query clipped off by STT must not type "for".
+        if not query or query.lower() in {"for", "about", "on", "the", "a", "it", "something"}:
             return {}
 
         return {

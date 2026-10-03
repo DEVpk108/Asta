@@ -559,6 +559,36 @@ class VoiceModule(Module):
         self._last_transcript_at = now
         return False
 
+    def _retry_quiet_utterance(self, audio):
+        """Re-decode a short, quiet utterance the streaming STT returned empty.
+
+        Short soft answers ("yes") sometimes decode to nothing. Normalising
+        the level and adding a little leading silence usually recovers them;
+        the extra decode only runs when the first result was empty.
+        """
+        if audio is None:
+            return ""
+        try:
+            import numpy as np
+
+            samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+            duration = samples.size / 16000.0
+            peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+            if duration > 3.0 or peak <= 0.0:
+                return ""
+            gain = min(6.0, 0.8 / peak)
+            boosted = np.concatenate(
+                (np.zeros(4800, dtype=np.float32), samples * gain)
+            ).astype(np.float32)
+            print(
+                f"[STT] Empty result; retrying quiet utterance (gain={gain:.1f}x).",
+                flush=True,
+            )
+            return self.recognition.transcribe(boosted)
+        except Exception as exc:
+            print(f"[STT] Quiet-utterance retry failed: {type(exc).__name__}: {exc}", flush=True)
+            return ""
+
     @staticmethod
     def _normalize_confirmation_transcript(text):
         """Canonicalize common short approval/rejection phrases.
@@ -934,6 +964,8 @@ class VoiceModule(Module):
 
                 if stream is not None:
                     text = self.recognition.finish_stream(stream)
+                    if not text:
+                        text = self._retry_quiet_utterance(audio)
                 else:
                     text = self.recognition.transcribe(audio)
                 if not text:

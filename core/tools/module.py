@@ -36,7 +36,10 @@ class ToolRuntimeModule(Module):
             print("[Tools] Ignoring invalid tool request.", flush=True)
             return
 
-        result = self.kernel.tool_dispatcher.dispatch(request)
+        result = self.kernel.tool_dispatcher.dispatch(
+            request,
+            confirmed=self._is_user_directed(request),
+        )
 
         if result.success or not result.metadata.get("requires_confirmation"):
             self._emit_result(result, request=request)
@@ -51,6 +54,26 @@ class ToolRuntimeModule(Module):
             "tool_confirmation_required",
             request=pending.request,
             reason=pending.reason,
+        )
+
+    _USER_DIRECTED_TOOLS = frozenset({"computer.type_text", "computer.keypress"})
+
+    @classmethod
+    def _is_user_directed(cls, request) -> bool:
+        """Typing the user's own spoken search query (and Enter) is consented.
+
+        Only deterministic plans set this marker, only for keyboard steps
+        whose content came verbatim from the utterance. Disable with
+        ASTA_TRUST_USER_DIRECTED=0 to confirm every keyboard action.
+        """
+        import os
+
+        if os.getenv("ASTA_TRUST_USER_DIRECTED", "1").strip().lower() in {"0", "false", "no", "off"}:
+            return False
+        metadata = getattr(request, "metadata", None) or {}
+        return (
+            metadata.get("user_directed") is True
+            and getattr(request, "tool", "") in cls._USER_DIRECTED_TOOLS
         )
 
     def on_confirmation_response(self, request_id, approved):

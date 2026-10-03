@@ -112,7 +112,9 @@ def choose_transcript(
     # Hindi stream ("ओपन क्रोम") while the English stream clips or garbles
     # it ("Open", "Upnro"). Map it back and keep whichever English reading
     # has more recognisable words; ties keep the English decode.
-    converted, coverage = devanagari_english(hindi)
+    converted, coverage = devanagari_english(
+        hindi, fuzzy=True, exclude=HINDI_COMMON
+    )
     if converted and coverage >= TRANSLITERATED_ENGLISH_COVERAGE:
         if not english:
             return "en", converted
