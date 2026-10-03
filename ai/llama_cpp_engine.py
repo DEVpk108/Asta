@@ -144,6 +144,9 @@ These capabilities may not exist in the current version. Never claim that a futu
 
 IMPORTANT: Chat history and future long-term memory are different concepts. Conversation history provides immediate continuity; a future Memory Layer may provide durable knowledge and user/project context.
 
+VOICE INPUT
+User messages usually come from speech recognition and can contain misheard words, a stray wake word, or Hindi written phonetically. Interpret obvious mishearings from context. If a message is garbled or makes no sense, briefly ask the user to repeat it instead of guessing; never invent products, projects, or facts from an unfamiliar word.
+
 RESPONSE PRINCIPLE
 Your goal is not merely to produce an answer. Help the user understand the problem, make better technical decisions, and build things effectively.
 """.strip()
@@ -318,11 +321,14 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             # Avoid splitting acronyms such as A.S.T.A. or U.S. when the
             # following word continues the same sentence. If the next word is
             # capitalized, treat the acronym period as a real sentence boundary.
-            if re.fullmatch(r"(?:[A-Za-z]\.){2,}[A-Za-z]?\.?", token):
+            if re.fullmatch(r"(?:[A-Za-z]\.)+[A-Za-z]?\.?", token):
                 remainder = buffer[punctuation_index + 1:]
                 next_nonspace = re.search(r"\S", remainder)
                 if next_nonspace is None:
-                    return True
+                    # Streaming: the next word has not arrived yet. Wait for
+                    # it instead of speaking "A.S.T.A." as its own sentence;
+                    # the end-of-stream flush still emits a trailing acronym.
+                    return False
                 return not next_nonspace.group(0).islower()
 
         return True

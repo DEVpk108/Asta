@@ -11,6 +11,12 @@ from __future__ import annotations
 
 import unicodedata
 
+from core.transliteration import (
+    DEVANAGARI_TO_ENGLISH,
+    devanagari_english,
+    strip_wake_remnant,
+)
+
 ENGLISH_COMMON = frozenset(
     """
     a about above after again all also am an and any are as ask at back be because
@@ -62,6 +68,19 @@ def _words(text: str) -> list[str]:
     return value.split()
 
 
+# Words that make an English command recognisable (common words plus the
+# command/app vocabulary the Hindi decode transliterates).
+_ENGLISH_KNOWN = ENGLISH_COMMON | frozenset(DEVANAGARI_TO_ENGLISH.values())
+
+# Share of Devanagari words that must be transliterated English before the
+# Hindi decode is treated as English speech.
+TRANSLITERATED_ENGLISH_COVERAGE = 0.6
+
+
+def _known_english_words(text: str) -> int:
+    return sum(1 for word in _words(text) if word in _ENGLISH_KNOWN)
+
+
 def english_score(text: str) -> float:
     words = _words(text)
     if not words:
@@ -84,10 +103,23 @@ def choose_transcript(
     hindi_confidence: float | None = None,
 ) -> tuple[str, str]:
     """Return ``(language, text)`` for the more plausible transcript."""
-    english = str(english or "").strip()
-    hindi = str(hindi or "").strip()
+    english = strip_wake_remnant(str(english or "").strip())
+    hindi = strip_wake_remnant(str(hindi or "").strip())
     if not hindi:
         return "en", english
+
+    # Indian-accented English often decodes as Devanagari-English in the
+    # Hindi stream ("ओपन क्रोम") while the English stream clips or garbles
+    # it ("Open", "Upnro"). Map it back and keep whichever English reading
+    # has more recognisable words; ties keep the English decode.
+    converted, coverage = devanagari_english(hindi)
+    if converted and coverage >= TRANSLITERATED_ENGLISH_COVERAGE:
+        if not english:
+            return "en", converted
+        if _known_english_words(converted) > _known_english_words(english):
+            return "en", converted
+        return "en", english
+
     if not english:
         return "hi", hindi
 

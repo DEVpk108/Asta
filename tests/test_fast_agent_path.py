@@ -1,0 +1,400 @@
+"""Fast command path: transcript cleanup, System 1 planning, lean agent loop."""
+
+import threading
+from collections import OrderedDict
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+from core import Kernel, Planner
+from core.agent import AgentPlanProposal
+from core.agent.brain import AgentBrain
+from core.contracts import (
+    ActionDecision,
+    ActionType,
+    IntentResult,
+    IntentType,
+    PlanStepStatus,
+    ToolDefinition,
+    ToolResult,
+)
+from core.intent_router import IntentRouter
+from core.task_runtime import TaskRuntimeModule
+from core.tools import Tool
+from core.transliteration import canonicalize_command, strip_wake_remnant
+
+
+# --------------------------------------------------------------------------
+# Transcript cleanup
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Upyasta Upnro", "Upnro"),
+        ("Ugyasta open chrome then open camera", "open chrome then open camera"),
+        ("hey asta open chrome", "open chrome"),
+        ("Hello Aster Open Chrome", "Open Chrome"),
+        ("ओप्यास्टा ओपन क्रो", "ओपन क्रो"),
+        ("उज्ज्यास्ट ओपन क्रोम देन ओपन कैमरा", "ओपन क्रोम देन ओपन कैमरा"),
+        # Never strip ordinary words or a bare wake word.
+        ("pasta recipe please", "pasta recipe please"),
+        ("पास्टा बनाओ", "पास्टा बनाओ"),
+        ("रास्ता बताओ", "रास्ता बताओ"),
+        ("Asta", "Asta"),
+        ("hey asta", "hey asta"),
+    ],
+)
+def test_strip_wake_remnant(text, expected):
+    assert strip_wake_remnant(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("ओपन क्रोम", "open chrome"),
+        ("क्रोम खोलो", "open chrome"),
+        ("क्रोम को बंद करो", "close chrome"),
+        ("chrome kholo aur camera kholo", "open chrome then open camera"),
+        ("spotify band karo", "close spotify"),
+        ("गाना बजाओ", "play music"),
+        ("आज मौसम कैसा है", "आज मौसम कैसा है"),
+        ("what is the capital of france", "what is the capital of france"),
+    ],
+)
+def test_canonicalize_command(text, expected):
+    assert canonicalize_command(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text, entities",
+    [
+        ("ओप्यास्टा ओपन क्रो", {"action": "open", "target": "chrome"}),
+        ("क्रोम खोलो", {"action": "open", "target": "chrome"}),
+        (
+            "Ugyasta open chrome then open camera",
+            {"commands": [
+                {"action": "open", "target": "chrome"},
+                {"action": "open", "target": "camera"},
+            ]},
+        ),
+    ],
+)
+def test_intent_router_understands_noisy_voice_commands(text, entities):
+    result = IntentRouter().analyze(text)
+    assert result.intent is IntentType.COMMAND
+    assert result.classifier == "rules"
+    assert result.entities == entities
+
+
+@pytest.mark.parametrize(
+    "english, hindi, expected",
+    [
+        # English decode clipped the target; Hindi decode kept it.
+        ("Open", "ओपन क्रोम", "open chrome"),
+        # Wake word merged and English decode garbled.
+        ("Upyasta Upnro", "ओप्यास्टा ओपन क्रो", "open chrome"),
+        ("", "ओपन क्रोम", "open chrome"),
+        # Equal evidence keeps the English decode as spoken.
+        ("Open chrome", "ओपन क्रोम", "Open chrome"),
+    ],
+)
+def test_choose_transcript_recovers_devanagari_english(english, hindi, expected):
+    from voice.language_choice import choose_transcript
+
+    assert choose_transcript(english, hindi) == ("en", expected)
+
+
+# --------------------------------------------------------------------------
+# System 1 planning gate
+# --------------------------------------------------------------------------
+class FakeOpenTool(Tool):
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name="test.open",
+            description="Open or run something for tests.",
+            input_schema={
+                "type": "object",
+                "properties": {"target": {"type": "string"}},
+                "required": ["target"],
+            },
+            risk_level="low",
+            requires_confirmation=False,
+            metadata={"actions": ["open", "run"]},
+        )
+
+    def execute(self, request):
+        raise AssertionError("planner tests must not execute tools")
+
+
+class RecordingBrain:
+    enabled = True
+
+    def __init__(self):
+        self.calls = 0
+
+    def plan(self, goal, *, intent):
+        self.calls += 1
+        return AgentPlanProposal(
+            goal_summary="Do it.",
+            success_conditions=("Done.",),
+            rationale="Test.",
+            uncertainty=0.1,
+            steps=({"action": "open", "target": "calculator"},),
+        )
+
+    @staticmethod
+    def task_metadata(proposal):
+        return {"agent_mode": "cognitive_v1"}
+
+
+def _planner(brain, decision_engine=None):
+    kernel = Kernel()
+    kernel.register_tool(FakeOpenTool())
+    return Planner(
+        kernel.tool_registry,
+        agent_brain=brain,
+        decision_engine=decision_engine,
+    )
+
+
+def _intent(entities, *, classifier="rules", confidence=0.98):
+    return IntentResult(
+        intent=IntentType.COMMAND,
+        confidence=confidence,
+        normalized_text="test",
+        entities=entities,
+        requires_tools=True,
+        classifier=classifier,
+    )
+
+
+def test_rules_command_skips_llm_planner(monkeypatch):
+    monkeypatch.delenv("ASTA_AGENT_PLANNING", raising=False)
+    brain = RecordingBrain()
+    plan = _planner(brain).plan(
+        "open calculator",
+        intent=_intent({"action": "open", "target": "calculator"}),
+    )
+    assert brain.calls == 0
+    assert plan.metadata["planner"] == "deterministic"
+    assert [step.description for step in plan.steps] == ["open calculator"]
+
+
+def test_compound_rules_command_skips_llm_planner(monkeypatch):
+    monkeypatch.delenv("ASTA_AGENT_PLANNING", raising=False)
+    brain = RecordingBrain()
+    plan = _planner(brain).plan(
+        "open chrome then open camera",
+        intent=_intent({"commands": [
+            {"action": "open", "target": "chrome"},
+            {"action": "open", "target": "camera"},
+        ]}),
+    )
+    assert brain.calls == 0
+    assert len(plan.steps) == 2
+
+
+def test_llm_planner_still_used_when_forced_or_needed(monkeypatch):
+    brain = RecordingBrain()
+    planner = _planner(brain)
+
+    monkeypatch.setenv("ASTA_AGENT_PLANNING", "always")
+    planner.plan("open calculator", intent=_intent({"action": "open", "target": "calculator"}))
+    assert brain.calls == 1
+
+    monkeypatch.delenv("ASTA_AGENT_PLANNING")
+    # Low confidence and non-direct actions go to the LLM planner.
+    planner.plan(
+        "open calculator",
+        intent=_intent({"action": "open", "target": "calculator"}, confidence=0.6),
+    )
+    planner.plan("run backup", intent=_intent({"action": "run", "target": "backup"}))
+    assert brain.calls == 3
+
+
+class FakeLaya:
+    name = "laya"
+
+    def __init__(self, decision):
+        self.decision = decision
+        self.calls = 0
+
+    def decide_action(self, text, **kwargs):
+        self.calls += 1
+        return self.decision
+
+
+def test_laya_gate_decides_whether_llm_planning_is_needed(monkeypatch):
+    monkeypatch.delenv("ASTA_AGENT_PLANNING", raising=False)
+    intent = _intent({"action": "run", "target": "backup"})
+
+    simple = FakeLaya(ActionDecision(
+        action=ActionType.SYSTEM, confidence=0.93, addressed=0.9,
+        command_complete=True, compound=False, source="laya",
+    ))
+    brain = RecordingBrain()
+    _planner(brain, simple).plan("run backup", intent=intent)
+    assert simple.calls == 1
+    assert brain.calls == 0
+
+    complex_task = FakeLaya(ActionDecision(
+        action=ActionType.TASK, confidence=0.9, addressed=0.9,
+        command_complete=True, compound=True, source="laya",
+    ))
+    brain = RecordingBrain()
+    _planner(brain, complex_task).plan("run backup", intent=intent)
+    assert brain.calls == 1
+
+
+# --------------------------------------------------------------------------
+# Post-action LLM decision
+# --------------------------------------------------------------------------
+def _task(goal, statuses):
+    steps = [
+        SimpleNamespace(id=f"step-{i}", status=status)
+        for i, status in enumerate(statuses, start=1)
+    ]
+    return SimpleNamespace(goal=goal, plan=SimpleNamespace(steps=steps))
+
+
+def _ok(tool="system.open_application"):
+    return ToolResult(success=True, tool=tool, output={})
+
+
+def test_post_action_decision_skipped_while_plan_continues(monkeypatch):
+    monkeypatch.delenv("ASTA_AGENT_POST_ACTION", raising=False)
+    task = _task("open chrome then open camera", [PlanStepStatus.RUNNING, PlanStepStatus.PENDING])
+    assert TaskRuntimeModule._post_action_skip_reason(task, _ok(), "step-1", evidence={})
+
+
+def test_post_action_decision_skipped_for_verified_final_step(monkeypatch):
+    monkeypatch.delenv("ASTA_AGENT_POST_ACTION", raising=False)
+    task = _task("open chrome", [PlanStepStatus.RUNNING])
+    verified = {"verification": {"status": "verified"}}
+    assert TaskRuntimeModule._post_action_skip_reason(task, _ok(), "step-1", evidence=verified)
+    # Unverified final steps and explicit verification goals still reason.
+    assert TaskRuntimeModule._post_action_skip_reason(task, _ok(), "step-1", evidence={}) is None
+    explicit = _task("open chrome and verify it is open", [PlanStepStatus.RUNNING])
+    assert TaskRuntimeModule._post_action_skip_reason(explicit, _ok(), "step-1", evidence=verified) is None
+
+
+def test_post_action_decision_kept_for_vision_and_when_forced(monkeypatch):
+    task = _task("look at the screen", [PlanStepStatus.RUNNING, PlanStepStatus.PENDING])
+    assert TaskRuntimeModule._post_action_skip_reason(
+        task, _ok("vision.inspect"), "step-1", evidence={}
+    ) is None
+    monkeypatch.setenv("ASTA_AGENT_POST_ACTION", "always")
+    assert TaskRuntimeModule._post_action_skip_reason(task, _ok(), "step-1", evidence={}) is None
+
+
+def test_truncated_post_action_decision_is_repaired():
+    # Real output cut off by the 128-token budget, with "none" placeholders.
+    response = """{
+"goal_satisfied": true,
+"needs_observation": false,
+"needs_user": false,
+"rationale": "Chrome is open and no error occurred.",
+"confidence": 1.0,
+"uncertainty": 0.0,
+"next_action": {
+"action": "none",
+"tool": "none",
+"target": "none"
+},
+"belief_updates": []"""
+    decision = AgentBrain._parse_decision(response)
+    assert decision.goal_satisfied is True
+    assert decision.next_action is None
+    assert decision.rationale.startswith("Chrome is open")
+
+
+# --------------------------------------------------------------------------
+# Speech output
+# --------------------------------------------------------------------------
+def test_streamed_acronym_is_not_spoken_as_its_own_sentence():
+    from ai.llama_cpp_engine import LlamaCppEngine
+
+    buffer, sentences = "", []
+    for token in ["A.", "S.", "T.", "A.", " remembers", " Go.", " How", " can I help?"]:
+        buffer += token
+        while True:
+            buffer, sentence = LlamaCppEngine._emit_sentence_chunks(buffer)
+            if sentence is None:
+                break
+            sentences.append(sentence)
+    assert sentences == ["A.S.T.A. remembers Go.", "How can I help?"]
+
+
+def test_kokoro_replays_short_phrases_from_cache():
+    from speech.kokoro_engine import KokoroEngine
+
+    calls = []
+
+    def pipeline(text, **kwargs):
+        calls.append(text)
+        yield None, None, np.full(240, 0.2, dtype=np.float32)
+
+    engine = object.__new__(KokoroEngine)
+    engine.speed = 1.0
+    engine.first_clause_enabled = False
+    engine.cache_max_chars = 80
+    engine.cache_size = 2
+    engine._audio_cache = OrderedDict()
+    engine._cache_lock = threading.Lock()
+    engine._pipeline_for = lambda text: (pipeline, "am_michael")
+
+    first = list(engine.iter_audio("Opened chrome."))
+    second = list(engine.iter_audio("Opened chrome."))
+    assert len(calls) == 1
+    assert np.array_equal(first[0], second[0])
+
+    long_text = "x" * 100
+    list(engine.iter_audio(long_text))
+    list(engine.iter_audio(long_text))
+    assert calls.count(long_text) == 2
+
+
+def test_laya_recovers_application_command_from_unusual_phrasing():
+    from ai.ai_module import AIModule
+
+    class Laya:
+        name = "laya"
+
+        def __init__(self):
+            self.applications = None
+
+        def decide_action(self, text, *, applications=(), media_providers=()):
+            self.applications = [app.name for app in applications]
+            return ActionDecision(
+                action=ActionType.OPEN_APP, confidence=0.91, addressed=0.95,
+                arguments={"target_app": "Google Chrome"},
+                command_complete=True, compound=False, source="laya",
+                latency_ms=12.0,
+            )
+
+    class Apps:
+        def discover(self, query, limit=8):
+            return [SimpleNamespace(name="Google Chrome")] if "chrome" in query else []
+
+    events = []
+    module = object.__new__(AIModule)
+    module.event_bus = SimpleNamespace(emit=lambda *a, **k: events.append(a))
+    laya = Laya()
+    module.kernel = SimpleNamespace(
+        decision_engine=laya,
+        application_manager=Apps(),
+        media_manager=None,
+    )
+    handled = []
+    module._handle_command_intent = handled.append
+
+    hint = IntentResult(
+        intent=IntentType.UNKNOWN, confidence=0.2,
+        normalized_text="fire up chrome for me", classifier="rules",
+    )
+    assert module._run_system1_decision("fire up chrome for me", intent_hint=hint) is True
+    assert laya.applications == ["Google Chrome"]
+    assert handled[0].entities == {"action": "open", "target": "Google Chrome"}
+    assert handled[0].classifier == "laya_system1"

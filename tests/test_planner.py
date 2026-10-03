@@ -559,7 +559,9 @@ class FakeInspectTool(Tool):
         raise AssertionError("planner tests must not execute tools")
 
 
-def test_planner_adds_semantic_visual_verification_to_cognitive_plan():
+def test_planner_adds_semantic_visual_verification_to_cognitive_plan(monkeypatch):
+    # These cover the LLM planner itself; force it for a rules command.
+    monkeypatch.setenv("ASTA_AGENT_PLANNING", "always")
     kernel = Kernel()
     kernel.register_tool(FakeTool())
     kernel.register_tool(FakeInspectTool())
@@ -604,7 +606,9 @@ def test_planner_adds_semantic_visual_verification_to_cognitive_plan():
 
 
 
-def test_planner_uses_process_verification_for_simple_cognitive_app_open():
+def test_planner_uses_process_verification_for_simple_cognitive_app_open(monkeypatch):
+    # These cover the LLM planner itself; force it for a rules command.
+    monkeypatch.setenv("ASTA_AGENT_PLANNING", "always")
     kernel = Kernel()
     kernel.register_tool(FakeTool())
     kernel.register_tool(FakeInspectTool())

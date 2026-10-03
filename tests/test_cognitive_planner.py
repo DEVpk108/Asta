@@ -53,7 +53,9 @@ class FakeBrain:
         }
 
 
-def test_planner_accepts_cognitive_proposal_and_preserves_provenance():
+def test_planner_accepts_cognitive_proposal_and_preserves_provenance(monkeypatch):
+    # These cover the LLM planner itself; force it for a rules command.
+    monkeypatch.setenv("ASTA_AGENT_PLANNING", "always")
     kernel = Kernel()
     kernel.register_tool(FakeOpenTool())
     brain = FakeBrain()

@@ -336,9 +336,12 @@ def test_kokoro_stream_play_stops_on_interrupt():
 def test_choose_transcript_between_english_and_hindi(english, hindi, expected):
     from voice.language_choice import choose_transcript
 
+    from core.transliteration import strip_wake_remnant
+
     language, text = choose_transcript(english, hindi)
     assert language == expected
-    assert text == (english if expected == "en" else hindi)
+    # A wake word merged into the transcript ("Hello Aster ...") is removed.
+    assert text == strip_wake_remnant(english if expected == "en" else hindi)
 
 
 def test_dual_language_stream_feeds_both_and_picks_one():

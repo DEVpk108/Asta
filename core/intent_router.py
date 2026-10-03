@@ -6,6 +6,7 @@ from .contracts.intent import (
     IntentType,
 )
 from .media import parse_media_request
+from .transliteration import canonicalize_command, strip_wake_remnant
 
 
 class IntentRouter:
@@ -101,6 +102,11 @@ class IntentRouter:
 
         normalized = self._normalize(text)
         normalized = self._strip_wakeword_prefix(normalized)
+        # Voice transcripts can carry a merged wake word ("upyasta open
+        # chrome") or Hindi/Devanagari command grammar ("क्रोम खोलो").
+        normalized = self._normalize(
+            canonicalize_command(strip_wake_remnant(normalized))
+        )
 
         memory_phrases = (
             "remember that",

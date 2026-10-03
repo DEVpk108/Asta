@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from core.contracts import (
@@ -14,6 +15,28 @@ from core.tools.selector import ToolSelector
 
 class PlanningError(ValueError):
     """Raised when a goal cannot be converted into a safe structured plan."""
+
+
+# Actions the deterministic planner/executor fully handles. A high-confidence
+# rules intent made only of these never needs the LLM planner.
+DIRECT_ACTIONS = frozenset(
+    {
+        "open", "launch", "start", "close", "stop",
+        "media", "mute", "unmute", "screenshot", "open_screenshot",
+        "list_notes", "search_notes", "read_note", "create_note",
+        "search", "scroll", "keypress", "type_text",
+    }
+)
+DETERMINISTIC_CLASSIFIERS = frozenset(
+    {"rules", "task_context", "laya_system1", "runtime_patch"}
+)
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 class Planner:
@@ -33,11 +56,69 @@ class Planner:
         media_manager=None,
         application_manager=None,
         agent_brain=None,
+        decision_engine=None,
     ):
         self.selector = ToolSelector(registry)
         self.media_manager = media_manager
         self.application_manager = application_manager
         self.agent_brain = agent_brain
+        self.decision_engine = decision_engine
+
+    def cognitive_planning_reason(
+        self,
+        goal: str,
+        intent: IntentResult,
+        commands: list[dict[str, Any]],
+    ) -> str | None:
+        """Return why the LLM planner is needed, or None to plan directly.
+
+        System 1 (rules, then Laya when enabled) handles commands whose
+        actions and targets are already known; the LLM planner (System 2) is
+        reserved for ambiguous or genuinely multi-step goals. Set
+        ASTA_AGENT_PLANNING=always to send every command to the LLM planner.
+        """
+        mode = os.getenv("ASTA_AGENT_PLANNING", "auto").strip().lower()
+        if mode in {"always", "llm", "on", "1", "true"}:
+            return "forced by ASTA_AGENT_PLANNING"
+        if mode in {"never", "off", "0", "false", "direct"}:
+            return None
+
+        actions = [
+            str(command.get("action") or "").strip().lower()
+            for command in commands
+        ]
+        threshold = _env_float("ASTA_AGENT_DIRECT_CONFIDENCE", 0.9)
+        if (
+            intent.classifier in DETERMINISTIC_CLASSIFIERS
+            and intent.confidence >= threshold
+            and actions
+            and all(action in DIRECT_ACTIONS for action in actions)
+        ):
+            return None
+
+        engine = self.decision_engine
+        decide = getattr(engine, "decide_action", None)
+        if (
+            engine is not None
+            and getattr(engine, "name", "disabled") != "disabled"
+            and callable(decide)
+        ):
+            try:
+                decision = decide(goal)
+            except Exception as exc:
+                return f"System 1 unavailable ({type(exc).__name__})"
+            action = getattr(getattr(decision, "action", None), "value", "none")
+            if (
+                action not in {"none", "task"}
+                and not getattr(decision, "compound", True)
+                and getattr(decision, "command_complete", False)
+                and float(getattr(decision, "confidence", 0.0))
+                >= _env_float("ASTA_LAYA_DIRECT_CONFIDENCE", 0.85)
+            ):
+                return None
+            return f"System 1 judged it complex (action={action})"
+
+        return "command needs open-ended planning"
 
     def plan(
         self,
@@ -66,7 +147,19 @@ class Planner:
         planner_name = "deterministic"
         agent_metadata: dict[str, Any] = {}
         brain = self.agent_brain
-        if brain is not None and getattr(brain, "enabled", False):
+        use_brain = brain is not None and getattr(brain, "enabled", False)
+        if use_brain:
+            reason = self.cognitive_planning_reason(value, intent, commands)
+            if reason is None:
+                use_brain = False
+                print(
+                    "[Agent] System 1 plan: deterministic command; "
+                    "skipping the LLM planner.",
+                    flush=True,
+                )
+            else:
+                print(f"[Agent] Cognitive planning: {reason}.", flush=True)
+        if use_brain:
             try:
                 proposal = brain.plan(value, intent=intent)
                 commands = [dict(step) for step in proposal.steps]
@@ -96,7 +189,7 @@ class Planner:
                     f"{type(exc).__name__}: {exc}",
                     flush=True,
                 )
-        elif brain is not None:
+        elif brain is not None and not getattr(brain, "enabled", False):
             print("[Agent] Cognitive planning disabled (ASTA_AGENT_MODE=0).", flush=True)
 
         commands = self._expand_media_commands(commands)

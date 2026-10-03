@@ -3,6 +3,7 @@ import queue
 import re
 import threading
 import time
+from collections import OrderedDict
 
 import numpy as np
 import sounddevice as sd
@@ -51,6 +52,16 @@ class KokoroEngine:
         self.output_latency = os.getenv("ASTA_TTS_OUTPUT_LATENCY", "low")
         self._stream = None
         self._stream_lock = threading.Lock()
+        # Short, repeated phrases ("Okay, sir. Opening chrome.", "Opened
+        # chrome.") are replayed from memory. This removes their synthesis
+        # latency and keeps them off the GPU while the LLM is generating.
+        try:
+            self.cache_max_chars = max(0, int(os.getenv("ASTA_TTS_CACHE_CHARS", "80")))
+            self.cache_size = max(0, int(os.getenv("ASTA_TTS_CACHE_SIZE", "64")))
+        except (TypeError, ValueError):
+            self.cache_max_chars, self.cache_size = 80, 64
+        self._audio_cache = OrderedDict()
+        self._cache_lock = threading.Lock()
 
         voice_start = time.perf_counter()
         self.pipeline.load_voice(self.voice)
@@ -167,6 +178,22 @@ class KokoroEngine:
         if not text:
             return
         pipeline, voice = self._pipeline_for(text)
+        use_first_clause = bool(first_clause and self.first_clause_enabled)
+        cache_key = None
+        if self.cache_size and len(text) <= self.cache_max_chars:
+            cache_key = (id(pipeline), voice, self.speed, use_first_clause, text)
+            with self._cache_lock:
+                cached = self._audio_cache.get(cache_key)
+                if cached is not None:
+                    self._audio_cache.move_to_end(cache_key)
+            if cached is not None:
+                print("[Speech] Kokoro cache hit (0 ms synth).", flush=True)
+                for samples in cached:
+                    if should_continue is not None and not should_continue():
+                        return
+                    yield samples
+                return
+        produced = [] if cache_key is not None else None
         pieces = (
             self.split_first_clause(text)
             if first_clause and self.first_clause_enabled
@@ -193,7 +220,15 @@ class KokoroEngine:
                     first_audio = time.perf_counter() - start
                     print(f"[Speech] Kokoro TTFA: {first_audio:.3f}s", flush=True)
                 total += int(samples.size)
+                if produced is not None:
+                    produced.append(samples)
                 yield samples
+        if produced:
+            with self._cache_lock:
+                self._audio_cache[cache_key] = tuple(produced)
+                self._audio_cache.move_to_end(cache_key)
+                while len(self._audio_cache) > self.cache_size:
+                    self._audio_cache.popitem(last=False)
         print(
             f"[Speech] Kokoro synth: {time.perf_counter() - start:.2f}s | "
             f"audio: {total / self.SAMPLE_RATE:.2f}s",

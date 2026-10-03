@@ -527,6 +527,13 @@ class AIModule(Module):
                             )
                         except Exception:
                             pass
+                    else:
+                        # No rule target (unrecognised phrasing such as
+                        # "fire up chrome for me"): offer apps that match
+                        # individual words so Laya can pick the target.
+                        candidates.extend(
+                            self._candidate_applications(manager, text)
+                        )
 
                 media_manager = getattr(self.kernel, "media_manager", None)
                 media_providers = (
@@ -591,6 +598,44 @@ class AIModule(Module):
                     self._handle_command_intent(media_intent)
                     return True
 
+                target_app = str(
+                    action_decision.arguments.get("target_app") or ""
+                ).strip()
+                if (
+                    intent_hint.intent != IntentType.COMMAND
+                    and action_decision.is_actionable
+                    and action_decision.action
+                    in (ActionType.OPEN_APP, ActionType.CLOSE_APP)
+                    and target_app
+                    and action_decision.command_complete
+                    and not action_decision.compound
+                    and action_decision.confidence >= 0.80
+                ):
+                    app_intent = IntentResult(
+                        intent=IntentType.COMMAND,
+                        confidence=action_decision.confidence,
+                        normalized_text=" ".join(
+                            str(text).strip().lower().split()
+                        ),
+                        entities={
+                            "action": (
+                                "open"
+                                if action_decision.action is ActionType.OPEN_APP
+                                else "close"
+                            ),
+                            "target": target_app,
+                        },
+                        requires_tools=True,
+                        classifier="laya_system1",
+                    )
+                    print(
+                        f"[AI] System 1 recovered an application command: "
+                        f"{app_intent.entities['action']} {target_app}",
+                        flush=True,
+                    )
+                    self._handle_command_intent(app_intent)
+                    return True
+
                 return False
 
         try:
@@ -615,13 +660,44 @@ class AIModule(Module):
         self.event_bus.emit("decision_result", decision=snapshot)
         return False
 
+    _CANDIDATE_STOPWORDS = frozenset(
+        """
+        a an the to for me my please can could would will you it this that up
+        open launch start close run stop quit exit fire bring show switch go
+        and then now app application program hey okay ok just
+        """.split()
+    )
+
+    @classmethod
+    def _candidate_applications(cls, manager, text, *, limit=12):
+        """Installed apps that closely match individual words of ``text``."""
+        found = []
+        seen = set()
+        for word in re.findall(r"[a-z0-9][a-z0-9.+#-]*", str(text).lower()):
+            if len(word) < 3 or word in cls._CANDIDATE_STOPWORDS:
+                continue
+            try:
+                matches = manager.discover(word, limit=3)
+            except Exception:
+                continue
+            for app in matches:
+                name = str(getattr(app, "name", app) or "").strip()
+                if not name or name.lower() in seen:
+                    continue
+                seen.add(name.lower())
+                found.append(app)
+                if len(found) >= limit:
+                    return found
+        return found
+
     @staticmethod
     def _looks_like_action_request(text):
         normalized = " ".join(str(text).strip().lower().split())
         return bool(
             re.search(
                 r"\b(?:open|launch|start|close|run|stop|play|pause|resume|skip|next|previous|"
-                r"back|screenshot|capture|mute|unmute|scroll|press|type)\b",
+                r"back|screenshot|capture|mute|unmute|scroll|press|type|fire|bring|switch|quit|exit|"
+                r"kill|load)\b",
                 normalized,
             )
         )

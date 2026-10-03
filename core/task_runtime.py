@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
+import os
 import threading
 
 from .contracts import (
@@ -1158,6 +1159,20 @@ class TaskRuntimeModule(Module):
             )
             return False
 
+        skip_reason = self._post_action_skip_reason(
+            task,
+            result,
+            plan_step_id,
+            evidence=evidence,
+        )
+        if skip_reason:
+            print(
+                f"[Agent] {skip_reason}; following the plan without a "
+                "post-action LLM call.",
+                flush=True,
+            )
+            return False
+
         self.event_bus.emit(
             "agent_thinking_started",
             task_id=task.id,
@@ -1386,6 +1401,67 @@ class TaskRuntimeModule(Module):
             )
 
         return False
+
+    _EXPLICIT_VERIFICATION_MARKERS = (
+        "verify", "check", "confirm", "make sure", "see if", "ensure",
+        "visible", "screenshot", "screen", "look at",
+    )
+
+    @classmethod
+    def _post_action_skip_reason(
+        cls,
+        task,
+        result: ToolResult,
+        current_step_id: str | None,
+        *,
+        evidence: dict[str, Any],
+    ) -> str | None:
+        """Return why a post-action LLM decision is unnecessary, if it is.
+
+        A successful, non-visual step whose plan still has work left simply
+        continues with the next planned step, and a final step that the
+        deterministic verifier already confirmed completes the task. The LLM
+        decision stays for visual results, unverified final steps, and goals
+        that explicitly ask to check or verify something.
+        Set ASTA_AGENT_POST_ACTION=always to restore a decision after every step.
+        """
+        mode = os.getenv("ASTA_AGENT_POST_ACTION", "auto").strip().lower()
+        if mode in {"always", "on", "1", "true"}:
+            return None
+        if not result.success or str(result.tool or "").startswith("vision."):
+            return None
+        if not current_step_id or task.plan is None:
+            return None
+
+        steps = list(task.plan.steps or ())
+        index = next(
+            (i for i, step in enumerate(steps) if step.id == current_step_id),
+            None,
+        )
+        if index is None:
+            return None
+
+        remaining = [
+            step
+            for step in steps[index + 1:]
+            if getattr(step, "status", None) not in {
+                PlanStepStatus.COMPLETED,
+                PlanStepStatus.SKIPPED,
+            }
+        ]
+        if remaining:
+            return "Step succeeded and the plan has more steps"
+
+        verification = evidence.get("verification")
+        verified = (
+            isinstance(verification, dict)
+            and str(verification.get("status") or "").lower() == "verified"
+        )
+        goal = " ".join(str(getattr(task, "goal", "") or "").lower().split())
+        explicit = any(marker in goal for marker in cls._EXPLICIT_VERIFICATION_MARKERS)
+        if verified and not explicit:
+            return "Final step verified deterministically"
+        return None
 
     @staticmethod
     def _should_follow_planned_visual_verification(task, current_step_id: str | None) -> bool:

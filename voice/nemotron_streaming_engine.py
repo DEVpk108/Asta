@@ -30,8 +30,17 @@ SAMPLE_RATE = 16000
 # Automatic language ID writes Indian-accented English in Devanagari.
 DUAL_LANGUAGE_MODES = {"en+hi", "hi+en", "dual"}
 # Trailing silence fed after the user stops so the model's right context is
-# filled and the final tokens are flushed (matches sherpa-onnx examples).
-TAIL_PADDING_SECONDS = 0.66
+# filled and the final tokens are flushed. About two 560 ms chunks: with only
+# one chunk the English decode sometimes dropped the last word ("Open" for
+# "open Chrome"). Override with ASTA_STT_TAIL_PADDING (seconds).
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+TAIL_PADDING_SECONDS = max(0.3, min(2.0, _env_float("ASTA_STT_TAIL_PADDING", 1.0)))
 
 
 def _env_int(name: str, default: int) -> int:

@@ -112,7 +112,7 @@ class AgentBrain:
             # model settings do not make every control step expensive.
             try:
                 max_output = int(
-                    os.getenv("ASTA_AGENT_MAX_OUTPUT_TOKENS", "128")
+                    os.getenv("ASTA_AGENT_MAX_OUTPUT_TOKENS", "256")
                 )
                 if hasattr(self._provider, "max_output_tokens"):
                     self._provider.max_output_tokens = max(64, max_output)
@@ -203,6 +203,8 @@ class AgentBrain:
                 "latest observation is vision.locate, use its screen_center exactly. Do not "
                 "open a raw screenshot with vision.open_screenshot when semantic inspection "
                 "is available. Choose the smallest useful next action. If user input is required, set needs_user=true. "
+                "When goal_satisfied is true, set next_action to null. Omit optional next_action "
+                "fields you do not need instead of writing \"none\". "
                 "Return compact JSON only; no hidden chain-of-thought."
             ),
             "required_output": {
@@ -501,6 +503,51 @@ class AgentBrain:
         return payload
 
     @staticmethod
+    def _close_truncated_json(text: str) -> dict[str, Any] | None:
+        """Best-effort repair of a JSON object truncated mid-stream."""
+        start = text.find("{")
+        if start < 0:
+            return None
+        body = text[start:]
+        stack: list[str] = []
+        in_string = False
+        escaped = False
+        for char in body:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char in "{[":
+                stack.append("}" if char == "{" else "]")
+            elif char in "}]":
+                if not stack:
+                    break
+                stack.pop()
+        if not stack and not in_string:
+            return None
+        if in_string:
+            body += '"'
+        candidate = body.rstrip()
+        # Drop a dangling separator or a key without a value.
+        for _ in range(3):
+            trimmed = re.sub(r'(,\s*"[^"]*"\s*:?\s*|,\s*|:\s*)$', "", candidate)
+            if trimmed == candidate:
+                break
+            candidate = trimmed.rstrip()
+        candidate += "".join(reversed(stack))
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    @staticmethod
     def _parse_decision(response: str) -> AgentDecision:
         text = str(response or "").strip()
         if not text:
@@ -521,10 +568,27 @@ class AgentBrain:
                 continue
 
         if not isinstance(parsed, dict):
+            # A small output budget can cut the JSON off just before the
+            # final braces; close it instead of discarding the decision.
+            parsed = AgentBrain._close_truncated_json(text)
+
+        if not isinstance(parsed, dict):
             raise AgentBrainError("agent decision returned invalid JSON")
 
         raw_action = parsed.get("next_action")
         next_action = dict(raw_action) if isinstance(raw_action, dict) else None
+        if next_action is not None:
+            # Models often fill every field with "none" instead of null.
+            next_action = {
+                key: value
+                for key, value in next_action.items()
+                if value is not None
+                and str(value).strip().lower() not in {"none", "null", "n/a"}
+            }
+            if not str(next_action.get("action") or "").strip() and not str(
+                next_action.get("tool") or ""
+            ).strip():
+                next_action = None
 
         raw_updates = parsed.get("belief_updates") or []
         if not isinstance(raw_updates, list):
