@@ -46,6 +46,7 @@ class KokoroEngine:
         self.hindi_voice = os.getenv("ASTA_TTS_HINDI_VOICE", "hf_alpha")
         self._hindi_pipeline = None
         self._hindi_failed = False
+        self._hindi_lock = threading.Lock()
         self.first_clause_enabled = _env_flag("ASTA_TTS_FIRST_CLAUSE")
         self.output_latency = os.getenv("ASTA_TTS_OUTPUT_LATENCY", "low")
         self._stream = None
@@ -79,6 +80,22 @@ class KokoroEngine:
             f"warmup_audio={warmup_audio} samples)",
             flush=True,
         )
+
+        if self.hindi_enabled and _env_flag("ASTA_TTS_HINDI_PRELOAD"):
+            # Load the Hindi G2P and voice in the background so the first
+            # Hindi reply does not pay ~3 s of setup.
+            threading.Thread(
+                target=self._preload_hindi, name="KokoroHindiPreload", daemon=True
+            ).start()
+
+    def _preload_hindi(self):
+        pipeline, voice = self._pipeline_for("नमस्ते")
+        if pipeline is self._hindi_pipeline:
+            try:
+                for _ in pipeline("नमस्ते।", voice=voice, speed=self.speed):
+                    pass
+            except Exception as exc:
+                print(f"[Speech] Kokoro Hindi warmup warning: {exc}", flush=True)
 
     # ------------------------------------------------------------------
     # Text handling
@@ -114,6 +131,12 @@ class KokoroEngine:
 
     def _pipeline_for(self, text):
         if not (self.hindi_enabled and self.is_hindi(text)) or self._hindi_failed:
+            return self.pipeline, self.voice
+        with self._hindi_lock:
+            return self._load_hindi_pipeline()
+
+    def _load_hindi_pipeline(self):
+        if self._hindi_failed:
             return self.pipeline, self.voice
         if self._hindi_pipeline is None:
             try:

@@ -37,10 +37,24 @@ def load_wav(path: str) -> np.ndarray:
 def record(seconds: float) -> np.ndarray:
     import sounddevice as sd
 
-    print(f"Recording {seconds:.0f} s - speak now (English or Hindi)...")
+    device = sd.query_devices(kind="input")
+    print(f"Microphone: {device['name']}")
+    for count in (3, 2, 1):
+        print(f"  starting in {count}...", flush=True)
+        time.sleep(1)
+    print(f"SPEAK NOW for {seconds:.0f} s (English or Hindi)...", flush=True)
     audio = sd.rec(int(seconds * 16000), samplerate=16000, channels=1, dtype="float32")
     sd.wait()
-    return audio.reshape(-1)
+    audio = audio.reshape(-1)
+    saved = ROOT / "models" / "speech" / "benchmark.wav"
+    saved.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(saved), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes((np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes())
+    print(f"Saved recording: {saved} (rerun with --wav to compare on the same audio)")
+    return audio
 
 
 def bench_nemotron(audio: np.ndarray) -> None:
@@ -102,7 +116,15 @@ def main() -> int:
     args = parser.parse_args()
 
     audio = load_wav(args.wav) if args.wav else record(args.seconds)
-    print(f"Audio: {audio.size / 16000:.1f}s\n")
+    peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+    rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+    print(f"Audio: {audio.size / 16000:.1f}s  peak={peak:.3f}  rms={rms:.4f}")
+    if peak < 0.04:
+        print(
+            "WARNING: the recording is nearly silent. Check the Windows default "
+            "input device / mic volume (A.S.T.A. uses the same device)."
+        )
+    print()
     bench_nemotron(audio)
     if not args.skip_whisper:
         bench_whisper(audio)
