@@ -239,3 +239,67 @@ def test_planner_collapses_adjacent_duplicate_cognitive_actions():
 
     assert len(plan.steps) == 1
     assert plan.steps[0].description == "open calculator"
+
+class FakeInspectTool(Tool):
+    @property
+    def definition(self):
+        return ToolDefinition(
+            name="vision.inspect",
+            description="Inspect the current screen.",
+            input_schema={
+                "type": "object",
+                "properties": {"prompt": {"type": "string"}},
+                "required": ["prompt"],
+            },
+            risk_level="low",
+            requires_confirmation=False,
+            metadata={"actions": ["inspect", "visual_verify"], "category": "vision"},
+        )
+
+    def execute(self, request):
+        raise AssertionError("planner tests must not execute tools")
+
+
+def test_planner_adds_semantic_visual_verification_to_cognitive_plan():
+    kernel = Kernel()
+    kernel.register_tool(FakeTool())
+    kernel.register_tool(FakeInspectTool())
+    planner = Planner(kernel.tool_registry)
+
+    class CognitiveBrain:
+        enabled = True
+
+        @staticmethod
+        def plan(goal, *, intent):
+            from core.agent import AgentPlanProposal
+            return AgentPlanProposal(
+                goal_summary="Open calculator and verify it is visible.",
+                success_conditions=("Calculator window is visible.",),
+                rationale="Open the calculator, then verify the visible window.",
+                steps=(
+                    {"action": "open", "tool": "test.open", "target": "calculator"},
+                ),
+                uncertainty=0.1,
+            )
+
+        @staticmethod
+        def task_metadata(proposal):
+            return {
+                "agent_mode": "cognitive_v1",
+                "agent_goal_summary": proposal.goal_summary,
+                "agent_success_conditions": list(proposal.success_conditions),
+            }
+
+    planner.agent_brain = CognitiveBrain()
+    plan = planner.plan(
+        "open calculator and verify that it is open",
+        intent=_command_intent(action="open", target="calculator"),
+    )
+
+    assert [step.metadata["tool"] for step in plan.steps] == [
+        "test.open",
+        "vision.inspect",
+    ]
+    assert plan.steps[1].metadata["action"] == "inspect"
+    assert "Calculator window is visible" in plan.steps[1].metadata["prompt"]
+

@@ -625,3 +625,70 @@ def test_task_runtime_follows_planned_vision_step_without_extra_agent_decision()
         "step-1",
     ) is True
 
+def test_task_runtime_completes_verified_visual_result_without_llm_decision():
+    from types import SimpleNamespace
+
+    class FakeTaskManager:
+        def __init__(self):
+            self.calls = []
+
+        def complete_step(self, step, task_id):
+            self.calls.append(("complete_step", step, task_id))
+
+        def set_plan_step_status(self, step_id, status, task_id):
+            self.calls.append(("set_plan_step_status", step_id, status, task_id))
+
+        def add_evidence(self, evidence, task_id):
+            self.calls.append(("add_evidence", evidence, task_id))
+
+        def complete(self, result, task_id):
+            self.calls.append(("complete", result, task_id))
+
+    class FakeEventBus:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, name, **payload):
+            self.events.append((name, payload))
+
+    manager = FakeTaskManager()
+    event_bus = FakeEventBus()
+    kernel = SimpleNamespace(
+        task_manager=manager,
+        event_bus=event_bus,
+        tool_registry=Kernel().tool_registry,
+    )
+    tasks = TaskRuntimeModule(kernel)
+    task = SimpleNamespace(
+        id="task-1",
+        metadata={
+            "agent_state": {
+                "success_conditions": ["Calculator window is visible."],
+            }
+        },
+    )
+    result = ToolResult(
+        success=True,
+        tool="vision.inspect",
+        output={
+            "verified": True,
+            "visual_match": True,
+            "confidence": 0.98,
+            "summary": "Calculator window is visible.",
+        },
+    )
+
+    handled = tasks._complete_from_verified_visual_result(
+        task,
+        result,
+        evidence={},
+        plan_step_id="step-2",
+        step_description="inspect",
+    )
+
+    assert handled is True
+    assert manager.calls[0][0] == "complete_step"
+    assert manager.calls[1][0] == "set_plan_step_status"
+    assert manager.calls[-1][0] == "complete"
+    assert event_bus.events[0][0] == "task_goal_verified"
+

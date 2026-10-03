@@ -1,5 +1,5 @@
 from core import Kernel
-from core.agent import AgentBrain
+from core.agent import AgentBrain, AgentDecision
 from core.contracts import IntentResult, IntentType, ToolDefinition
 from core.tools import Tool
 
@@ -503,4 +503,77 @@ def test_agent_brain_compacts_capability_metadata():
         "category": "vision",
         "required_inputs": ["prompt"],
     }]
+
+def test_agent_brain_repairs_truncated_plan():
+    response = """{
+      "goal_summary": "Open calculator and verify it is visible.",
+      "success_conditions": ["Calculator window is visible."],
+      "rationale": "Open it, then verify visually.",
+      "uncertainty": 0.1,
+      "steps": [
+        {"action": "open", "tool": "system.open_application", "target": "calculator"},
+        {"action": "inspect", "tool": "vision.inspect", "prompt": "Is calculator visible?"
+"""
+    proposal = AgentBrain._parse_response(response)
+
+    assert proposal.steps == (
+        {
+            "action": "open",
+            "tool": "system.open_application",
+            "target": "calculator",
+        },
+    )
+    assert proposal.success_conditions == ("Calculator window is visible.",)
+
+
+def test_agent_brain_normalizes_visual_open_screenshot_decision():
+    kernel = Kernel()
+    kernel.register_tool(
+        ToolDefinitionBackedTool(
+            ToolDefinition(
+                name="vision.open_screenshot",
+                description="Open a screenshot.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+                metadata={"actions": ["open"], "category": "vision"},
+            )
+        )
+    )
+    kernel.register_tool(
+        ToolDefinitionBackedTool(
+            ToolDefinition(
+                name="vision.inspect",
+                description="Inspect the current screen.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"prompt": {"type": "string"}},
+                    "required": ["prompt"],
+                },
+                metadata={"actions": ["inspect", "visual_verify"], "category": "vision"},
+            )
+        )
+    )
+
+    decision = AgentDecision(
+        goal_satisfied=False,
+        needs_observation=True,
+        rationale="Use the screenshot.",
+        confidence=0.8,
+        next_action={"action": "open", "tool": "vision.open_screenshot", "path": "x.png"},
+        uncertainty=0.2,
+    )
+    normalized = AgentBrain(kernel, enabled=True)._normalize_visual_next_action(
+        decision,
+        {
+            "goal": "verify calculator",
+            "success_conditions": ["Calculator window is visible."],
+        },
+    )
+
+    assert normalized.next_action["action"] == "inspect"
+    assert normalized.next_action["tool"] == "vision.inspect"
+    assert "Calculator window is visible" in normalized.next_action["prompt"]
 

@@ -139,3 +139,43 @@ def test_vision_inspect_tool_returns_verification_evidence(tmp_path):
     assert result.output["verified"] is True
     assert result.output["confidence"] == 0.95
     assert result.output["tokens_per_second"] == 150.0
+
+def test_vision_inspect_tool_accepts_capture_metadata_dict(tmp_path):
+    image = tmp_path / "screen.png"
+    image.write_bytes(b"fake-png")
+
+    tool = VisionInspectTool(
+        FakeVisionEngine(),
+        capture=lambda: {"path": str(image), "width": 1, "height": 1},
+    )
+
+    result = tool.execute(
+        ToolRequest(
+            tool="vision.inspect",
+            arguments={"prompt": "Is Calculator visible?"},
+            request_id="test-dict-capture",
+        )
+    )
+
+    assert result.success is True
+    assert result.output["path"] == str(image.resolve())
+    assert result.output["verified"] is True
+
+
+def test_vision_inspect_tool_rejects_capture_metadata_without_path(tmp_path):
+    tool = VisionInspectTool(
+        FakeVisionEngine(),
+        capture=lambda: {"width": 1, "height": 1},
+    )
+
+    result = tool.execute(
+        ToolRequest(
+            tool="vision.inspect",
+            arguments={"prompt": "Is Calculator visible?"},
+            request_id="test-invalid-capture",
+        )
+    )
+
+    assert result.success is False
+    assert "without a 'path'" in result.error
+

@@ -149,3 +149,34 @@ def test_manager_requires_explicit_model_when_multiple_ggufs(tmp_path):
     )
 
     assert manager._resolve_model_path(str(server)) is None
+
+def test_manager_emits_memory_friendly_server_tuning_flags(monkeypatch, tmp_path):
+    server = tmp_path / "llama-server.exe"
+    model = tmp_path / "model.gguf"
+    server.write_text("")
+    model.write_text("")
+
+    monkeypatch.setenv("ASTA_LLM_BATCH_SIZE", "1024")
+    monkeypatch.setenv("ASTA_LLM_UBATCH_SIZE", "256")
+    monkeypatch.setenv("ASTA_LLM_PARALLEL", "1")
+    monkeypatch.setenv("ASTA_LLM_FLASH_ATTN", "on")
+    monkeypatch.setenv("ASTA_LLM_CACHE_TYPE_K", "q8_0")
+    monkeypatch.setenv("ASTA_LLM_CACHE_TYPE_V", "q8_0")
+
+    manager = LlamaServerManager(
+        base_url="http://127.0.0.1:8080/v1",
+        server_path=str(server),
+        model_path=str(model),
+        context_size=4096,
+        gpu_layers=99,
+    )
+
+    command = manager._build_command(str(server), str(model))
+
+    assert "-b" in command and "1024" in command
+    assert "-ub" in command and "256" in command
+    assert "-np" in command and "1" in command
+    assert "-fa" in command and "on" in command
+    assert "-ctk" in command and "q8_0" in command
+    assert "-ctv" in command and "q8_0" in command
+
