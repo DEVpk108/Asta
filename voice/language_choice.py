@@ -96,10 +96,10 @@ def hindi_score(text: str) -> float:
     return sum(1 for word in words if word in HINDI_COMMON) / len(words)
 
 
-def choose_transcript(*args, **kwargs) -> tuple[str, str]:
+def choose_transcript(*args, repair: bool = True, **kwargs) -> tuple[str, str]:
     """Return ``(language, text)``; English searches borrow Hindi names."""
     language, text = _choose_transcript(*args, **kwargs)
-    if language == "en" and len(args) >= 2:
+    if repair and language == "en" and len(args) >= 2:
         text = repair_query_from_hindi(text, strip_wake_remnant(str(args[1] or "")))
     return language, text
 

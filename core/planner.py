@@ -299,6 +299,23 @@ class Planner:
         )
         return plan
 
+    _BROWSERS = (
+        "chrome", "google chrome", "chromium", "edge", "microsoft edge",
+        "msedge", "firefox", "mozilla firefox", "brave", "opera", "vivaldi",
+    )
+
+    def _has_tool(self, name: str) -> bool:
+        registry = getattr(getattr(self, "selector", None), "registry", None)
+        try:
+            return bool(registry is not None and registry.contains(name))
+        except Exception:
+            return False
+
+    @classmethod
+    def _is_browser(cls, application: str) -> bool:
+        name = " ".join(str(application or "").lower().replace(".exe", "").split())
+        return bool(name) and name in cls._BROWSERS
+
     def _expand_search_commands(
         self,
         commands: list[dict[str, Any]],
@@ -380,8 +397,26 @@ class Planner:
                         }
                     )
 
-            expanded.extend(
-                (
+            if self._is_browser(application) and self._has_tool("computer.hotkey") and os.getenv(
+                "ASTA_BROWSER_ADDRESS_BAR", "1"
+            ).strip().lower() not in {"0", "false", "no", "off"}:
+                # Every desktop browser focuses its address/search bar with
+                # Ctrl+L: instant, exact, and no vision model on the GPU.
+                focus_steps = (
+                    {
+                        "action": "wait",
+                        "tool": "computer.wait",
+                        "seconds": 0.6,
+                    },
+                    {
+                        "action": "hotkey",
+                        "tool": "computer.hotkey",
+                        "keys": ["ctrl", "l"],
+                        **({"user_directed": True} if user_directed else {}),
+                    },
+                )
+            else:
+                focus_steps = (
                     {
                         "action": "locate",
                         "tool": "vision.locate",
@@ -392,6 +427,10 @@ class Planner:
                         "tool": "computer.click",
                         "target": search_target,
                     },
+                )
+            expanded.extend(focus_steps)
+            expanded.extend(
+                (
                     {
                         "action": "type_text",
                         "tool": "computer.type_text",

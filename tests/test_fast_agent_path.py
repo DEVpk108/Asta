@@ -441,6 +441,7 @@ def test_deterministic_search_plan_marks_typing_user_directed():
         user_directed=True,
     )
     marked = {c["action"] for c in commands if c.get("user_directed")}
+    # Without a hotkey tool registered, the vision locate/click path is used.
     assert marked == {"type_text", "keypress"}
     llm = planner._expand_search_commands(
         [{"action": "search", "query": "weather", "target": "chrome"}],
@@ -663,3 +664,59 @@ def test_gpu_share_releases_only_idle_users(monkeypatch):
     finally:
         for name in ("busy", "recent", "idle"):
             gpu_share.unregister(name)
+
+
+@pytest.mark.parametrize(
+    "english, hindi",
+    [
+        ("Okay, search for human challenge so on chrome", "सर्च फॉर हनुमान चली सॉन क्रोम"),
+        ("Okay, search for machine Chrome", "ओके सर्च फॉर हनुमान चलीस ऑन क्रोम"),
+        ("Serch for human challeng", "सर्च फॉर हनुमान चली साहब"),
+        ("Search for human challenges", "सर्च फॉर हनुमान चालीसा"),
+    ],
+)
+def test_hindi_names_survive_different_phrasings(english, hindi):
+    from voice.language_choice import choose_transcript
+
+    _, text = choose_transcript(english, hindi)
+    assert IntentRouter().analyze(text).entities["query"] == "hanuman chalisa"
+
+
+def test_partial_transcripts_are_not_repaired():
+    from voice.language_choice import choose_transcript
+
+    _, text = choose_transcript(
+        "search for human challe", "सर्च फॉर हनुमान चली", repair=False
+    )
+    assert text == "search for human challe"
+
+
+def test_browser_search_uses_address_bar_shortcut(monkeypatch):
+    monkeypatch.delenv("ASTA_BROWSER_ADDRESS_BAR", raising=False)
+    assert Planner._is_browser("Google Chrome")
+    assert Planner._is_browser("msedge.exe")
+    assert not Planner._is_browser("spotify")
+    steps = Planner._expand_search_commands(
+        SimpleNamespace(
+            application_manager=None,
+            _is_browser=Planner._is_browser,
+            _has_tool=lambda name: True,
+        ),
+        [{"action": "search", "query": "hanuman chalisa", "target": "chrome"}],
+        user_directed=True,
+    )
+    tools = [step.get("tool") or step["action"] for step in steps]
+    assert tools == ["open", "computer.wait", "computer.hotkey", "computer.type_text", "computer.keypress"]
+    assert steps[2]["keys"] == ["ctrl", "l"] and steps[2]["user_directed"] is True
+
+
+def test_only_address_bar_hotkey_is_pre_approved():
+    from core.tools.module import ToolRuntimeModule
+
+    def request(keys):
+        return SimpleNamespace(
+            tool="computer.hotkey", arguments={"keys": keys}, metadata={"user_directed": True}
+        )
+
+    assert ToolRuntimeModule._is_user_directed(request(["ctrl", "l"]))
+    assert not ToolRuntimeModule._is_user_directed(request(["alt", "f4"]))

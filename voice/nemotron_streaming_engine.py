@@ -193,7 +193,9 @@ class DualLanguageStream:
 
     @property
     def partial_text(self) -> str:
-        return choose_transcript(self.english.partial_text, self.hindi.partial_text)[1]
+        return choose_transcript(
+            self.english.partial_text, self.hindi.partial_text, repair=False
+        )[1]
 
     def finish(self, timeout: float = 10.0) -> str:
         # Both workers flush concurrently; join them in turn.

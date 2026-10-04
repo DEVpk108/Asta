@@ -514,52 +514,105 @@ _HINDI_TERMS_SIMPLE = {
     _simplify_roman(term): term for term in sorted(HINDI_TERMS, key=lambda t: (-len(t), t))
 }
 _EN_QUERY = re.compile(
-    r"^(?P<lead>.*?\b(?:search(?:\s+for)?|look\s+up|google|play)\s+)(?P<query>[^,.?!]+?)\s*[.?!]?$",
+    r"^(?P<lead>.*?\b(?:search(?:\s+for)?|look\s+up|google|play)\s+)"
+    r"(?P<query>[^,.?!]+?)"
+    r"(?P<tail>\s+(?:on|in|using|with)\s+[\w .+-]{2,30})?\s*[.?!]?$",
     re.IGNORECASE,
 )
 _HI_QUERY = re.compile(
-    r"(?:सर्च(?:\s+(?:फॉर|फोर|फ़ॉर))?|लुक\s+अप|गूगल|प्ले)\s+(?P<query>[^,.?!।]+)$"
+    r"(?:सर्च(?:\s+(?:फॉर|फोर|फ़ॉर|फार))?|लुक\s+अप|गूगल|प्ले)\s+(?P<query>[^,.?!।]+)$"
+)
+# "... ऑन क्रोम" / "... इन क्रोम" / "... क्रोम पर|में" at the end of a query.
+_HI_TAIL = re.compile(
+    r"\s+(?:(?:ऑन|आन|इन|यूज़िंग|यूजिंग)\s+\S+|\S+\s+(?:पर|में|मे))$"
 )
 
 
-def hindi_query_terms(hindi_query: str) -> str | None:
+def _snap_term(roman: str) -> tuple[str | None, str]:
+    """(term, missing suffix) for a romanised token close to a known term."""
+    simple = _simplify_roman(roman)
+    if simple in _HINDI_TERMS_SIMPLE:
+        return _HINDI_TERMS_SIMPLE[simple], ""
+    if len(simple) < 4:
+        return None, ""
+    best, best_score = None, 0.0
+    for candidate, term in _HINDI_TERMS_SIMPLE.items():
+        if candidate.startswith(simple) and len(candidate) - len(simple) <= 3:
+            # Clipped by the decoder: "chali" / "chalis" -> "chalisa".
+            return term, candidate[len(simple):]
+        score = SequenceMatcher(None, simple, candidate, autojunk=False).ratio()
+        if score > best_score:
+            best, best_score = term, score
+    if best_score >= 0.8:
+        return best, ""
+    return None, ""
+
+
+def _english_word(token: str) -> str | None:
+    return DEVANAGARI_TO_ENGLISH.get(token) or fuzzy_devanagari_english(token)
+
+
+def hindi_query_terms(hindi_query: str, *, drop_tail: tuple[str, ...] = ()) -> str | None:
     """Romanised Hindi query when it is made of known Hindi terms."""
-    tokens = words(hindi_query)
+    query = _HI_TAIL.sub("", str(hindi_query or "").strip())
+    tokens = words(query)
+    # Drop a trailing app name the English decode put in "on <app>".
+    while tokens and drop_tail and (_english_word(tokens[-1]) or "").lower() in drop_tail:
+        tokens.pop()
     if not tokens or not all(_DEVANAGARI.search(t) for t in tokens):
         return None
-    out, known = [], 0
+    out, known, missing = [], 0, ""
     for token in tokens:
-        term = _HINDI_TERMS_SIMPLE.get(_simplify_roman(romanize(token)))
+        roman = _simplify_roman(romanize(token))
+        if missing and roman[:1] == missing[:1] and len(roman) <= 5:
+            # Remainder of a word the decoder split ("चली सॉन", "चली साहब").
+            missing = ""
+            continue
+        term, missing = _snap_term(roman)
         if term:
             known += 1
             out.append(term)
-        else:
-            out.append(DEVANAGARI_TO_ENGLISH.get(token) or _simplify_roman(romanize(token)))
-    if known == 0 or known * 2 < len(tokens):
+            continue
+        out.append(DEVANAGARI_TO_ENGLISH.get(token) or roman)
+    if known == 0 or known * 2 < len(out):
         return None
     return " ".join(out)
 
 
+def romanize_devanagari_words(text: str) -> str:
+    """Romanise Devanagari words left in an English transcript."""
+    def convert(match):
+        token = match.group(0)
+        mapped = DEVANAGARI_TO_ENGLISH.get(token)
+        if mapped:
+            return mapped
+        term, _ = _snap_term(romanize(token))
+        return term or _simplify_roman(romanize(token))
+
+    return re.sub(r"[\u0900-\u097F]+", convert, str(text or ""))
+
+
 def repair_query_from_hindi(english: str, hindi: str) -> str:
     """Swap a garbled English search query for the Hindi decode's terms."""
-    en = _EN_QUERY.match(fix_verb_typos(str(english or "").strip()))
+    english = romanize_devanagari_words(fix_verb_typos(str(english or "").strip()))
+    en = _EN_QUERY.match(english)
     hi = _HI_QUERY.search(str(hindi or "").strip())
     if not en or not hi:
         return english
-    query = hindi_query_terms(hi.group("query"))
+    tail_words = tuple(words(en.group("tail") or ""))
+    query = hindi_query_terms(hi.group("query"), drop_tail=tail_words)
     if not query:
         return english
-    if query.lower() == en.group("query").strip().lower():
+    en_query = en.group("query").strip()
+    if query.lower() == en_query.lower():
         return english
-    english_words = set(words(en.group("query")))
-    if any(term in english_words for term in query.split() if term in HINDI_TERMS):
-        # The English decode already has the Hindi name.
+    english_words = set(words(en_query))
+    terms = [term for term in query.split() if term in HINDI_TERMS]
+    if terms and all(term in english_words for term in terms):
+        # The English decode already has the Hindi names.
         return english
-    print(
-        f"[STT] Search query from Hindi decode: {en.group('query')!r} -> {query!r}",
-        flush=True,
-    )
-    return f"{en.group('lead')}{query}"
+    print(f"[STT] Search query from Hindi decode: {en_query!r} -> {query!r}", flush=True)
+    return f"{en.group('lead')}{query}{en.group('tail') or ''}"
 
 
 # Common misrecognitions of command verbs.

@@ -71,10 +71,16 @@ class ToolRuntimeModule(Module):
         if os.getenv("ASTA_TRUST_USER_DIRECTED", "1").strip().lower() in {"0", "false", "no", "off"}:
             return False
         metadata = getattr(request, "metadata", None) or {}
-        return (
-            metadata.get("user_directed") is True
-            and getattr(request, "tool", "") in cls._USER_DIRECTED_TOOLS
-        )
+        if metadata.get("user_directed") is not True:
+            return False
+        tool = getattr(request, "tool", "")
+        if tool == "computer.hotkey":
+            # Only the browser "focus address bar" shortcut is pre-approved.
+            keys = (getattr(request, "arguments", None) or {}).get("keys") or []
+            if isinstance(keys, str):
+                keys = keys.replace("+", " ").split()
+            return [str(k).strip().lower() for k in keys] == ["ctrl", "l"]
+        return tool in cls._USER_DIRECTED_TOOLS
 
     def on_confirmation_response(self, request_id, approved):
         if not isinstance(request_id, str):
