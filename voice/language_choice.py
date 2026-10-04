@@ -14,6 +14,8 @@ import unicodedata
 from core.transliteration import (
     DEVANAGARI_TO_ENGLISH,
     devanagari_english,
+    devanagari_search_command,
+    has_command_verb,
     repair_query_from_hindi,
     strip_wake_remnant,
 )
@@ -99,6 +101,14 @@ def hindi_score(text: str) -> float:
 def choose_transcript(*args, repair: bool = True, **kwargs) -> tuple[str, str]:
     """Return ``(language, text)``; English searches borrow Hindi names."""
     language, text = _choose_transcript(*args, **kwargs)
+    if repair and len(args) >= 2:
+        # A search the English stream missed or garbled ("Shurma salis on
+        # chrome", or nothing at all) but the Hindi stream decoded as
+        # "सर्च पर हनुमान चलीसा क्रोम".
+        hindi_command = devanagari_search_command(strip_wake_remnant(str(args[1] or "")))
+        if hindi_command and not (language == "en" and has_command_verb(text)):
+            print(f"[STT] Search command from Hindi decode: {hindi_command!r}", flush=True)
+            return "en", hindi_command
     if repair and language == "en" and len(args) >= 2:
         text = repair_query_from_hindi(text, strip_wake_remnant(str(args[1] or "")))
     return language, text

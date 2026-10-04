@@ -528,7 +528,7 @@ _HI_TAIL = re.compile(
 )
 
 
-def _snap_term(roman: str) -> tuple[str | None, str]:
+def _snap_term(roman: str, *, after_term: bool = False) -> tuple[str | None, str]:
     """(term, missing suffix) for a romanised token close to a known term."""
     simple = _simplify_roman(roman)
     if simple in _HINDI_TERMS_SIMPLE:
@@ -543,7 +543,9 @@ def _snap_term(roman: str) -> tuple[str | None, str]:
         score = SequenceMatcher(None, simple, candidate, autojunk=False).ratio()
         if score > best_score:
             best, best_score = term, score
-    if best_score >= 0.8:
+    # Names come in pairs ("hanuman chalisa"), so a word right after a known
+    # term may be a little further off ("चलेशन").
+    if best_score >= (0.72 if after_term else 0.8):
         return best, ""
     return None, ""
 
@@ -568,7 +570,7 @@ def hindi_query_terms(hindi_query: str, *, drop_tail: tuple[str, ...] = ()) -> s
             # Remainder of a word the decoder split ("चली सॉन", "चली साहब").
             missing = ""
             continue
-        term, missing = _snap_term(roman)
+        term, missing = _snap_term(roman, after_term=bool(out) and out[-1] in HINDI_TERMS)
         if term:
             known += 1
             out.append(term)
@@ -630,3 +632,65 @@ _VERB_TYPO_PATTERN = re.compile(
 
 def fix_verb_typos(text: str) -> str:
     return _VERB_TYPO_PATTERN.sub(lambda m: _VERB_TYPOS[m.group(1).lower()], str(text or ""))
+
+
+# --------------------------------------------------------------------------
+# Search commands decoded only in Devanagari
+# --------------------------------------------------------------------------
+# "सर्च पर हनुमान चलेशन क्रोम" / "सच पर हनुमान चलीस ऑन क्रोम": the English
+# stream was empty or garbled ("Shurma salis on chrome").
+_HI_SEARCH_VERBS = {"सर्च", "सर्चर", "सर्ज", "सच", "सर्छ", "सार्च"}
+_HI_FOR = {"फॉर", "फोर", "फ़ॉर", "फार", "फर", "पर", "फॉ"}
+_HI_ON = {"ऑन", "आन", "इन", "ओन"}
+_COMMAND_VERBS = re.compile(
+    r"\b(?:search|look\s+up|google|open|close|launch|start|play|pause|stop|"
+    r"type|mute|unmute|resume|skip|next|previous|volume|turn|set|remind|note)\b",
+    re.IGNORECASE,
+)
+
+
+def has_command_verb(text: str) -> bool:
+    return bool(_COMMAND_VERBS.search(fix_verb_typos(str(text or ""))))
+
+
+def _query_word(token: str, previous: list[str]) -> str:
+    roman = _simplify_roman(romanize(token))
+    term, _ = _snap_term(roman, after_term=bool(previous) and previous[-1] in HINDI_TERMS)
+    if term:
+        return term
+    return DEVANAGARI_TO_ENGLISH.get(token) or fuzzy_devanagari_english(token) or roman
+
+
+def devanagari_search_command(hindi: str) -> str | None:
+    """English "search for X [on app]" from a Devanagari search command."""
+    tokens = words(strip_wake_remnant(str(hindi or "")))
+    while tokens and tokens[0] in {"ओके", "ओकेय", "हे", "प्लीज़", "प्लीज"}:
+        tokens.pop(0)
+    if len(tokens) < 2 or tokens[0] not in _HI_SEARCH_VERBS:
+        return None
+    verb = tokens.pop(0)
+    has_for = bool(tokens) and tokens[0] in _HI_FOR
+    if has_for:
+        tokens.pop(0)
+    app = None
+    if len(tokens) >= 2:
+        last = (_english_word(tokens[-1]) or "").lower()
+        if last and last in {v.lower() for v in target_aliases().values()} | {
+            "chrome", "edge", "firefox", "brave", "youtube", "spotify", "google",
+        }:
+            app = last
+            tokens.pop()
+            if tokens and tokens[-1] in _HI_ON:
+                tokens.pop()
+    if not tokens:
+        return None
+    if verb == "सच" and not (has_for and app):
+        # "सच" is also the Hindi word for "truth"; need "for ... on <app>".
+        return None
+    query = hindi_query_terms(" ".join(tokens))
+    if not query:
+        out: list[str] = []
+        for token in tokens:
+            out.append(_query_word(token, out))
+        query = " ".join(out)
+    return f"search for {query}" + (f" on {app}" if app else "")

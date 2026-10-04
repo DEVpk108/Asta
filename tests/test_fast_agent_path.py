@@ -720,3 +720,25 @@ def test_only_address_bar_hotkey_is_pre_approved():
 
     assert ToolRuntimeModule._is_user_directed(request(["ctrl", "l"]))
     assert not ToolRuntimeModule._is_user_directed(request(["alt", "f4"]))
+
+
+@pytest.mark.parametrize(
+    "english, hindi",
+    [
+        ("", "सर्च पर हनुमान चलेशन क्रोम"),
+        ("Shurma salis on chrome", "सच पर हनुमान चलीस ऑन क्रोम"),
+    ],
+)
+def test_search_heard_only_in_hindi_stream(english, hindi):
+    from voice.language_choice import choose_transcript
+
+    language, text = choose_transcript(english, hindi)
+    assert language == "en"
+    entities = IntentRouter().analyze(text).entities
+    assert entities == {"action": "search", "query": "hanuman chalisa", "target": "chrome"}
+
+
+def test_hindi_sentences_with_sach_stay_hindi():
+    from voice.language_choice import choose_transcript
+
+    assert choose_transcript("", "सच में क्या हुआ") == ("hi", "सच में क्या हुआ")
