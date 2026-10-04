@@ -157,6 +157,13 @@ function handleHudMessage (message) {
     sendHudConversationMode(message.enabled)
     return
   }
+  if (message.type === 'hud.window') {
+    // Step aside while A.S.T.A. looks at / clicks other apps.
+    if (!win || win.isDestroyed()) return
+    if (message.action === 'minimize' && !win.isMinimized()) win.minimize()
+    if (message.action === 'restore' && win.isMinimized()) win.showInactive()
+    return
+  }
   if (message.type === 'hud.chat') sendHudChat(message.chat || {})
 }
 

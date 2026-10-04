@@ -994,9 +994,34 @@ def test_unconfigured_spotify_play_uses_the_app_ui(monkeypatch):
         [{"action": "media", "operation": "play", "query": "hanuman chalisa", "provider": "spotify"}]
     )
     tools = [c.get("tool") or c.get("action") for c in commands]
-    assert commands[0] == {"action": "open", "target": "Spotify"}
-    assert "media" not in tools
-    assert "computer.type_text" in tools and tools[-1] == "vision.inspect"
+    # Spotify's deep link opens the results page; no search box typing.
+    assert commands[0] == {"action": "open", "target": "spotify:search:hanuman%20chalisa"}
+    assert "media" not in tools and "computer.type_text" not in tools
+    assert any(c.get("clicks") == 2 for c in commands)
+    assert tools[-1] == "vision.inspect"
+
+
+def test_media_gui_typing_is_user_directed_and_hud_steps_aside(monkeypatch):
+    from core import Planner as _Planner
+    from hud.hud_module import HUDModule
+
+    kernel = Kernel()
+    planner = _Planner(kernel.tool_registry)
+    steps = planner._interactive_media_play_steps(
+        query="song", application="Music", user_directed=True
+    )
+    typed = [s for s in steps if s["tool"] in {"computer.type_text", "computer.keypress"}]
+    assert typed and all(s.get("user_directed") for s in typed)
+
+    sent = []
+    hud = HUDModule.__new__(HUDModule)
+    hud.transport = SimpleNamespace(publish_window=sent.append)
+    hud.set_state = lambda **kw: None
+    monkeypatch.setenv("ASTA_HUD_HIDE_SETTLE", "0")
+    hud.on_tool_request(SimpleNamespace(tool="vision.locate"))
+    hud.on_tool_request(SimpleNamespace(tool="computer.click"))
+    hud._restore_window()
+    assert sent == ["minimize", "restore"]
 
 
 def test_setup_error_is_not_relabelled_by_system_one():

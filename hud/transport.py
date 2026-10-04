@@ -147,6 +147,10 @@ class HUDTransport:
         }
         self._broadcast(self._last_chat_sessions_message)
 
+    def publish_window(self, action: str) -> None:
+        """Ask the HUD window to minimize/restore (not cached for replay)."""
+        self._broadcast({"type": "hud.window", "version": 1, "action": str(action)})
+
     def publish_lifecycle(self, status: str) -> None:
         message = {"type": "hud.lifecycle", "version": 1, "lifecycle": {"status": str(status)}}
         self._last_lifecycle_message = message

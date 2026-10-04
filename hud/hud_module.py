@@ -364,8 +364,43 @@ class HUDModule(Module):
             value = 0.0
         self.transport.publish_audio_level(max(0.0, min(1.0, value)))
 
+    _SCREEN_TOOLS = frozenset({
+        "vision.locate", "vision.inspect", "computer.click",
+        "computer.type_text", "computer.keypress", "computer.hotkey",
+        "computer.scroll", "computer.move_mouse",
+    })
+
     def on_tool_request(self, request):
         self.set_state(mode="executing", intensity="high", status="EXECUTING", progress=None, activity=getattr(request, "tool", None) or "tool")
+        tool = str(getattr(request, "tool", "") or "")
+        if tool in self._SCREEN_TOOLS:
+            self._step_aside()
+
+    def _step_aside(self):
+        """Minimize the HUD so screenshots and clicks reach the target app."""
+        import os
+        import time
+
+        if os.getenv("ASTA_HUD_HIDE_DURING_GUI", "1").strip().lower() in {"0", "false", "no", "off"}:
+            return
+        if getattr(self, "_hud_hidden", False):
+            return
+        try:
+            self.transport.publish_window("minimize")
+        except (OSError, AttributeError):
+            return
+        self._hud_hidden = True
+        # Let the minimize animation finish before the first screenshot.
+        time.sleep(float(os.getenv("ASTA_HUD_HIDE_SETTLE", "0.45")))
+
+    def _restore_window(self):
+        if not getattr(self, "_hud_hidden", False):
+            return
+        self._hud_hidden = False
+        try:
+            self.transport.publish_window("restore")
+        except (OSError, AttributeError):
+            pass
 
     def on_agent_thinking_started(self, *args, **kwargs):
         self.set_state(
@@ -385,6 +420,7 @@ class HUDModule(Module):
         return None
 
     def on_task_finished(self, *args, **kwargs):
+        self._restore_window()
         self.set_state(
             mode="idle",
             intensity="low",

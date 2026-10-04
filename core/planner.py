@@ -192,7 +192,10 @@ class Planner:
         elif brain is not None and not getattr(brain, "enabled", False):
             print("[Agent] Cognitive planning disabled (ASTA_AGENT_MODE=0).", flush=True)
 
-        commands = self._expand_media_commands(commands)
+        commands = self._expand_media_commands(
+            commands,
+            user_directed=planner_name == "deterministic",
+        )
         commands = self._expand_search_commands(
             commands,
             user_directed=planner_name == "deterministic",
@@ -817,6 +820,8 @@ class Planner:
     def _expand_media_commands(
         self,
         commands: list[dict[str, Any]],
+        *,
+        user_directed: bool = False,
     ) -> list[dict[str, Any]]:
         """Expand media intent according to whether the user chose a GUI flow."""
         expanded: list[dict[str, Any]] = []
@@ -853,6 +858,7 @@ class Planner:
                     self._interactive_media_play_steps(
                         query=query,
                         application=previous_target,
+                        user_directed=user_directed,
                     )
                 )
                 continue
@@ -894,13 +900,28 @@ class Planner:
                 # No API credentials (e.g. Spotify developer app): drive the
                 # app's own UI with vision like any other player instead of
                 # stopping for a developer-dashboard setup.
-                expanded.append({"action": "open", "target": str(application)})
-                expanded.extend(
-                    self._interactive_media_play_steps(
-                        query=query,
-                        application=str(application),
+                search_uri = self._provider_search_uri(provider, query)
+                if search_uri:
+                    # The app's own deep link lands straight on the results
+                    # page: no search box to find, nothing to type.
+                    expanded.append({"action": "open", "target": search_uri})
+                    expanded.extend(
+                        self._interactive_media_play_steps(
+                            query=query,
+                            application=str(application),
+                            user_directed=user_directed,
+                            search=False,
+                        )
                     )
-                )
+                else:
+                    expanded.append({"action": "open", "target": str(application)})
+                    expanded.extend(
+                        self._interactive_media_play_steps(
+                            query=query,
+                            application=str(application),
+                            user_directed=user_directed,
+                        )
+                    )
                 continue
 
             if operation == "play" and query and application:
@@ -931,11 +952,22 @@ class Planner:
         except Exception:
             return True
 
+    def _provider_search_uri(self, provider: str, query: str) -> str:
+        resolver = getattr(self.media_manager, "search_uri", None)
+        if not callable(resolver):
+            return ""
+        try:
+            return str(resolver(provider, query) or "").strip()
+        except Exception:
+            return ""
+
     def _interactive_media_play_steps(
         self,
         *,
         query: str,
         application: str = "",
+        user_directed: bool = False,
+        search: bool = True,
     ) -> list[dict[str, Any]]:
         """Build a provider-agnostic GUI search/play sequence."""
         application_text = application.strip() or "the target application"
@@ -943,9 +975,9 @@ class Planner:
             f"the search input field used to enter a query in {application_text}"
         )
         result_target = (
-            f"the search result row containing the song title '{query}' "
-            f"in {application_text}; exclude the search input, navigation bar, "
-            "player controls, and unrelated icons"
+            f"the first song row in the search results whose title contains "
+            f"'{query}' in {application_text}; exclude the search input, "
+            "navigation bar, player controls, and unrelated icons"
         )
         verification_prompt = (
             f"Verify that '{query}' is actually playing in {application_text}. "
@@ -958,7 +990,8 @@ class Planner:
             "when that evidence is visible. In your concise summary, include the exact "
             f"requested title '{query}' only when you can actually see it."
         )
-        return [
+        consent = {"user_directed": True} if user_directed else {}
+        search_steps = [
             {
                 "action": "locate",
                 "tool": "vision.locate",
@@ -973,16 +1006,23 @@ class Planner:
                 "action": "type_text",
                 "tool": "computer.type_text",
                 "text": query,
+                # The user spoke this query; typing it (and Enter) is what
+                # they asked for, so it needs no second confirmation.
+                **consent,
             },
             {
                 "action": "keypress",
                 "tool": "computer.keypress",
                 "key": "enter",
+                **consent,
             },
+        ]
+        return [
+            *(search_steps if search else []),
             {
                 "action": "wait",
                 "tool": "computer.wait",
-                "seconds": 1.0,
+                "seconds": 1.0 if search else 2.5,
             },
             {
                 "action": "locate",
@@ -990,9 +1030,17 @@ class Planner:
                 "target": result_target,
             },
             {
+                # Music apps select a row on a single click; a double click
+                # starts playback.
                 "action": "click",
                 "tool": "computer.click",
                 "target": result_target,
+                "clicks": 2,
+            },
+            {
+                "action": "wait",
+                "tool": "computer.wait",
+                "seconds": 1.5,
             },
             {
                 "action": "inspect",

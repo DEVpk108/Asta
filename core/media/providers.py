@@ -121,6 +121,8 @@ class SpotifyProvider:
     aliases = ("spoti",)
     application_name = "Spotify"
     priority = 20
+    # Desktop deep link that opens the search results page directly.
+    search_uri_template = "spotify:search:{query}"
 
     def __init__(self):
         self._system = WindowsMediaProvider()
@@ -859,6 +861,17 @@ class MediaManager:
                             client_id=client_id,
                             redirect_uri=redirect_uri,
                         )
+
+    def search_uri(self, provider_name: str, query: str) -> str | None:
+        """App deep link for a search, when the provider has one."""
+        from urllib.parse import quote
+
+        provider = self._by_name.get(str(provider_name or "").strip().lower())
+        template = getattr(provider, "search_uri_template", None)
+        text = str(query or "").strip()
+        if not template or not text:
+            return None
+        return str(template).format(query=quote(text))
 
     def is_configured(self, provider_name: str) -> bool:
         """Whether a provider's API path is usable without setup."""

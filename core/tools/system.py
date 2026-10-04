@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -157,7 +158,16 @@ class OpenApplicationTool(Tool):
     @staticmethod
     def _looks_like_uri(target: str) -> bool:
         parsed = urlparse(target)
-        return bool(parsed.scheme and (parsed.netloc or target.endswith(":")))
+        if not parsed.scheme:
+            return False
+        if parsed.netloc or target.endswith(":"):
+            return True
+        # App deep links such as "spotify:search:song" (but not "C:\\path").
+        return (
+            len(parsed.scheme) > 1
+            and " " not in target
+            and bool(re.fullmatch(r"[a-z][a-z0-9+.-]*", parsed.scheme))
+        )
 
     @staticmethod
     def _open(target: str) -> None:
