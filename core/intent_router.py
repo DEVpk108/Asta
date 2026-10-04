@@ -261,6 +261,8 @@ class IntentRouter:
     @staticmethod
     def _normalize(text: str) -> str:
         text = text.strip().lower()
+        # Spoken fillers ("can you uh open chrome") break command grammar.
+        text = re.sub(r"(?:^|(?<=[\s,]))(?:uh+|um+|uhm|erm?|hmm+|ah+)(?=[\s,.!?]|$)[,]?", " ", text)
         text = re.sub(r"\s+", " ", text)
         text = re.sub(r"[.!?,;:]+$", "", text)
         return text.strip()
@@ -698,6 +700,10 @@ class IntentRouter:
 
         refined = dict(entities)
         refined["target"] = cleaned
+        if action == "launch":
+            # The launch tool only knows PATH executables; "open" uses full
+            # app discovery (Start menu, browser profiles, references).
+            refined["action"] = "open"
         return refined
 
     @classmethod

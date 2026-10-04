@@ -977,3 +977,57 @@ def test_open_failure_names_the_app():
     )
     assert not result.success
     assert result.output["target"] == "notes"
+
+
+def test_unconfigured_spotify_play_uses_the_app_ui(monkeypatch):
+    from core import Planner as _Planner
+
+    monkeypatch.delenv("ASTA_SPOTIFY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("ASTA_MEDIA_API_SETUP", raising=False)
+    kernel = Kernel()
+    planner = _Planner(
+        kernel.tool_registry,
+        media_manager=kernel.media_manager,
+        application_manager=kernel.application_manager,
+    )
+    commands = planner._expand_media_commands(
+        [{"action": "media", "operation": "play", "query": "hanuman chalisa", "provider": "spotify"}]
+    )
+    tools = [c.get("tool") or c.get("action") for c in commands]
+    assert commands[0] == {"action": "open", "target": "Spotify"}
+    assert "media" not in tools
+    assert "computer.type_text" in tools and tools[-1] == "vision.inspect"
+
+
+def test_setup_error_is_not_relabelled_by_system_one():
+    from core.autonomy.diagnosis import DiagnosisCategory, DiagnosisEngine, FailureDiagnosis
+
+    class Guess:
+        def diagnose_failure(self, payload):
+            fallback = DiagnosisEngine._fallback(payload)
+            fallback.category = DiagnosisCategory.UNKNOWN
+            return fallback
+
+    result = ToolResult(
+        success=False,
+        tool="media.control",
+        error="Spotify playback requires one-time setup. Set ASTA_SPOTIFY_CLIENT_ID.",
+    )
+    task = SimpleNamespace(id="t", goal="play x on spotify", evidence=[])
+    diagnosis = DiagnosisEngine(Guess()).diagnose(task, result)
+    assert isinstance(diagnosis, FailureDiagnosis)
+    assert diagnosis.category is DiagnosisCategory.SETUP_REQUIRED
+
+
+def test_filler_words_and_launch_it_reference():
+    router = IntentRouter()
+    assert router.analyze("Okay, can you uh open Chrome").entities == {
+        "action": "open", "target": "chrome"
+    }
+    assert router.analyze("Launch it now").entities == {"action": "open", "target": "it"}
+
+    from core.applications import ApplicationManager
+
+    manager = ApplicationManager()
+    manager.last_mentioned_application = "Google Chrome"
+    assert manager.resolve_reference("it") == "Google Chrome"

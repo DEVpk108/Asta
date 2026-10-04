@@ -158,7 +158,9 @@ class FakeMediaTool(Tool):
         raise AssertionError("planner tests must not execute tools")
 
 
-def test_planner_expands_provider_media_play_into_open_and_play():
+def test_planner_expands_provider_media_play_into_open_and_play(monkeypatch):
+    # API path: the provider is configured.
+    monkeypatch.setenv("ASTA_SPOTIFY_CLIENT_ID", "test-client")
     kernel = Kernel()
     kernel.register_tool(FakeTool())
     kernel.register_tool(FakeMediaTool())

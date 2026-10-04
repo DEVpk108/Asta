@@ -48,6 +48,13 @@ class OpenApplicationTool(Tool):
             )
 
         target = target.strip()
+        resolve_reference = getattr(self.application_manager, "resolve_reference", None)
+        if callable(resolve_reference):
+            try:
+                # "open it" -> the app just opened or just mentioned.
+                target = str(resolve_reference(target) or target).strip()
+            except ApplicationResolutionError:
+                pass
         resolved_target = None
         try:
             profile_launch = self._browser_profile_command(target)

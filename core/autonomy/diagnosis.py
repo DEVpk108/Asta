@@ -97,6 +97,15 @@ class DiagnosisEngine:
                 )
                 return fallback
             if isinstance(diagnosis, FailureDiagnosis):
+                fallback = self._fallback(payload)
+                if (
+                    fallback.category is DiagnosisCategory.SETUP_REQUIRED
+                    and diagnosis.category is not DiagnosisCategory.SETUP_REQUIRED
+                ):
+                    # An explicit "needs one-time setup" error is not a guess;
+                    # don't let the small classifier relabel it.
+                    fallback.metadata["provider_category"] = diagnosis.category.value
+                    return fallback
                 return diagnosis
 
         return self._fallback(payload)

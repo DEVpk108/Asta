@@ -860,6 +860,13 @@ class MediaManager:
                             redirect_uri=redirect_uri,
                         )
 
+    def is_configured(self, provider_name: str) -> bool:
+        """Whether a provider's API path is usable without setup."""
+        provider = self._by_name.get(str(provider_name or "").strip().lower())
+        if provider is None:
+            return False
+        return bool(getattr(provider, "configured", True))
+
     def provider_for_application(self, application_name: str):
         normalized = _normalize_media_text(application_name)
         if not normalized:

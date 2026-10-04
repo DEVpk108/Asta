@@ -150,7 +150,9 @@ def test_verification_engine_polls_media_observer():
     assert len(observations) == 2
 
 
-def test_planner_marks_spotify_play_for_external_verification():
+def test_planner_marks_spotify_play_for_external_verification(monkeypatch):
+    # API path: the provider is configured.
+    monkeypatch.setenv("ASTA_SPOTIFY_CLIENT_ID", "test-client")
     kernel = Kernel()
     kernel.register_tool(FakeOpenTool())
     kernel.register_tool(FakeMediaPlayTool())
@@ -183,7 +185,9 @@ def test_planner_marks_spotify_play_for_external_verification():
     assert plan.steps[-1].metadata["verification"] == "media.playback"
 
 
-def test_runtime_retries_when_external_playback_verification_fails_once():
+def test_runtime_retries_when_external_playback_verification_fails_once(monkeypatch):
+    # API path: the provider is configured.
+    monkeypatch.setenv("ASTA_SPOTIFY_CLIENT_ID", "test-client")
     kernel = Kernel()
     kernel.register_tool(FakeOpenTool())
     kernel.register_tool(FakeMediaPlayTool())

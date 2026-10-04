@@ -580,6 +580,12 @@ class AIModule(Module):
                     "action_decision",
                     decision=action_decision,
                 )
+                mentioned = str(
+                    action_decision.arguments.get("target_app") or ""
+                ).strip()
+                manager = getattr(self.kernel, "application_manager", None)
+                if mentioned and manager is not None:
+                    manager.last_mentioned_application = mentioned
 
                 if (
                     action_decision.is_actionable
@@ -1283,8 +1289,8 @@ class AIModule(Module):
             error = str(result.error or "").lower()
             if "one-time setup" in error or "not configured" in error or "asta_spotify_client_id" in error:
                 return (
-                    "Spotify needs its initial developer setup. "
-                    "I’m setting that up now and will continue the original task."
+                    "Spotify's developer API isn't set up yet. "
+                    "I'll open the setup in your browser if I can."
                 )
             if "spotify authorization" in error or "authorize a.s.t.a" in error:
                 return (

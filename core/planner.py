@@ -884,6 +884,25 @@ class Planner:
                 if callable(resolve_app):
                     application = resolve_app(provider)
 
+            if (
+                operation == "play"
+                and query
+                and application
+                and provider
+                and not self._provider_api_ready(provider)
+            ):
+                # No API credentials (e.g. Spotify developer app): drive the
+                # app's own UI with vision like any other player instead of
+                # stopping for a developer-dashboard setup.
+                expanded.append({"action": "open", "target": str(application)})
+                expanded.extend(
+                    self._interactive_media_play_steps(
+                        query=query,
+                        application=str(application),
+                    )
+                )
+                continue
+
             if operation == "play" and query and application:
                 expanded.append(
                     {
@@ -898,6 +917,19 @@ class Planner:
             expanded.append(normalized)
 
         return expanded
+
+    def _provider_api_ready(self, provider: str) -> bool:
+        if os.getenv("ASTA_MEDIA_API_SETUP", "0").strip().lower() in {
+            "1", "true", "yes", "on"
+        }:
+            return True  # opt in to the developer-API setup flow
+        checker = getattr(self.media_manager, "is_configured", None)
+        if not callable(checker):
+            return True
+        try:
+            return bool(checker(provider))
+        except Exception:
+            return True
 
     def _interactive_media_play_steps(
         self,

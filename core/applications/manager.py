@@ -50,6 +50,7 @@ class ApplicationManager:
         self._last_refresh = 0.0
         self._last_error: str | None = None
         self._last_opened_application: ApplicationRecord | None = None
+        self.last_mentioned_application: str | None = None
 
     def refresh(self):
         if os.name != "nt":
@@ -326,6 +327,9 @@ class ApplicationManager:
             "the application",
         }:
             application = self._last_opened_application
+            if application is None and self.last_mentioned_application:
+                # "Launch it now" right after "I can open Chrome for you".
+                return self.last_mentioned_application
             if application is None:
                 raise ApplicationResolutionError(
                     f"No recent application reference is available for '{value}'."
