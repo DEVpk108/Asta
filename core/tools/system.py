@@ -50,8 +50,20 @@ class OpenApplicationTool(Tool):
         target = target.strip()
         resolved_target = None
         try:
-            resolved_target = self.resolve_target(target)
-            self._open(resolved_target)
+            profile_launch = self._browser_profile_command(target)
+            if profile_launch:
+                # Chromium browsers opened without a profile show "Who's
+                # using Chrome?"; open the last used profile directly.
+                resolved_target = profile_launch[0]
+                subprocess.Popen(
+                    profile_launch,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                resolved_target = self.resolve_target(target)
+                self._open(resolved_target)
         except ApplicationResolutionError as exc:
             return ToolResult(
                 success=False,
@@ -90,6 +102,21 @@ class OpenApplicationTool(Tool):
             duration_seconds=time.perf_counter() - start,
             metadata={"request_id": request.request_id},
         )
+
+    @staticmethod
+    def _browser_profile_command(target: str):
+        if os.getenv("ASTA_BROWSER_PROFILE_LAUNCH", "1").strip().lower() in {"0", "false", "no", "off"}:
+            return None
+        from core.tools.browser import _find_executable, browser_key, chromium_profile
+
+        key = browser_key(target)
+        if key is None or key == "firefox":
+            return None
+        executable = _find_executable(key)
+        profile = chromium_profile(key) if executable else None
+        if not executable or not profile:
+            return None
+        return [executable, f"--profile-directory={profile}"]
 
     @staticmethod
     def _failure_output(target, resolved_target):

@@ -25,6 +25,7 @@ from .screenshot import OpenScreenshotTool
 from .vision_inspect import VisionInspectTool
 from .vision_locate import VisionLocateTool
 from .system import OpenApplicationTool
+from .browser import BrowserSearchTool
 from .notes import CreateNoteTool, ListNotesTool, ReadNoteTool, SearchNotesTool
 from .media import MediaControlTool
 from .computer import (
@@ -44,7 +45,7 @@ __all__ = [
     "AuthorityManager", "AuthorityMode", "AuthorityRule", "AuthorityStore",
     "AuthorizationResult", "AuthorityPolicy", "RiskLevel",
     "Tool", "ToolDispatcher", "ToolRuntimeModule", "ToolRegistry",
-    "ToolRequestBuilder", "ToolSelector", "OpenApplicationTool", "LaunchApplicationTool",
+    "ToolRequestBuilder", "ToolSelector", "OpenApplicationTool", "BrowserSearchTool", "LaunchApplicationTool",
     "StartProcessTool", "RunCommandTool", "StopProcessTool", "CloseApplicationTool",
     "ScreenshotTool", "OpenScreenshotTool", "VisionInspectTool", "VisionLocateTool", "AudioControlTool", "EchoTool",
     "CreateNoteTool", "ReadNoteTool", "ListNotesTool", "SearchNotesTool",

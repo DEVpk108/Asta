@@ -383,6 +383,30 @@ class Planner:
                 "that evidence is visible."
             )
 
+            if (
+                self._is_browser(application)
+                and self._has_tool("browser.search")
+                and os.getenv("ASTA_BROWSER_DIRECT_SEARCH", "1").strip().lower()
+                not in {"0", "false", "no", "off"}
+            ):
+                # Launch the browser straight onto the results page: no
+                # focus, no profile picker, no typing, no vision model.
+                if (
+                    previous_action in {"open", "launch", "start"}
+                    and previous_target.lower() == application.lower()
+                ):
+                    expanded.pop()
+                expanded.append(
+                    {
+                        "action": "web_search",
+                        "tool": "browser.search",
+                        "query": query,
+                        "browser": application,
+                        "completion_message": f"Searched for {query}.",
+                    }
+                )
+                continue
+
             if not (
                 previous_action in {"open", "launch", "start"}
                 and previous_target

@@ -701,7 +701,7 @@ def test_browser_search_uses_address_bar_shortcut(monkeypatch):
         SimpleNamespace(
             application_manager=None,
             _is_browser=Planner._is_browser,
-            _has_tool=lambda name: True,
+            _has_tool=lambda name: name == "computer.hotkey",
         ),
         [{"action": "search", "query": "hanuman chalisa", "target": "chrome"}],
         user_directed=True,
@@ -787,3 +787,46 @@ def test_fake_tool_narration_is_not_spoken():
         '[Using notes.search_notes for "Hanuman Chalisa"] Found: Hanuman Chalisa.'
     )
     assert "Using" not in spoken and "Found" in spoken
+
+
+def test_browser_search_launches_results_page_directly(monkeypatch, tmp_path):
+    from core.tools.browser import BrowserSearchTool, chromium_profile, search_url
+    from core.tools import ComputerHotkeyTool
+
+    kernel = Kernel()
+    kernel.register_tool(BrowserSearchTool(popen=lambda *a, **k: None))
+    kernel.register_tool(ComputerHotkeyTool(SimpleNamespace()))
+    planner = Planner(kernel.tool_registry)
+    steps = planner._expand_search_commands(
+        [{"action": "open", "target": "chrome"},
+         {"action": "search", "query": "hanuman chalisa"}],
+        user_directed=True,
+    )
+    assert [s["action"] for s in steps] == ["web_search"]
+    assert steps[0]["browser"] == "chrome"
+    assert steps[0]["completion_message"] == "Searched for hanuman chalisa."
+    assert search_url("hanuman chalisa") == "https://www.google.com/search?q=hanuman+chalisa"
+
+    # Last used Chrome profile skips "Who's using Chrome?".
+    data = tmp_path / "Google" / "Chrome" / "User Data"
+    data.mkdir(parents=True)
+    (data / "Local State").write_text('{"profile": {"last_used": "Profile 2"}}', encoding="utf-8")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.delenv("ASTA_BROWSER_PROFILE", raising=False)
+    assert chromium_profile("chrome") == "Profile 2"
+    monkeypatch.setenv("ASTA_BROWSER_PROFILE", "Default")
+    assert chromium_profile("chrome") == "Default"
+
+
+def test_browser_search_tool_builds_profile_command(monkeypatch, tmp_path):
+    import core.tools.browser as browser
+
+    launched = []
+    monkeypatch.setattr(browser, "_find_executable", lambda key: "C:/chrome.exe")
+    monkeypatch.setenv("ASTA_BROWSER_PROFILE", "Profile 1")
+    tool = browser.BrowserSearchTool(popen=lambda cmd, **k: launched.append(cmd))
+    request = SimpleNamespace(arguments={"query": "cats", "browser": "Google Chrome"}, request_id="r1")
+    result = tool.execute(request)
+    assert result.success
+    assert launched == [["C:/chrome.exe", "--profile-directory=Profile 1",
+                         "https://www.google.com/search?q=cats"]]

@@ -140,6 +140,7 @@ def main():
         SearchNotesTool,
         LaunchApplicationTool,
         OpenApplicationTool,
+        BrowserSearchTool,
         OpenScreenshotTool,
         RunCommandTool,
         ScreenshotTool,
@@ -204,6 +205,7 @@ def main():
     # Register capabilities before the runtime starts.
     for tool in (
         OpenApplicationTool(kernel.application_manager),
+        BrowserSearchTool(),
         LaunchApplicationTool(),
         StartProcessTool(),
         RunCommandTool(),
