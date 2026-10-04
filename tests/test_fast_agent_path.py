@@ -830,3 +830,67 @@ def test_browser_search_tool_builds_profile_command(monkeypatch, tmp_path):
     assert result.success
     assert launched == [["C:/chrome.exe", "--profile-directory=Profile 1",
                          "https://www.google.com/search?q=cats"]]
+
+
+def test_search_without_app_is_a_web_search(monkeypatch):
+    from core.tools.browser import BrowserSearchTool
+
+    monkeypatch.delenv("ASTA_DEFAULT_BROWSER", raising=False)
+    kernel = Kernel()
+    kernel.register_tool(BrowserSearchTool(popen=lambda *a, **k: None))
+    planner = Planner(kernel.tool_registry)
+    steps = planner._expand_search_commands(
+        [{"action": "search", "query": "new songs"}], user_directed=True
+    )
+    assert steps == [{
+        "action": "web_search", "tool": "browser.search", "query": "new songs",
+        "browser": "chrome", "completion_message": "Searched for new songs.",
+    }]
+
+
+def test_full_english_sentence_beats_devanagari_guess():
+    from voice.language_choice import choose_transcript
+
+    assert choose_transcript(
+        "Search for model Router on Chrome", "सर्च फॉर मॉडल राउटर ऑन क्रोम"
+    )[1] == "Search for model Router on Chrome"
+    assert choose_transcript("Search for human challeng", "सर्च फॉर हनुमान चले सॉन क्रोम")[1] == (
+        "Search for hanuman chalisa on chrome"
+    )
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("What is two plus two", "That's 4."),
+        ("what is 12 times 7?", "That's 84."),
+        ("how much is one hundred and five minus five", "That's 100."),
+        ("what is 10 divided by 4", "That's 2.5."),
+        ("what is the capital of france", None),
+        ("search for one plus", None),
+        ("what is 2 to the power of 1000", None),
+    ],
+)
+def test_quick_math_answers_without_llm(text, expected):
+    from core.quick_answers import quick_math
+
+    assert quick_math(text) == expected
+
+
+def test_adopted_orphan_vision_server_is_killed(monkeypatch):
+    import vision.vision_server_manager as vsm
+
+    killed = []
+    monkeypatch.setattr(vsm.os, "name", "nt")
+    monkeypatch.setattr(vsm, "_listening_pid", lambda port: 4242)
+    monkeypatch.setattr(vsm, "_process_name", lambda pid: "llama-server.exe")
+    monkeypatch.setattr(vsm, "_kill_pid", lambda pid: killed.append(pid))
+    manager = vsm.VisionServerManager.__new__(vsm.VisionServerManager)
+    manager.base_url = "http://127.0.0.1:8090/v1"
+    manager.process = None
+    manager.owned = False
+    manager._adopted_pid = None
+    manager.preload = False
+    manager._server_is_ready = lambda: True
+    assert manager.release_orphan() is True
+    assert killed == [4242] and manager.owned is False

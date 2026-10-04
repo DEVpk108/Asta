@@ -74,6 +74,20 @@ class VisionServerManager:
 
         self.process: subprocess.Popen | None = None
         self.owned = False
+        self._adopted_pid: int | None = None
+
+    def release_orphan(self) -> bool:
+        """Stop a leftover vision server from an earlier session (frees VRAM)."""
+        if os.name != "nt" or self.preload or self.process is not None:
+            return False
+        if not self._server_is_ready():
+            return False
+        self._adopt_orphan()
+        if not self.owned:
+            return False
+        print("[Vision] Unloading leftover vision server from a previous session.", flush=True)
+        self.stop()
+        return True
 
     @staticmethod
     def _env_bool(name: str, default: bool) -> bool:
@@ -205,6 +219,8 @@ class VisionServerManager:
 
     def ensure_running(self) -> bool:
         if self._server_is_ready():
+            if not self.owned:
+                self._adopt_orphan()
             return True
 
         server = self._resolve_server_path()
@@ -268,11 +284,43 @@ class VisionServerManager:
     def warmup(self) -> bool:
         return self.ensure_running()
 
+    def _adopt_orphan(self) -> None:
+        """Take over a llama-server left on our port by an earlier A.S.T.A.
+
+        A vision server that outlives its A.S.T.A. session (terminal closed,
+        crash) keeps ~3-4 GB of VRAM forever and was never unloaded, because
+        A.S.T.A. only stops servers it started. ASTA_VISION_ADOPT_ORPHAN=0
+        leaves foreign servers alone.
+        """
+        if self._env_bool("ASTA_VISION_ADOPT_ORPHAN", True) is False or os.name != "nt":
+            return
+        host = urlparse(self.base_url).hostname or ""
+        if host not in {"127.0.0.1", "localhost", "::1"}:
+            return
+        port = urlparse(self.base_url).port
+        pid = _listening_pid(port) if port else None
+        if pid is None or "llama-server" not in _process_name(pid).lower():
+            return
+        self._adopted_pid = pid
+        self.owned = True
+        print(
+            f"[Vision] Adopted an existing llama.cpp vision server (PID {pid}); "
+            "it will be unloaded when idle.",
+            flush=True,
+        )
+
     def stop(self) -> None:
         process = self.process
         owned = self.owned
+        adopted = getattr(self, "_adopted_pid", None)
         self.process = None
         self.owned = False
+        self._adopted_pid = None
+
+        if owned and process is None and adopted:
+            print(f"[Vision] Stopping adopted vision server (PID {adopted})...", flush=True)
+            _kill_pid(adopted)
+            return
 
         if not owned or process is None or process.poll() is not None:
             return
@@ -399,3 +447,42 @@ class VisionServerManager:
                 return True
             time.sleep(0.25)
         return False
+
+
+def _run_quiet(command: list[str]) -> str:
+    try:
+        return subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if os.name == "nt" else 0,
+        ).stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _listening_pid(port: int) -> int | None:
+    """PID listening on a local TCP port (Windows netstat)."""
+    for line in _run_quiet(["netstat", "-ano", "-p", "tcp"]).splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[0].upper() == "TCP" and parts[3].upper() == "LISTENING":
+            if parts[1].rsplit(":", 1)[-1] == str(port):
+                try:
+                    return int(parts[4])
+                except ValueError:
+                    return None
+    return None
+
+
+def _process_name(pid: int) -> str:
+    output = _run_quiet(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"])
+    first = output.strip().splitlines()[0] if output.strip() else ""
+    return first.split(",")[0].strip('"') if first else ""
+
+
+def _kill_pid(pid: int) -> None:
+    _run_quiet(["taskkill", "/PID", str(pid), "/T", "/F"])

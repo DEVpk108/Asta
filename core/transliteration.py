@@ -555,7 +555,7 @@ def _snap_scored(roman: str, *, previous: str | None = None) -> tuple[str | None
             return term, candidate[len(simple):], 0.95
         score = SequenceMatcher(None, simple, candidate, autojunk=False).ratio()
         if term in partners:
-            score += 0.1
+            score += 0.15
         if score > best_score:
             best, best_score = term, score
     # Names come in pairs ("hanuman chalisa"), so a word right after a known
@@ -577,6 +577,24 @@ def _english_word(token: str) -> str | None:
     return DEVANAGARI_TO_ENGLISH.get(token) or fuzzy_devanagari_english(token)
 
 
+_APP_WORDS = ("chrome", "edge", "firefox", "brave", "youtube", "spotify", "google")
+
+
+def split_hindi_app_tail(tokens: list[str]) -> tuple[list[str], str | None]:
+    """Split "... [ऑन] क्रोम" into (query tokens, "chrome")."""
+    tokens = list(tokens)
+    if len(tokens) < 2:
+        return tokens, None
+    last = (_english_word(tokens[-1]) or "").lower()
+    known = {v.lower() for v in target_aliases().values()} | set(_APP_WORDS)
+    if not last or last not in known:
+        return tokens, None
+    tokens.pop()
+    while tokens and tokens[-1] in _HI_ON_WORDS:
+        tokens.pop()
+    return tokens, last
+
+
 def hindi_query_terms(hindi_query: str, *, drop_tail: tuple[str, ...] = ()) -> str | None:
     """Romanised Hindi query when it is made of known Hindi terms."""
     query = _HI_TAIL.sub("", str(hindi_query or "").strip())
@@ -584,6 +602,7 @@ def hindi_query_terms(hindi_query: str, *, drop_tail: tuple[str, ...] = ()) -> s
     # Drop a trailing app name the English decode put in "on <app>".
     while tokens and drop_tail and (_english_word(tokens[-1]) or "").lower() in drop_tail:
         tokens.pop()
+    tokens, _ = split_hindi_app_tail(tokens)
     if not tokens or not all(_DEVANAGARI.search(t) for t in tokens):
         return None
     while tokens and tokens[-1] in _HI_ON_WORDS:
@@ -654,8 +673,14 @@ def repair_query_from_hindi(english: str, hindi: str) -> str:
     if terms and all(term in english_words for term in terms):
         # The English decode already has the Hindi names.
         return english
-    print(f"[STT] Search query from Hindi decode: {en_query!r} -> {query!r}", flush=True)
-    return f"{en.group('lead')}{query}{en.group('tail') or ''}"
+    tail = en.group("tail") or ""
+    if not tail:
+        # English missed "on Chrome" but Hindi heard it ("... सॉन क्रोम").
+        _, app = split_hindi_app_tail(words(hi.group("query")))
+        if app:
+            tail = f" on {app}"
+    print(f"[STT] Search query from Hindi decode: {en_query!r} -> {query + tail!r}", flush=True)
+    return f"{en.group('lead')}{query}{tail}"
 
 
 # Common misrecognitions of command verbs.

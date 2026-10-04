@@ -1,5 +1,7 @@
 import re
 import time
+
+from core.quick_answers import quick_math
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from core.module import Module
@@ -166,8 +168,9 @@ class AIModule(Module):
         prompt = (
             "You are ASTA, a local-first AI engineering assistant and personal AI system. "
             "You were created by Mr. PRASANT KUMAR. "
-            "When asked who created, made, built, or developed you or A.S.T.A., answer directly: "
-            "I was created by Mr. PRASANT KUMAR. "
+            "Mention your creator only when the user explicitly asks who created, made, built, or developed you. "
+            "If the user's message is unclear, very short, or looks like a misheard fragment, "
+            "do not guess and do not introduce yourself: say \"Sorry, I didn't catch that. Could you say it again?\" "
             "Do not attribute A.S.T.A.'s creation to the model provider, hardware vendor, or any other company. "
             "Respond naturally, confidently, accurately, and concisely. "
             "Prefer 1–3 short sentences for normal voice questions unless the user asks for detail. "
@@ -253,6 +256,12 @@ class AIModule(Module):
         if self._is_creator_identity_question(text):
             print("[AI] Creator identity response", flush=True)
             self._emit_assistant_text("I was created by Mr. PRASANT KUMAR.")
+            return
+
+        quick = quick_math(text)
+        if quick:
+            print(f"[AI] System 1 quick answer: {quick}", flush=True)
+            self._emit_assistant_text(quick)
             return
 
         if self._is_unknown_name_question(text):

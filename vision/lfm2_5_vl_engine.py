@@ -71,6 +71,13 @@ class LFM25VLEngine:
         if host in {"localhost", "127.0.0.1", "::1"}:
             self.session.trust_env = False
 
+        release = getattr(self.server_manager, "release_orphan", None)
+        if callable(release) and os.getenv("ASTA_VISION_ADOPT_ORPHAN", "1").strip().lower() not in {"0", "false", "no", "off"}:
+            try:
+                release()
+            except Exception as exc:
+                print(f"[Vision] Orphan check failed: {type(exc).__name__}: {exc}", flush=True)
+
     def _ensure_server(self) -> None:
         if not self.server_manager.ensure_running():
             raise VisionEngineError(

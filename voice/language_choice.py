@@ -137,6 +137,14 @@ def _choose_transcript(
     if converted and coverage >= TRANSLITERATED_ENGLISH_COVERAGE:
         if not english:
             return "en", converted
+        english_words = _words(english)
+        if (
+            len(english_words) >= 3
+            and _known_english_words(english) / len(english_words) >= 0.5
+        ):
+            # A full English sentence ("Search for model Router on Chrome")
+            # beats a word-by-word guess from the Devanagari decode.
+            return "en", english
         if _known_english_words(converted) > _known_english_words(english):
             return "en", converted
         return "en", english

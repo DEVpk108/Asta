@@ -366,6 +366,11 @@ class Planner:
                 recent_name = getattr(recent, "name", recent)
                 application = str(recent_name or "").strip()
 
+            if not application and self._has_tool("browser.search"):
+                # "Search for X" with no app: a web search, not a screenshot
+                # hunt for a search box in whatever window is in front.
+                application = os.getenv("ASTA_DEFAULT_BROWSER", "chrome").strip() or "chrome"
+
             application_text = application or "the current application"
             search_target = (
                 f"the primary search input field in {application_text}; "
