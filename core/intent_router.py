@@ -150,6 +150,17 @@ class IntentRouter:
                 classifier="rules",
             )
 
+        screen_question = self._extract_screen_question(normalized)
+        if screen_question:
+            return IntentResult(
+                intent=IntentType.COMMAND,
+                confidence=0.96,
+                normalized_text=normalized,
+                entities=screen_question,
+                requires_tools=True,
+                classifier="rules",
+            )
+
         compound_commands = self._extract_compound_commands(
             normalized,
             known_providers=self._media_providers,
@@ -345,6 +356,36 @@ class IntentRouter:
             return result
 
         return {}
+
+    _SCREEN_QUESTION = re.compile(
+        r"^(?:(?:hey|okay|ok|so|and|now|please)[\s,]+)*(?:"
+        r"(?:can|could)\s+you\s+(?:see|tell\s+(?:me\s+)?what(?:'s|\s+is)\s+on)\b|"
+        r"(?:(?:can|could)\s+you\s+)?(?:find|spot|read)\s+.*\bon\s+(?:my|the|this)\s+screen\b|"
+        r"do\s+you\s+see\b|what\s+do\s+you\s+see\b|"
+        r"what(?:'s|\s+is)\s+on\s+(?:my|the|this)\s+screen\b|"
+        r"(?:look|looking)\s+at\s+(?:my|the|this)\s+screen\b|"
+        r"(?:(?:can|could)\s+you\s+)?(?:describe|read|check)\s+(?:my|the|this)\s+screen\b|"
+        r"is\s+there\s+.+\s+on\s+(?:my|the)\s+screen\b)",
+        re.IGNORECASE,
+    )
+    SCREEN_QUESTION_PREFIX = "Answer the user's question about the current screenshot"
+
+    @classmethod
+    def _extract_screen_question(cls, text: str) -> dict[str, Any]:
+        """Questions about the screen ("can you see the search field?")."""
+        value = str(text or "").strip()
+        if not value or not cls._SCREEN_QUESTION.match(value):
+            return {}
+        return {
+            "action": "inspect",
+            "tool": "vision.inspect",
+            "prompt": (
+                f"{cls.SCREEN_QUESTION_PREFIX}: \"{value}\". Put a short, "
+                "direct spoken answer (one or two sentences) in summary. Set "
+                "visual_match=true when the answer is yes or the asked item "
+                "is visible."
+            ),
+        }
 
     @classmethod
     def _extract_compound_commands(
@@ -592,6 +633,14 @@ class IntentRouter:
         "the song", "the track", "the video", "the music", "the episode",
         "this song", "this track", "this video", "song please", "track please",
     }
+    _RESUME_QUERY = re.compile(
+        r"^(?:it|that|this|again|music|some\s+music|my\s+music|something|"
+        r"(?:that|this|the|my)\s+(?:song|track|music)(?:\s+again)?|"
+        r"(?:the\s+|my\s+)?(?:last|previous|recent)\s+(?:song|track|music|one)\b.*|"
+        r"what(?:ever)?\s+i\s+was\s+(?:listening|playing)\b.*)$",
+        re.IGNORECASE,
+    )
+
     _TRAILING_POLITENESS = re.compile(
         r"(?:\s*,?\s+(?:for me|for us|please|right now|now))+$"
     )
@@ -604,9 +653,22 @@ class IntentRouter:
 
         action = str(entities.get("action") or "")
 
+        if action == "search":
+            query = cls._TRAILING_POLITENESS.sub("", str(entities.get("query") or "").strip()).strip(" ,.!?;:")
+            if not query:
+                return {}
+            refined = dict(entities)
+            refined["query"] = query
+            return refined
+
         if action == "media":
             operation = str(entities.get("operation") or "").lower()
             query = str(entities.get("query") or "").strip().lower()
+            if operation == "play" and cls._RESUME_QUERY.match(query):
+                # "play the last song I was listening to" / "play that song":
+                # resume the player instead of searching for those words.
+                refined = {k: v for k, v in entities.items() if k != "query"}
+                return refined
             # "next question" is conversation, not a media skip.
             if (
                 operation in {"next", "previous", "pause", "resume", "stop", "toggle"}

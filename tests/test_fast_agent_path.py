@@ -894,3 +894,86 @@ def test_adopted_orphan_vision_server_is_killed(monkeypatch):
     manager._server_is_ready = lambda: True
     assert manager.release_orphan() is True
     assert killed == [4242] and manager.owned is False
+
+
+@pytest.mark.parametrize(
+    ("english", "hindi", "expected"),
+    [
+        ("Photoshop", "फोटोशॉप", "Photoshop"),
+        ("For Photoshop", "फॉर फोटोशॉप", "For Photoshop"),
+    ],
+)
+def test_choose_transcript_keeps_real_english_over_fuzzy_hindi(english, hindi, expected):
+    from voice.language_choice import choose_transcript
+
+    language, text = choose_transcript(english, hindi)
+    assert language == "en"
+    assert "photos" != text.lower()
+    assert text.lower().endswith("photoshop")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("play the last song I was listening to", {"action": "media", "operation": "play"}),
+        ("play that song", {"action": "media", "operation": "play"}),
+        ("can you search song for me", {"action": "search", "query": "song"}),
+        (
+            "for smartphones on chrome",
+            {"action": "search", "query": "smartphones", "target": "chrome"},
+        ),
+        ("open notes", {"action": "open", "target": "sticky notes"}),
+    ],
+)
+def test_router_handles_test_log_phrasings(text, expected):
+    entities = IntentRouter().analyze(text).entities
+    for key, value in expected.items():
+        assert entities.get(key) == value
+    if expected.get("action") == "media":
+        assert not entities.get("query")
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Can you see the search field?", "what's on my screen", "look at my screen"],
+)
+def test_screen_questions_route_to_vision_inspect(text):
+    entities = IntentRouter().analyze(text).entities
+    assert entities["action"] == "inspect"
+    assert entities["prompt"].startswith(IntentRouter.SCREEN_QUESTION_PREFIX)
+
+
+@pytest.mark.parametrize("text", ["can you find a good restaurant", "can you read me a story"])
+def test_non_screen_questions_do_not_use_vision(text):
+    assert IntentRouter().analyze(text).entities.get("action") != "inspect"
+
+
+def test_quick_math_square_roots():
+    from core.quick_answers import quick_math
+
+    assert quick_math("what is the square root of 144") == "That's 12."
+    assert quick_math("cube root of 27") == "That's 3."
+    assert quick_math("square root of apples") is None
+
+
+def test_open_failure_names_the_app():
+    from core.applications import ApplicationResolutionError
+    from core.contracts.tools import ToolRequest
+    from core.tools.system import OpenApplicationTool
+
+    tool = OpenApplicationTool()
+
+    def fail(_target):
+        raise ApplicationResolutionError("Ambiguous application 'notes'.")
+
+    tool._browser_profile_command = lambda _target: None
+    tool.resolve_target = fail
+    result = tool.execute(
+        ToolRequest(
+            tool="system.open_application",
+            arguments={"target": "notes"},
+            request_id="t1",
+        )
+    )
+    assert not result.success
+    assert result.output["target"] == "notes"

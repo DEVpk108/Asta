@@ -87,6 +87,16 @@ def quick_math(text: str) -> str | None:
     """Answer simple spoken arithmetic, or None."""
     value = str(text or "").strip().lower().rstrip("?.! ")
     value = _LEAD.sub("", value).strip()
+    root = re.fullmatch(r"(?:the\s+)?(square|cube)\s+root\s+of\s+(.+)", value)
+    if root:
+        radicand = _number(root.group(2).replace("-", " ").split())
+        if radicand is None or (root.group(1) == "square" and radicand < 0):
+            return None
+        if root.group(1) == "square":
+            result = math.sqrt(radicand)
+        else:
+            result = round(radicand ** (1 / 3), 9)
+        return f"That's {_format(result)}."
     value = re.sub(r"(\d)\s*([+\-*/×÷^%x])\s*(\d)", r"\1 \2 \3", value)
     value = re.sub(r"\bsquared\b", "** 2", value)
     value = re.sub(r"\bcubed\b", "** 3", value)

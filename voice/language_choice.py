@@ -145,6 +145,12 @@ def _choose_transcript(
             # A full English sentence ("Search for model Router on Chrome")
             # beats a word-by-word guess from the Devanagari decode.
             return "en", english
+        _, exact_coverage = devanagari_english(hindi, exclude=HINDI_COMMON)
+        if exact_coverage < TRANSLITERATED_ENGLISH_COVERAGE:
+            # The Devanagari reading only works through fuzzy guesses
+            # ("फोटोशॉप" -> "photos", "लॉन्ग कॉन्टेक्स्ट" -> "song next");
+            # the English decode spelled the real words.
+            return "en", english
         if _known_english_words(converted) > _known_english_words(english):
             return "en", converted
         return "en", english

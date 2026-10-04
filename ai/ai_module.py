@@ -1209,6 +1209,9 @@ class AIModule(Module):
                     print(f"[AI] Screenshot saved: {path}", flush=True)
                 return "Screenshot captured."
             if result.tool == "vision.inspect":
+                summary = str(output.get("summary") or "").strip()
+                if output.get("question") and summary:
+                    return summary
                 if bool(output.get("verified")):
                     return "I checked the screen. The requested visual condition is confirmed."
                 if bool(output.get("visual_match")):

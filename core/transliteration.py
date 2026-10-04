@@ -318,7 +318,9 @@ def canonicalize_command(text: str) -> str:
     if not value:
         return value
     return split_implicit_commands(
-        apply_target_aliases(strip_transitions(fix_verb_typos(_canonicalize_language(value))))
+        apply_target_aliases(
+            strip_transitions(restore_clipped_search(fix_verb_typos(_canonicalize_language(value))))
+        )
     )
 
 
@@ -375,7 +377,7 @@ DEFAULT_TARGET_ALIASES = {
     "krome": "chrome", "krom": "chrome", "kroom": "chrome", "cro": "chrome",
     "crow": "chrome", "chrom": "chrome", "groment": "chrome",
     "spot if i": "spotify", "spotty fy": "spotify", "you tube": "youtube",
-    "note pad": "notepad", "calculate": "calculator", "camra": "camera",
+    "note pad": "notepad", "notes": "sticky notes", "calculate": "calculator", "camra": "camera",
 }
 _ALIAS_FILE = Path(__file__).resolve().parents[1] / "data" / "voice_aliases.json"
 _alias_cache: tuple[str, float, dict[str, str]] | None = None
@@ -441,6 +443,21 @@ _TRANSITION = re.compile(
     r"(?=(?:search|look\s+up|open|close|launch|start|play|pause|type|go\s+to|press)\b)",
     re.IGNORECASE,
 )
+
+
+_CLIPPED_SEARCH = re.compile(
+    r"^(?P<lead>(?:okay|ok|so|now)?\s*,?\s*)for\s+(?P<query>.+?)\s+(?:on|in)\s+"
+    r"(?P<app>chrome|google\s+chrome|edge|firefox|brave|google|youtube)\s*[.?!]?$",
+    re.IGNORECASE,
+)
+
+
+def restore_clipped_search(text: str) -> str:
+    """"For smartphones on Chrome": the "search" was clipped by the mic."""
+    match = _CLIPPED_SEARCH.match(str(text or "").strip())
+    if not match:
+        return text
+    return f"search for {match.group('query')} on {match.group('app')}"
 
 
 def strip_transitions(text: str) -> str:

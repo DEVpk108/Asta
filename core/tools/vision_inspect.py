@@ -183,6 +183,9 @@ class VisionInspectTool(Tool):
             "summary": str(parsed.get("summary") or inspection.get("text") or ""),
             "visual_match": visual_match,
             "verified": verified,
+            "question": str(prompt or "").startswith(
+                "Answer the user's question about the current screenshot"
+            ),
             "confidence": confidence,
             "required_playback_text": required_playback_text,
             "verification_guard": verification_guard,

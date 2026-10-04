@@ -68,6 +68,7 @@ class OpenApplicationTool(Tool):
             return ToolResult(
                 success=False,
                 tool=self.definition.name,
+                output=self._failure_output(target, None),
                 error=str(exc),
                 duration_seconds=time.perf_counter() - start,
                 metadata={"request_id": request.request_id},
