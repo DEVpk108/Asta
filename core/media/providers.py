@@ -123,6 +123,7 @@ class SpotifyProvider:
     priority = 20
     # Desktop deep link that opens the search results page directly.
     search_uri_template = "spotify:search:{query}"
+    process_name = "Spotify"
 
     def __init__(self):
         self._system = WindowsMediaProvider()
@@ -872,6 +873,10 @@ class MediaManager:
         if not template or not text:
             return None
         return str(template).format(query=quote(text))
+
+    def process_name(self, provider_name: str) -> str | None:
+        provider = self._by_name.get(str(provider_name or "").strip().lower())
+        return getattr(provider, "process_name", None)
 
     def is_configured(self, provider_name: str) -> bool:
         """Whether a provider's API path is usable without setup."""

@@ -1056,3 +1056,88 @@ def test_filler_words_and_launch_it_reference():
     manager = ApplicationManager()
     manager.last_mentioned_application = "Google Chrome"
     assert manager.resolve_reference("it") == "Google Chrome"
+
+
+class _Runner:
+    def __init__(self, found, titles):
+        self.found = found
+        self.titles = list(titles)
+        self.calls = []
+
+    def __call__(self, script, env, timeout):
+        import json as _json
+
+        self.calls.append(env)
+        if "ASTA_UI_TOKENS" in env:
+            return _json.dumps(self.found)
+        return self.titles.pop(0) if self.titles else ""
+
+
+def _ui_request(query="hanuman chalisa"):
+    from core.contracts.tools import ToolRequest
+
+    return ToolRequest(
+        tool="media.ui_play",
+        arguments={"query": query, "application": "Spotify", "process": "Spotify"},
+        request_id="r",
+    )
+
+
+def test_ui_play_invokes_named_button_and_verifies_title():
+    from core.tools.ui_play import UIPlayTool
+
+    runner = _Runner(
+        {"invoked": True, "name": "Play Shree Hanuman Chalisa by Hariharan"},
+        ["Spotify Premium", "Spotify Premium", "Hariharan - Shree Hanuman Chalisa"],
+    )
+    result = UIPlayTool(runner=runner, sleep=lambda _s: None).execute(_ui_request())
+    assert result.success
+    assert result.output["method"] == "ui_automation"
+    assert runner.calls[1]["ASTA_UI_TOKENS"] == "hanuman|chalisa"
+    assert result.output["message"] == "Playing Shree Hanuman Chalisa by Hariharan."
+
+
+def test_ui_play_falls_back_to_vision_double_click():
+    from core.tools.ui_play import UIPlayTool
+
+    clicks = []
+    locate = SimpleNamespace(
+        execute=lambda req: ToolResult(
+            success=True, tool="vision.locate", output={"screen_center": {"x": 10, "y": 20}}
+        )
+    )
+    controller = SimpleNamespace(click=lambda **kw: clicks.append(kw))
+    runner = _Runner({"invoked": False, "error": "no_match"}, ["Spotify Free", "Artist - Hanuman Chalisa"])
+    result = UIPlayTool(
+        runner=runner, locate_tool=locate, controller=controller, sleep=lambda _s: None
+    ).execute(_ui_request())
+    assert result.success and result.output["method"] == "vision_double_click"
+    assert clicks[0]["clicks"] == 2 and clicks[0]["x"] == 10
+
+
+def test_ui_play_reports_failure_when_title_never_changes():
+    from core.tools.ui_play import UIPlayTool
+
+    runner = _Runner({"invoked": True, "name": "Play x"}, ["Spotify Free"] * 8)
+    result = UIPlayTool(runner=runner, sleep=lambda _s: None).execute(_ui_request())
+    assert not result.success and result.output["verified"] is False
+
+
+def test_spotify_plan_uses_ui_play_tool(monkeypatch):
+    from core import Planner as _Planner
+    from core.tools import UIPlayTool
+
+    monkeypatch.delenv("ASTA_SPOTIFY_CLIENT_ID", raising=False)
+    kernel = Kernel()
+    kernel.register_tool(UIPlayTool(runner=lambda *a: ""))
+    planner = _Planner(
+        kernel.tool_registry,
+        media_manager=kernel.media_manager,
+        application_manager=kernel.application_manager,
+    )
+    commands = planner._expand_media_commands(
+        [{"action": "media", "operation": "play", "query": "hanuman chalisa", "provider": "spotify"}],
+        user_directed=True,
+    )
+    assert [c.get("tool") or c["action"] for c in commands] == ["open", "computer.wait", "media.ui_play"]
+    assert commands[-1]["process"] == "Spotify"

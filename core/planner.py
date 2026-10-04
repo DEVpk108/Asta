@@ -901,7 +901,28 @@ class Planner:
                 # app's own UI with vision like any other player instead of
                 # stopping for a developer-dashboard setup.
                 search_uri = self._provider_search_uri(provider, query)
-                if search_uri:
+                process = self._provider_process(provider)
+                if search_uri and process and self._has_tool("media.ui_play"):
+                    # Deep link to the results page, then press the result's
+                    # own accessible "Play" button and confirm from the
+                    # window title. Vision is only the fallback.
+                    expanded.extend(
+                        (
+                            {"action": "open", "target": search_uri},
+                            {"action": "wait", "tool": "computer.wait", "seconds": 2.0},
+                            {
+                                "action": "ui_play",
+                                "tool": "media.ui_play",
+                                "query": query,
+                                "application": str(application),
+                                "process": process,
+                                "fallback_target": (
+                                    f"the first song in the search results in {application}"
+                                ),
+                            },
+                        )
+                    )
+                elif search_uri:
                     # The app's own deep link lands straight on the results
                     # page: no search box to find, nothing to type.
                     expanded.append({"action": "open", "target": search_uri})
@@ -951,6 +972,15 @@ class Planner:
             return bool(checker(provider))
         except Exception:
             return True
+
+    def _provider_process(self, provider: str) -> str:
+        resolver = getattr(self.media_manager, "process_name", None)
+        if not callable(resolver):
+            return ""
+        try:
+            return str(resolver(provider) or "").strip()
+        except Exception:
+            return ""
 
     def _provider_search_uri(self, provider: str, query: str) -> str:
         resolver = getattr(self.media_manager, "search_uri", None)

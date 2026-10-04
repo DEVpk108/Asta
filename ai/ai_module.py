@@ -1139,12 +1139,9 @@ class AIModule(Module):
         if error == self._REJECTED_ERROR:
             return
 
-        message = (
-            "I couldn't complete that task."
-            if not goal
-            else f"I couldn't complete that task: {goal}."
-        )
-        print(f"[AI] Task failed: {message}", flush=True)
+        # The failed step explains why; don't read the whole request back.
+        message = "Sorry, I couldn't finish that."
+        print(f"[AI] Task failed: {goal or message}", flush=True)
         self._emit_assistant_text(message)
 
     def on_tool_confirmation_required(self, request, reason):
@@ -1200,6 +1197,8 @@ class AIModule(Module):
                 return f"Launched {target}."
             if result.tool == "system.close_application" and target:
                 return f"Closed {target}."
+            if result.tool == "media.ui_play":
+                return str(output.get("message") or "Playing it now.")
             if result.tool == "media.control":
                 message = output.get("message")
                 if message:
@@ -1284,6 +1283,13 @@ class AIModule(Module):
         if result.tool == "system.start_process":
             target = output.get("target")
             return f"I couldn't start {target}." if target else "I couldn't start the process."
+
+        if result.tool == "media.ui_play":
+            query = output.get("query") or "that"
+            app = output.get("application") or "the app"
+            if output.get("method"):
+                return f"I pressed play on {query} in {app}, but it didn't start playing."
+            return f"I couldn't find {query} in {app}'s results."
 
         if result.tool == "media.control":
             error = str(result.error or "").lower()

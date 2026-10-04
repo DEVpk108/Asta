@@ -28,6 +28,7 @@ from .system import OpenApplicationTool
 from .browser import BrowserSearchTool
 from .notes import CreateNoteTool, ListNotesTool, ReadNoteTool, SearchNotesTool
 from .media import MediaControlTool
+from .ui_play import UIPlayTool
 from .computer import (
     ComputerController,
     ComputerMoveMouseTool,
@@ -47,7 +48,7 @@ __all__ = [
     "Tool", "ToolDispatcher", "ToolRuntimeModule", "ToolRegistry",
     "ToolRequestBuilder", "ToolSelector", "OpenApplicationTool", "BrowserSearchTool", "LaunchApplicationTool",
     "StartProcessTool", "RunCommandTool", "StopProcessTool", "CloseApplicationTool",
-    "ScreenshotTool", "OpenScreenshotTool", "VisionInspectTool", "VisionLocateTool", "AudioControlTool", "EchoTool",
+    "ScreenshotTool", "OpenScreenshotTool", "VisionInspectTool", "VisionLocateTool", "UIPlayTool", "AudioControlTool", "EchoTool",
     "CreateNoteTool", "ReadNoteTool", "ListNotesTool", "SearchNotesTool",
     "MediaControlTool",
     "ComputerController", "ComputerWaitTool", "ComputerMoveMouseTool", "ComputerClickTool",

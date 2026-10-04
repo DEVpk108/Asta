@@ -8,6 +8,36 @@ from core.config import ensure_hud_token, load_local_environment
 
 
 load_local_environment()
+
+
+def _enable_dpi_awareness():
+    """Screenshots, vision coordinates and clicks must share physical pixels.
+
+    Without this, the first capture happens DPI-unaware (logical pixels) and
+    PyAutoGUI later switches the process to DPI-aware, so clicks drift on
+    scaled (125%/150%) displays.
+    """
+    if os.name != "nt":
+        return
+    import ctypes
+
+    try:
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+_enable_dpi_awareness()
 # Generate the HUD transport secret before the Electron HUD is launched so it
 # inherits the same value through its environment.
 ensure_hud_token()
@@ -149,6 +179,7 @@ def main():
         StartProcessTool,
         StopProcessTool,
         MediaControlTool,
+        UIPlayTool,
         ComputerController,
         ComputerMoveMouseTool,
         ComputerClickTool,
@@ -201,6 +232,10 @@ def main():
     # agent can reuse the same mouse/keyboard primitives for Spotify, browsers,
     # settings, development tools, or any other interactive application.
     computer = ComputerController()
+    locate_tool = VisionLocateTool(
+        kernel.vision_engine,
+        capture=capture_screenshot,
+    )
 
     # Register capabilities before the runtime starts.
     for tool in (
@@ -217,10 +252,7 @@ def main():
             kernel.vision_engine,
             capture=capture_screenshot,
         ),
-        VisionLocateTool(
-            kernel.vision_engine,
-            capture=capture_screenshot,
-        ),
+        locate_tool,
         AudioControlTool("mute"),
         AudioControlTool("unmute"),
         CreateNoteTool(kernel.notes_manager),
@@ -228,6 +260,7 @@ def main():
         ListNotesTool(kernel.notes_manager),
         SearchNotesTool(kernel.notes_manager),
         MediaControlTool(kernel.media_manager),
+        UIPlayTool(locate_tool=locate_tool, controller=computer),
         ComputerMoveMouseTool(computer),
         ComputerClickTool(computer),
         ComputerTypeTextTool(computer),
