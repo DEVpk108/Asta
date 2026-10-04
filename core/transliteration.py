@@ -450,7 +450,9 @@ def strip_transitions(text: str) -> str:
         str(text or ""),
         flags=re.IGNORECASE,
     )
-    return _TRANSITION.sub(" and then ", value).strip()
+    value = _TRANSITION.sub(" and then ", value).strip()
+    # The first command was clipped ("once you are there, search for X").
+    return re.sub(r"^(?:and\s+then|and|then)\b\s*,?\s*", "", value, flags=re.IGNORECASE)
 
 
 def split_implicit_commands(text: str) -> str:
@@ -522,7 +524,7 @@ _EN_QUERY = re.compile(
 _HI_QUERY = re.compile(
     r"(?:सर्च(?:\s+(?:फॉर|फोर|फ़ॉर|फार))?|लुक\s+अप|गूगल|प्ले)\s+(?P<query>[^,.?!।]+)$"
 )
-_HI_ON_WORDS = {"ऑन", "आन", "इन", "ओन", "उन"}
+_HI_ON_WORDS = {"ऑन", "आन", "इन", "ओन", "उन", "वन"}
 # "... ऑन क्रोम" / "... इन क्रोम" / "... क्रोम पर|में" at the end of a query.
 _HI_TAIL = re.compile(
     r"\s+(?:(?:ऑन|आन|इन|यूज़िंग|यूजिंग)\s+\S+|\S+\s+(?:पर|में|मे))$"
@@ -680,7 +682,7 @@ def fix_verb_typos(text: str) -> str:
 # stream was empty or garbled ("Shurma salis on chrome").
 _HI_SEARCH_VERBS = {"सर्च", "सर्चर", "सर्ज", "सच", "सर्छ", "सार्च"}
 _HI_FOR = {"फॉर", "फोर", "फ़ॉर", "फार", "फर", "पर", "फॉ"}
-_HI_ON = {"ऑन", "आन", "इन", "ओन", "उन"}
+_HI_ON = {"ऑन", "आन", "इन", "ओन", "उन", "वन"}
 _COMMAND_VERBS = re.compile(
     r"\b(?:search|look\s+up|google|open|close|launch|start|play|pause|stop|"
     r"type|mute|unmute|resume|skip|next|previous|volume|turn|set|remind|note)\b",
@@ -705,9 +707,16 @@ def devanagari_search_command(hindi: str) -> str | None:
     tokens = words(strip_wake_remnant(str(hindi or "")))
     while tokens and tokens[0] in {"ओके", "ओकेय", "हे", "प्लीज़", "प्लीज"}:
         tokens.pop(0)
-    if len(tokens) < 2 or tokens[0] not in _HI_SEARCH_VERBS:
+    if len(tokens) < 2:
         return None
-    verb = tokens.pop(0)
+    if tokens[0] in _HI_SEARCH_VERBS:
+        verb = tokens.pop(0)
+    elif tokens[0] in _HI_FOR and len(tokens) >= 3:
+        # "search" itself was clipped ("पर हनुमान चलीसा ऑन क्रोम"); only
+        # trusted with an "on <app>" tail below.
+        verb = ""
+    else:
+        return None
     has_for = bool(tokens) and tokens[0] in _HI_FOR
     if has_for:
         tokens.pop(0)
@@ -723,10 +732,13 @@ def devanagari_search_command(hindi: str) -> str | None:
                 tokens.pop()
     if not tokens:
         return None
-    if verb == "सच" and not (has_for and app):
+    if verb in {"सच", ""} and not (has_for and app):
         # "सच" is also the Hindi word for "truth"; need "for ... on <app>".
         return None
     query = hindi_query_terms(" ".join(tokens))
+    if not query and verb in {"सच", ""}:
+        # Without a clear "सर्च" verb, only known names make it a search.
+        return None
     if not query:
         out: list[str] = []
         for token in tokens:

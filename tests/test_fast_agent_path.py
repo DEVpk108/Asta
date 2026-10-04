@@ -764,3 +764,26 @@ def test_hotkey_plan_step_with_key_list_builds_request():
     assert request.tool == "computer.hotkey"
     assert request.arguments["keys"] == ["ctrl", "l"]
     assert request.metadata["user_directed"] is True
+
+
+def test_clipped_command_starts_are_recovered():
+    from voice.language_choice import choose_transcript
+
+    result = IntentRouter().analyze("Once you are there search for hanuman chalisa")
+    assert result.entities == {"action": "search", "query": "hanuman chalisa"}
+    _, text = choose_transcript("", "पर हनुमान चले से वन क्रो")
+    assert IntentRouter().analyze(text).entities == {
+        "action": "search", "query": "hanuman chalisa", "target": "chrome",
+    }
+    # Ordinary Hindi starting with "पर" (but) is not a search.
+    assert choose_transcript("", "पर वो क्रोम")[0] == "hi"
+    assert choose_transcript("", "पर मुझे नहीं पता")[0] == "hi"
+
+
+def test_fake_tool_narration_is_not_spoken():
+    from speech.speech_module import SpeechModule
+
+    spoken = SpeechModule._prepare_for_speech(
+        '[Using notes.search_notes for "Hanuman Chalisa"] Found: Hanuman Chalisa.'
+    )
+    assert "Using" not in spoken and "Found" in spoken

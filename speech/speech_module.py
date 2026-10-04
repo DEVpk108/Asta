@@ -171,6 +171,11 @@ class SpeechModule(Module):
             line = re.sub(r"^[-*]\s+", "", line)
             line = re.sub(r"^\d+[.)]\s+", "", line)
             line = re.sub(r"\[(.*?)\]\([^)]*\)", r"\1", line)
+            # Fake tool-call narration from a small chat model
+            # ("[Using notes.search_notes for ...]") is never spoken.
+            line = re.sub(r"\[(?:using|calling|tool|running)\b[^\]]*\]", " ", line, flags=re.IGNORECASE).strip()
+            if not line:
+                continue
             lines.append(line)
 
         value = re.sub(r"\s+", " ", " ".join(lines)).strip()
