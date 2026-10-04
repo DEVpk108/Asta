@@ -12,6 +12,7 @@ from core.module import Module
 
 from .microphone_engine import MicrophoneEngine
 from .wakeword_engine import WakeWordEngine
+from core.transliteration import ends_unfinished
 from .vad_engine import VADEngine
 from .recognition_engine import RecognitionEngine
 from .incremental_command_engine import IncrementalCommandDetector
@@ -766,13 +767,15 @@ class VoiceModule(Module):
     def _running_and_incremental_listenable(self):
         return self._running and not self._tts_active
 
-    def _collect_command_audio(self, initial_audio=None, on_audio=None):
+    def _collect_command_audio(self, initial_audio=None, on_audio=None, hold=None):
         if not self._confirmation_listening_active():
+            kwargs = {"hold": hold} if hold is not None else {}
             return self.vad.collect_utterance(
                 self.microphone,
                 initial_audio=initial_audio,
                 speech_timeout=3,
                 on_audio=on_audio,
+                **kwargs,
             )
 
         original = {
@@ -788,12 +791,21 @@ class VoiceModule(Module):
 
         try:
             print("[VAD] Listening for short confirmation...", flush=True)
-            return self.vad.collect_utterance(
-                self.microphone,
-                initial_audio=initial_audio,
-                speech_timeout=2.0,
-                on_audio=on_audio,
-            )
+            try:
+                return self.vad.collect_utterance(
+                    self.microphone,
+                    initial_audio=initial_audio,
+                    speech_timeout=2.0,
+                    on_audio=on_audio,
+                    short_turns=False,
+                )
+            except TypeError:
+                return self.vad.collect_utterance(
+                    self.microphone,
+                    initial_audio=initial_audio,
+                    speech_timeout=2.0,
+                    on_audio=on_audio,
+                )
         finally:
             self.vad.min_rms = original["min_rms"]
             self.vad.min_peak = original["min_peak"]
@@ -930,6 +942,11 @@ class VoiceModule(Module):
                     audio = self._collect_command_audio(
                         initial_audio=interrupted_audio,
                         on_audio=stream.accept if stream is not None else None,
+                        hold=(
+                            (lambda: ends_unfinished(stream.partial_text))
+                            if stream is not None
+                            else None
+                        ),
                     )
                 except Exception:
                     if stream is not None:

@@ -1921,6 +1921,10 @@ class TaskRuntimeModule(Module):
             and task.plan.metadata.get("planner") == "deterministic"
         ):
             request.metadata["user_directed"] = True
+        if step.metadata.get("completion_message"):
+            request.metadata["completion_message"] = str(
+                step.metadata["completion_message"]
+            )
         return request
 
     @staticmethod

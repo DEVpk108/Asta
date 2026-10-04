@@ -148,13 +148,51 @@ class TurnEndTracker:
     user resumes speaking.
     """
 
-    def __init__(self, detector: SmartTurnDetector | None, extra_wait_samples: int):
+    def __init__(
+        self,
+        detector: SmartTurnDetector | None,
+        extra_wait_samples: int,
+        *,
+        hold=None,
+        short_speech_samples: int = 0,
+        short_threshold: float | None = None,
+    ):
         self.detector = detector
         self.extra_wait_samples = max(0, int(extra_wait_samples))
         self.pending = False
         self.waited = 0
+        # Optional callable: True while the live transcript ends on a verb or
+        # connector ("open", "search for", "and"), i.e. clearly unfinished.
+        self.hold = hold
+        # Very short turns ("open" + pause) need a more confident Smart Turn.
+        self.short_speech_samples = max(0, int(short_speech_samples))
+        self.short_threshold = short_threshold
+        self.speech_samples = 0
+
+    def _sounds_complete(self, audio) -> bool:
+        detector = self.detector
+        threshold = getattr(detector, "threshold", 0.5)
+        short = (
+            self.short_threshold is not None
+            and self.speech_samples < self.short_speech_samples
+        )
+        probability_fn = getattr(detector, "completion_probability", None)
+        if not callable(probability_fn) or not isinstance(threshold, (int, float)):
+            return detector.is_complete(audio)
+        start = time.perf_counter()
+        probability = probability_fn(audio)
+        required = max(threshold, self.short_threshold) if short else threshold
+        complete = probability >= required
+        print(
+            f"[SmartTurn] {'complete' if complete else 'incomplete'} "
+            f"p={probability:.2f}{' (short turn, need %.2f)' % required if short else ''} "
+            f"({(time.perf_counter() - start) * 1000:.0f} ms)",
+            flush=True,
+        )
+        return complete
 
     def update(self, *, started: bool, ended: bool, chunk_samples: int, get_audio) -> bool:
+        self.speech_samples += int(chunk_samples)
         if self.pending:
             if started:
                 self.pending = False
@@ -166,8 +204,18 @@ class TurnEndTracker:
             return False
         if self.detector is None or self.extra_wait_samples == 0:
             return True
+        if self.hold is not None:
+            try:
+                unfinished = bool(self.hold())
+            except Exception:
+                unfinished = False
+            if unfinished:
+                print("[SmartTurn] holding: phrase sounds unfinished", flush=True)
+                self.pending = True
+                self.waited = 0
+                return False
         try:
-            if self.detector.is_complete(get_audio()):
+            if self._sounds_complete(get_audio()):
                 return True
         except Exception as exc:
             print(f"[SmartTurn] Prediction failed: {type(exc).__name__}: {exc}", flush=True)
@@ -175,3 +223,4 @@ class TurnEndTracker:
         self.pending = True
         self.waited = 0
         return False
+

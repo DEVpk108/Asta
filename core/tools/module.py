@@ -144,7 +144,7 @@ class ToolRuntimeModule(Module):
     @staticmethod
     def _task_metadata(request):
         metadata = {}
-        for key in ("request_id", "task_id", "task_step", "plan_step_id", "planner"):
+        for key in ("request_id", "task_id", "task_step", "plan_step_id", "planner", "completion_message"):
             if key == "request_id":
                 metadata[key] = request.request_id
                 continue

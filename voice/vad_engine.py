@@ -72,13 +72,21 @@ class VADEngine:
             speech_pad_ms=speech_pad_ms,
         )
 
-    def new_turn_tracker(self):
+    def new_turn_tracker(self, hold=None, short_turns=True):
         silence_ms = int(getattr(self, "silence_ms", 700))
         iterator_ms = int(getattr(self, "iterator_silence_ms", silence_ms))
         extra_ms = max(0, silence_ms - iterator_ms)
+        try:
+            short_ms = int(os.getenv("ASTA_SMART_TURN_SHORT_MS", "900"))
+            short_threshold = float(os.getenv("ASTA_SMART_TURN_SHORT_THRESHOLD", "0.85"))
+        except ValueError:
+            short_ms, short_threshold = 900, 0.85
         return TurnEndTracker(
             getattr(self, "smart_turn", None),
             int(self.sample_rate * extra_ms / 1000),
+            hold=hold,
+            short_speech_samples=int(self.sample_rate * short_ms / 1000) if short_turns else 0,
+            short_threshold=short_threshold if short_turns else None,
         )
 
     def is_speech_started(self, event):
@@ -93,6 +101,8 @@ class VADEngine:
         initial_audio=None,
         speech_timeout=3.0,
         on_audio=None,
+        hold=None,
+        short_turns=True,
     ):
         """Record one utterance.
 
@@ -100,7 +110,10 @@ class VADEngine:
         streaming recognizer can decode while the user is still speaking.
         """
         print("[VAD] Waiting for command...")
-        tracker = self.new_turn_tracker()
+        try:
+            tracker = self.new_turn_tracker(hold=hold, short_turns=short_turns)
+        except TypeError:  # test doubles with the old signature
+            tracker = self.new_turn_tracker()
 
         def capture(samples):
             audio_buffer.append(samples)

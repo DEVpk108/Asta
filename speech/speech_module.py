@@ -1,5 +1,6 @@
 import queue
 import re
+import unicodedata
 import threading
 import time
 
@@ -173,6 +174,16 @@ class SpeechModule(Module):
             lines.append(line)
 
         value = re.sub(r"\s+", " ", " ".join(lines)).strip()
+        # Emoji and pictographs are read out literally or glitch the voice.
+        value = "".join(
+            ch for ch in value
+            if not (
+                unicodedata.category(ch) in {"So", "Cs", "Co"}
+                or 0xFE00 <= ord(ch) <= 0xFE0F
+                or ord(ch) in {0x200D, 0x20E3}
+            )
+        )
+        value = re.sub(r"\s+", " ", value).strip()
         if not value:
             return ""
 

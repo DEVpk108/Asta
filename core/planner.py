@@ -307,6 +307,9 @@ class Planner:
     ) -> list[dict[str, Any]]:
         """Expand a generic semantic search into provider-agnostic GUI steps."""
         expanded: list[dict[str, Any]] = []
+        verify_search = os.getenv("ASTA_VERIFY_SEARCH", "0").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
 
         for index, command in enumerate(commands):
             normalized = dict(command)
@@ -403,20 +406,36 @@ class Planner:
                         "action": "keypress",
                         "tool": "computer.keypress",
                         "key": "enter",
-                        **({"user_directed": True} if user_directed else {}),
-                    },
-                    {
-                        "action": "wait",
-                        "tool": "computer.wait",
-                        "seconds": 1.0,
-                    },
-                    {
-                        "action": "inspect",
-                        "tool": "vision.inspect",
-                        "prompt": verification_prompt,
+                        **(
+                            {
+                                "user_directed": True,
+                                "completion_message": f"Searched for {query}.",
+                            }
+                            if user_directed and not verify_search
+                            else {"user_directed": True} if user_directed else {}
+                        ),
                     },
                 )
             )
+            if verify_search or not user_directed:
+                # Visual confirmation loads the vision model (~2 s plus VRAM
+                # pressure on the LLM) and often misses results that are
+                # still loading, so spoken searches skip it by default
+                # (ASTA_VERIFY_SEARCH=1 restores it).
+                expanded.extend(
+                    (
+                        {
+                            "action": "wait",
+                            "tool": "computer.wait",
+                            "seconds": 1.0,
+                        },
+                        {
+                            "action": "inspect",
+                            "tool": "vision.inspect",
+                            "prompt": verification_prompt,
+                        },
+                    )
+                )
 
         return expanded
 

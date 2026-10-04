@@ -17,8 +17,11 @@ router already understands.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import unicodedata
+from pathlib import Path
 from difflib import SequenceMatcher
 
 # Devanagari spellings of English words that STT produces for English speech.
@@ -305,14 +308,19 @@ def devanagari_english(
 
 
 def canonicalize_command(text: str) -> str:
-    """Rewrite Hindi/Hinglish or Devanagari-English commands into English.
+    """Rewrite noisy spoken commands into the English form the router knows.
 
-    Returns the input unchanged when nothing applies, so ordinary sentences
-    pass straight through to the router.
+    Handles Hindi/Hinglish grammar, Devanagari-English, misheard app names
+    and a missing "then" between two commands. Ordinary sentences pass
+    through unchanged.
     """
     value = " ".join(str(text or "").split())
     if not value:
         return value
+    return split_implicit_commands(apply_target_aliases(_canonicalize_language(value)))
+
+
+def _canonicalize_language(value: str) -> str:
 
     has_devanagari = bool(_DEVANAGARI.search(value))
     working = value
@@ -352,3 +360,90 @@ def canonicalize_command(text: str) -> str:
         if coverage >= 0.6:
             return working
     return value
+
+
+# --------------------------------------------------------------------------
+# Command-target aliases for consistent mishearings
+# --------------------------------------------------------------------------
+# Words the STT commonly produces for an app name. Only applied to the word
+# right after open/close/launch/start, so normal speech is untouched. Add your
+# own in data/voice_aliases.json, e.g. {"ground": "chrome"}.
+DEFAULT_TARGET_ALIASES = {
+    "ground": "chrome", "grom": "chrome", "groom": "chrome", "crome": "chrome",
+    "krome": "chrome", "krom": "chrome", "kroom": "chrome", "cro": "chrome",
+    "crow": "chrome", "chrom": "chrome", "groment": "chrome",
+    "spot if i": "spotify", "spotty fy": "spotify", "you tube": "youtube",
+    "note pad": "notepad", "calculate": "calculator", "camra": "camera",
+}
+_ALIAS_FILE = Path(__file__).resolve().parents[1] / "data" / "voice_aliases.json"
+_alias_cache: tuple[str, float, dict[str, str]] | None = None
+
+
+def target_aliases() -> dict[str, str]:
+    """Default aliases merged with data/voice_aliases.json (reloaded on change)."""
+    global _alias_cache
+    path = Path(os.getenv("ASTA_VOICE_ALIASES", str(_ALIAS_FILE)))
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = -1.0
+    if _alias_cache is not None and _alias_cache[:2] == (str(path), mtime):
+        return _alias_cache[2]
+    aliases = dict(DEFAULT_TARGET_ALIASES)
+    if mtime >= 0:
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                aliases.update(
+                    {str(k).strip().lower(): str(v).strip() for k, v in loaded.items() if str(k).strip()}
+                )
+        except (OSError, ValueError) as exc:
+            print(f"[Voice] Ignoring invalid {path.name}: {exc}", flush=True)
+    _alias_cache = (str(path), mtime, aliases)
+    return aliases
+
+
+_TARGET_VERBS = r"(?:open|close|launch|start|switch\s+to)"
+
+
+def apply_target_aliases(text: str) -> str:
+    """Replace a misheard app name right after an open/close verb."""
+    value = str(text or "")
+    aliases = target_aliases()
+    if not aliases:
+        return value
+    keys = sorted(aliases, key=len, reverse=True)
+    pattern = re.compile(
+        rf"\b({_TARGET_VERBS})\s+({'|'.join(re.escape(k) for k in keys)})\b",
+        re.IGNORECASE,
+    )
+    return pattern.sub(lambda m: f"{m.group(1)} {aliases[m.group(2).lower()]}", value)
+
+
+# "open chrome search for weather" -> "open chrome then search for weather"
+_IMPLICIT_SECOND_COMMAND = re.compile(
+    r"^(?P<first>(?:open|launch|start|close)\s+\S+(?:\s+\S+){0,2}?)\s+"
+    r"(?P<second>(?:search(?:\s+for)?|look\s+up|open|close|launch|play)\s+\S.*)$",
+    re.IGNORECASE,
+)
+
+
+def split_implicit_commands(text: str) -> str:
+    value = " ".join(str(text or "").split())
+    match = _IMPLICIT_SECOND_COMMAND.match(value)
+    if not match or "," in value or re.search(r"\b(?:and|then)\b", value, re.IGNORECASE):
+        return value
+    return f"{match.group('first')} then {match.group('second')}"
+
+
+_UNFINISHED_TAIL = re.compile(
+    r"(?:^|\s)(?:open|close|launch|start|search|search\s+for|look\s+up|play|type|"
+    r"and|then|and\s+then|for|to|the|a|और|फिर|ओपन|सर्च|सर्च\s+फॉर)$",
+    re.IGNORECASE,
+)
+
+
+def ends_unfinished(text: str) -> bool:
+    """True when a partial transcript stops on a verb or connector."""
+    value = " ".join(words(text))
+    return bool(value) and bool(_UNFINISHED_TAIL.search(value))

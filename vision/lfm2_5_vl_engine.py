@@ -4,6 +4,7 @@ import base64
 import json
 import mimetypes
 import os
+import threading
 import re
 import time
 from pathlib import Path
@@ -188,9 +189,54 @@ class LFM25VLEngine:
             return False
 
     def shutdown(self) -> None:
+        timer = getattr(self, "_idle_timer", None)
+        if timer is not None:
+            timer.cancel()
         self.server_manager.stop()
 
-    def inspect(
+    def _cancel_idle_unload(self) -> None:
+        timer = getattr(self, "_idle_timer", None)
+        if timer is not None:
+            timer.cancel()
+            self._idle_timer = None
+
+    def _schedule_idle_unload(self) -> None:
+        """Stop the vision server after a quiet period to free VRAM.
+
+        The vision model shares an 8 GB GPU with the LLM and Kokoro; while it
+        stays loaded the LLM can spill into system memory and slow to a few
+        tokens per second. ASTA_VISION_IDLE_UNLOAD_SECONDS=0 keeps it loaded.
+        """
+        try:
+            seconds = float(os.getenv("ASTA_VISION_IDLE_UNLOAD_SECONDS", "45"))
+        except ValueError:
+            seconds = 45.0
+        if seconds <= 0:
+            return
+        self._cancel_idle_unload()
+
+        def unload():
+            self._idle_timer = None
+            if getattr(self.server_manager, "owned", False):
+                print(
+                    f"[Vision] Idle for {seconds:.0f}s; unloading the vision model to free VRAM.",
+                    flush=True,
+                )
+                self.server_manager.stop()
+
+        timer = threading.Timer(seconds, unload)
+        timer.daemon = True
+        self._idle_timer = timer
+        timer.start()
+
+    def inspect(self, *args, **kwargs):
+        self._cancel_idle_unload()
+        try:
+            return self._inspect(*args, **kwargs)
+        finally:
+            self._schedule_idle_unload()
+
+    def _inspect(
         self,
         image_path: str | os.PathLike[str],
         prompt: str,

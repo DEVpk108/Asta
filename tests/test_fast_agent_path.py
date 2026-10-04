@@ -485,3 +485,129 @@ def test_quiet_utterance_retry_boosts_short_audio():
 def test_dangling_clause_keeps_first_command():
     result = IntentRouter().analyze("open chrome and search for")
     assert result.entities == {"action": "open", "target": "chrome"}
+
+
+# --------------------------------------------------------------------------
+# Voice fixes 2: aliases, implicit splits, turn holding, cleanup
+# --------------------------------------------------------------------------
+
+
+def test_misheard_browser_name_and_implicit_second_command():
+    from core.transliteration import apply_target_aliases, split_implicit_commands
+
+    assert apply_target_aliases("open ground") == "open chrome"
+    assert apply_target_aliases("ground beef recipe") == "ground beef recipe"
+    assert split_implicit_commands("open chrome search for weather") == (
+        "open chrome then search for weather"
+    )
+    assert split_implicit_commands("open chrome, search for weather") == (
+        "open chrome, search for weather"
+    )
+    result = IntentRouter().analyze("Open ground search for weather")
+    actions = [c.get("action") for c in result.entities.get("commands", [])]
+    assert actions == ["open", "search"]
+    assert result.entities["commands"][0]["target"] == "chrome"
+
+
+def test_user_voice_aliases_file(tmp_path, monkeypatch):
+    import core.transliteration as tr
+
+    path = tmp_path / "aliases.json"
+    path.write_text('{"note pad plus": "notepad++"}', encoding="utf-8")
+    monkeypatch.setenv("ASTA_VOICE_ALIASES", str(path))
+    monkeypatch.setattr(tr, "_alias_cache", None)
+    assert tr.apply_target_aliases("open note pad plus") == "open notepad++"
+
+
+def test_ends_unfinished():
+    from core.transliteration import ends_unfinished
+
+    assert ends_unfinished("open")
+    assert ends_unfinished("open chrome and")
+    assert ends_unfinished("search for")
+    assert not ends_unfinished("open chrome")
+    assert not ends_unfinished("")
+
+
+class _FakeDetector:
+    threshold = 0.5
+
+    def __init__(self, probability):
+        self.probability = probability
+
+    def completion_probability(self, audio):
+        return self.probability
+
+    def is_complete(self, audio):
+        return self.probability >= self.threshold
+
+
+def test_turn_tracker_short_turn_needs_higher_confidence():
+    from voice.smart_turn import TurnEndTracker
+
+    tracker = TurnEndTracker(
+        _FakeDetector(0.7), 8000, short_speech_samples=14400, short_threshold=0.85
+    )
+    tracker.speech_samples = 8000
+    assert not tracker._sounds_complete(np.zeros(8000, dtype=np.float32))
+    tracker.speech_samples = 20000
+    assert tracker._sounds_complete(np.zeros(20000, dtype=np.float32))
+
+
+def test_turn_tracker_hold_waits_for_full_silence():
+    from voice.smart_turn import TurnEndTracker
+
+    tracker = TurnEndTracker(_FakeDetector(0.99), 8000, hold=lambda: True)
+    audio = np.zeros(20000, dtype=np.float32)
+    assert not tracker.update(started=False, ended=True, chunk_samples=20000, get_audio=lambda: audio)
+    assert tracker.pending
+    assert tracker.update(started=False, ended=False, chunk_samples=8000, get_audio=lambda: audio)
+
+
+def test_speech_strips_emoji():
+    from speech.speech_module import SpeechModule
+
+    cleaned = SpeechModule._prepare_for_speech("Sure thing! 😊👍")
+    assert "😊" not in cleaned and "👍" not in cleaned
+    assert "Sure thing" in cleaned
+
+
+def test_missing_app_failure_asks_to_repeat():
+    from ai.ai_module import AIModule
+
+    message = AIModule._format_tool_failure(
+        ToolResult(
+            success=False,
+            tool="system.open_application",
+            output={"target": "ground"},
+            error="No installed application matched 'ground'.",
+        )
+    )
+    assert "couldn't find an app called ground" in message
+
+
+def test_completion_message_overrides_generic_success():
+    from ai.ai_module import AIModule
+
+    message = AIModule._format_tool_success(
+        ToolResult(
+            success=True,
+            tool="computer.keypress",
+            metadata={"completion_message": "Searched for weather."},
+        )
+    )
+    assert message == "Searched for weather."
+
+
+def test_vision_idle_unload_stops_owned_server(monkeypatch):
+    from vision.lfm2_5_vl_engine import LFM25VLEngine
+
+    stopped = []
+    engine = LFM25VLEngine.__new__(LFM25VLEngine)
+    engine.server_manager = SimpleNamespace(owned=True, stop=lambda: stopped.append(1))
+    engine._idle_timer = None
+    monkeypatch.setenv("ASTA_VISION_IDLE_UNLOAD_SECONDS", "0.05")
+    engine._inspect = lambda *a, **k: "ok"
+    assert engine.inspect() == "ok"
+    engine._idle_timer.join(1)
+    assert stopped == [1]

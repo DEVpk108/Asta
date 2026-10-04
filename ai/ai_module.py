@@ -1,4 +1,5 @@
 import re
+import time
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from core.module import Module
@@ -1156,11 +1157,25 @@ class AIModule(Module):
     def _emit_assistant_text(self, text):
         if not text:
             return
+        # A retried step can fail twice in a row; say the same thing once.
+        now = time.monotonic()
+        last = getattr(self, "_last_assistant_emit", None)
+        if last is not None and last[0] == text and now - last[1] < 5.0:
+            print(f"[AI] Suppressed repeated message: {text}", flush=True)
+            return
+        self._last_assistant_emit = (text, now)
         self.event_bus.emit("assistant_sentence", text=text)
         self.event_bus.emit("assistant_response", text=text)
 
     @staticmethod
     def _format_tool_success(result: ToolResult) -> str:
+        completion = (
+            result.metadata.get("completion_message")
+            if isinstance(result.metadata, dict)
+            else None
+        )
+        if completion:
+            return str(completion)
         output = result.output
         if isinstance(output, dict):
             target = output.get("target")
@@ -1235,6 +1250,15 @@ class AIModule(Module):
             "system.launch_application",
         }:
             target = output.get("target") or output.get("resolved_target")
+            missing = re.search(
+                r"No installed application matched '([^']+)'",
+                str(result.error or ""),
+            )
+            if missing:
+                return (
+                    f"I couldn't find an app called {missing.group(1)}. "
+                    "Could you say the name again?"
+                )
             if target:
                 return f"I couldn't open {target}."
             return "I couldn't open the application."
