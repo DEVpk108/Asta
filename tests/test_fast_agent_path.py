@@ -611,3 +611,17 @@ def test_vision_idle_unload_stops_owned_server(monkeypatch):
     assert engine.inspect() == "ok"
     engine._idle_timer.join(1)
     assert stopped == [1]
+
+
+def test_spoken_transition_between_commands_is_split():
+    for text in (
+        "Okay, open chrome and once you are there, search for Hanchalisa",
+        "open chrome, when it opens search for cats",
+        "open chrome and after that search for cats",
+    ):
+        commands = IntentRouter().analyze(text).entities.get("commands", [])
+        assert [c.get("action") for c in commands] == ["open", "search"], text
+        assert commands[0]["target"] == "chrome"
+    # A transition-like phrase inside a query is left alone.
+    result = IntentRouter().analyze("search for when you are there movie")
+    assert result.entities["query"] == "when you are there movie"

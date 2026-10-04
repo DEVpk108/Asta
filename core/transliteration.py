@@ -317,7 +317,9 @@ def canonicalize_command(text: str) -> str:
     value = " ".join(str(text or "").split())
     if not value:
         return value
-    return split_implicit_commands(apply_target_aliases(_canonicalize_language(value)))
+    return split_implicit_commands(
+        apply_target_aliases(strip_transitions(_canonicalize_language(value)))
+    )
 
 
 def _canonicalize_language(value: str) -> str:
@@ -426,6 +428,29 @@ _IMPLICIT_SECOND_COMMAND = re.compile(
     r"(?P<second>(?:search(?:\s+for)?|look\s+up|open|close|launch|play)\s+\S.*)$",
     re.IGNORECASE,
 )
+
+
+# "and once you are there," / "then when it opens" / "and after that" between
+# two commands -> a plain "and then" the router already understands.
+_TRANSITION = re.compile(
+    r"\s*(?:,\s*)?(?:\b(?:and|then|and\s+then)\b\s*,?\s*)?"
+    r"\b(?:(?:once|when|after|as\s+soon\s+as)\s+"
+    r"(?:you(?:'re|\s+are|\s+get)?|it(?:'s|\s+is)?|that(?:'s|\s+is)?|chrome|the\s+\w+)\s+"
+    r"(?:there|in|open|opens|opened|loaded|loads|ready|done|up)(?:\s+there)?"
+    r"|after\s+that|once\s+(?:done|open|opened|there))\b\s*,?\s*"
+    r"(?=(?:search|look\s+up|open|close|launch|start|play|pause|type|go\s+to|press)\b)",
+    re.IGNORECASE,
+)
+
+
+def strip_transitions(text: str) -> str:
+    value = re.sub(
+        r"^\s*(?:okay|ok|so|alright|all\s+right|now|um+|uh+)\s*[,.!]?\s+",
+        "",
+        str(text or ""),
+        flags=re.IGNORECASE,
+    )
+    return _TRANSITION.sub(" and then ", value).strip()
 
 
 def split_implicit_commands(text: str) -> str:
