@@ -318,7 +318,7 @@ def canonicalize_command(text: str) -> str:
     if not value:
         return value
     return split_implicit_commands(
-        apply_target_aliases(strip_transitions(_canonicalize_language(value)))
+        apply_target_aliases(strip_transitions(fix_verb_typos(_canonicalize_language(value))))
     )
 
 
@@ -472,3 +472,108 @@ def ends_unfinished(text: str) -> bool:
     """True when a partial transcript stops on a verb or connector."""
     value = " ".join(words(text))
     return bool(value) and bool(_UNFINISHED_TAIL.search(value))
+
+
+# --------------------------------------------------------------------------
+# Search queries with Indian names / Hindi words
+# --------------------------------------------------------------------------
+# The English decode turns Hindi names into English look-alikes ("Hanuman
+# Chalisa" -> "human challenges"), while the parallel Hindi decode usually
+# gets them right ("हनुमान चलीसा"). When the Hindi query is made of known
+# Hindi/Indian terms, use its romanised form instead.
+
+HINDI_TERMS = frozenset(
+    """
+    hanuman chalisa bhajan bhajans aarti arti mantra mantras stotram stotra
+    ram rama shri shree sri siya sita krishna krishn radha shiv shiva shankar
+    mahadev ganesh ganesha ganpati durga lakshmi laxmi saraswati kali bhagwan
+    bhagavan bhagwat gita geeta ramayan ramayana mahabharat katha kirtan
+    gayatri sundarkand jai jay mata maa devi baba sai
+    guru nanak gurbani shabad waheguru vishnu narayan om namah shivay shivaya
+    hare rama bajrang bali balaji tirupati kedarnath badrinath vrindavan
+    mathura ayodhya kashi banaras varanasi haridwar rishikesh
+    bollywood ghazal qawwali sufi shayari dohe doha kabir tulsidas surdas
+    arijit kishore lata mangeshkar rafi mukesh asha bhosle sonu nigam
+    shreya ghoshal udit narayan jagjit nusrat
+    biryani paneer masala dal daal chole bhature samosa pakora jalebi
+    ladoo laddu halwa kheer roti paratha dosa idli sambar rasam khichdi
+    rajma kadhi poha upma chai lassi
+    diwali holi navratri dussehra ganeshotsav janmashtami raksha bandhan
+    """.split()
+)
+
+
+def _simplify_roman(word: str) -> str:
+    value = word.lower()
+    for long, short in (("aa", "a"), ("ee", "i"), ("ii", "i"), ("oo", "u"), ("uu", "u")):
+        value = value.replace(long, short)
+    return value
+
+
+_HINDI_TERMS_SIMPLE = {
+    _simplify_roman(term): term for term in sorted(HINDI_TERMS, key=lambda t: (-len(t), t))
+}
+_EN_QUERY = re.compile(
+    r"^(?P<lead>.*?\b(?:search(?:\s+for)?|look\s+up|google|play)\s+)(?P<query>[^,.?!]+?)\s*[.?!]?$",
+    re.IGNORECASE,
+)
+_HI_QUERY = re.compile(
+    r"(?:सर्च(?:\s+(?:फॉर|फोर|फ़ॉर))?|लुक\s+अप|गूगल|प्ले)\s+(?P<query>[^,.?!।]+)$"
+)
+
+
+def hindi_query_terms(hindi_query: str) -> str | None:
+    """Romanised Hindi query when it is made of known Hindi terms."""
+    tokens = words(hindi_query)
+    if not tokens or not all(_DEVANAGARI.search(t) for t in tokens):
+        return None
+    out, known = [], 0
+    for token in tokens:
+        term = _HINDI_TERMS_SIMPLE.get(_simplify_roman(romanize(token)))
+        if term:
+            known += 1
+            out.append(term)
+        else:
+            out.append(DEVANAGARI_TO_ENGLISH.get(token) or _simplify_roman(romanize(token)))
+    if known == 0 or known * 2 < len(tokens):
+        return None
+    return " ".join(out)
+
+
+def repair_query_from_hindi(english: str, hindi: str) -> str:
+    """Swap a garbled English search query for the Hindi decode's terms."""
+    en = _EN_QUERY.match(fix_verb_typos(str(english or "").strip()))
+    hi = _HI_QUERY.search(str(hindi or "").strip())
+    if not en or not hi:
+        return english
+    query = hindi_query_terms(hi.group("query"))
+    if not query:
+        return english
+    if query.lower() == en.group("query").strip().lower():
+        return english
+    english_words = set(words(en.group("query")))
+    if any(term in english_words for term in query.split() if term in HINDI_TERMS):
+        # The English decode already has the Hindi name.
+        return english
+    print(
+        f"[STT] Search query from Hindi decode: {en.group('query')!r} -> {query!r}",
+        flush=True,
+    )
+    return f"{en.group('lead')}{query}"
+
+
+# Common misrecognitions of command verbs.
+_VERB_TYPOS = {
+    "serch": "search", "surch": "search", "sarch": "search", "saerch": "search",
+    "sirch": "search", "searh": "search", "seach": "search", "sertch": "search",
+    "opan": "open", "opun": "open", "opne": "open", "oppen": "open",
+    "clos": "close", "klose": "close",
+}
+_VERB_TYPO_PATTERN = re.compile(
+    r"\b(" + "|".join(sorted(_VERB_TYPOS, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def fix_verb_typos(text: str) -> str:
+    return _VERB_TYPO_PATTERN.sub(lambda m: _VERB_TYPOS[m.group(1).lower()], str(text or ""))

@@ -12,6 +12,8 @@ from typing import Any
 
 import requests
 
+from core import gpu_share
+
 from .vision_server_manager import VisionServerManager
 
 
@@ -208,9 +210,9 @@ class LFM25VLEngine:
         tokens per second. ASTA_VISION_IDLE_UNLOAD_SECONDS=0 keeps it loaded.
         """
         try:
-            seconds = float(os.getenv("ASTA_VISION_IDLE_UNLOAD_SECONDS", "45"))
+            seconds = float(os.getenv("ASTA_VISION_IDLE_UNLOAD_SECONDS", "30"))
         except ValueError:
-            seconds = 45.0
+            seconds = 30.0
         if seconds <= 0:
             return
         self._cancel_idle_unload()
@@ -229,11 +231,28 @@ class LFM25VLEngine:
         self._idle_timer = timer
         timer.start()
 
+    def _release_now(self) -> None:
+        self._cancel_idle_unload()
+        if getattr(self, "_busy", False):
+            return
+        if getattr(self.server_manager, "owned", False):
+            self.server_manager.stop()
+
+    def _idle_since(self) -> float | None:
+        """When the loaded model went idle; None when busy or not loaded."""
+        if getattr(self, "_busy", False) or not getattr(self.server_manager, "owned", False):
+            return None
+        return getattr(self, "_last_used", None)
+
     def inspect(self, *args, **kwargs):
         self._cancel_idle_unload()
+        self._busy = True
         try:
             return self._inspect(*args, **kwargs)
         finally:
+            self._busy = False
+            self._last_used = time.monotonic()
+            gpu_share.register("vision model", self._release_now, self._idle_since)
             self._schedule_idle_unload()
 
     def _inspect(

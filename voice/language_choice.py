@@ -14,6 +14,7 @@ import unicodedata
 from core.transliteration import (
     DEVANAGARI_TO_ENGLISH,
     devanagari_english,
+    repair_query_from_hindi,
     strip_wake_remnant,
 )
 
@@ -95,7 +96,15 @@ def hindi_score(text: str) -> float:
     return sum(1 for word in words if word in HINDI_COMMON) / len(words)
 
 
-def choose_transcript(
+def choose_transcript(*args, **kwargs) -> tuple[str, str]:
+    """Return ``(language, text)``; English searches borrow Hindi names."""
+    language, text = _choose_transcript(*args, **kwargs)
+    if language == "en" and len(args) >= 2:
+        text = repair_query_from_hindi(text, strip_wake_remnant(str(args[1] or "")))
+    return language, text
+
+
+def _choose_transcript(
     english: str,
     hindi: str,
     *,

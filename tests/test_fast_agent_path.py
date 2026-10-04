@@ -625,3 +625,41 @@ def test_spoken_transition_between_commands_is_split():
     # A transition-like phrase inside a query is left alone.
     result = IntentRouter().analyze("search for when you are there movie")
     assert result.entities["query"] == "when you are there movie"
+
+
+def test_hindi_decode_repairs_garbled_search_query():
+    from voice.language_choice import choose_transcript
+
+    language, text = choose_transcript(
+        "Open chrome and once you are there search for human challenges",
+        "ओपन क्रोम एंड वन सी आर देर सर्च फॉर हनुमान चलीसा",
+    )
+    assert language == "en"
+    assert text.endswith("search for hanuman chalisa")
+    # English queries without Hindi names stay as decoded.
+    assert choose_transcript("Search for weather", "सर्च फॉर वेदर")[1] == "Search for weather"
+    assert choose_transcript(
+        "Search for quantum computing", "सर्च फॉर क्वांटम कंप्यूटिंग"
+    )[1] == "Search for quantum computing"
+
+
+def test_verb_typos_are_fixed():
+    result = IntentRouter().analyze("Serch for cats")
+    assert result.entities == {"action": "search", "query": "cats"}
+
+
+def test_gpu_share_releases_only_idle_users(monkeypatch):
+    import time as _time
+    from core import gpu_share
+
+    released = []
+    monkeypatch.setenv("ASTA_GPU_RELEASE_IDLE_SECONDS", "5")
+    gpu_share.register("busy", lambda: released.append("busy"), lambda: None)
+    gpu_share.register("recent", lambda: released.append("recent"), lambda: _time.monotonic())
+    gpu_share.register("idle", lambda: released.append("idle"), lambda: _time.monotonic() - 60)
+    try:
+        assert gpu_share.release_idle() == ["idle"]
+        assert released == ["idle"]
+    finally:
+        for name in ("busy", "recent", "idle"):
+            gpu_share.unregister(name)

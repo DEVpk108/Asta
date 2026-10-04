@@ -7,6 +7,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from core import gpu_share
+
 from .llama_server_manager import LlamaServerManager
 
 
@@ -371,6 +373,13 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             "cache_prompt": True,
         }
 
+        # Free VRAM held by an idle vision model before generating.
+        gpu_share.release_idle("the chat reply")
+        try:
+            max_reply_seconds = float(os.getenv("ASTA_LLM_MAX_REPLY_SECONDS", "45"))
+        except ValueError:
+            max_reply_seconds = 45.0
+
         request_start = time.perf_counter()
         response_open = None
         first_event_time = None
@@ -420,6 +429,14 @@ Your goal is not merely to produce an answer. Help the user understand the probl
                 now = time.perf_counter()
                 if first_event_time is None:
                     first_event_time = now
+                if max_reply_seconds > 0 and now - request_start > max_reply_seconds:
+                    print(
+                        f"[AI] llama.cpp reply exceeded {max_reply_seconds:.0f}s; stopping. "
+                        "The GPU is probably out of VRAM (check nvidia-smi).",
+                        flush=True,
+                    )
+                    cancelled = True
+                    break
 
                 final_id = data.get("id") or final_id
                 choices = data.get("choices") or []
