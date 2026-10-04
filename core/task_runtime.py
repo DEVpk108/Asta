@@ -1000,7 +1000,16 @@ class TaskRuntimeModule(Module):
         if next_step is None:
             return
 
-        next_request = self.build_plan_request(refreshed, next_step)
+        try:
+            next_request = self.build_plan_request(refreshed, next_step)
+        except Exception as exc:
+            # Never leave a task hanging silently on a bug in a step.
+            print(
+                f"[Tasks] Could not build plan step {next_step.id}: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            next_request = None
         if next_request is None:
             self.kernel.task_manager.fail(
                 f"Unable to build a tool request for plan step '{next_step.id}'.",
@@ -1878,7 +1887,8 @@ class TaskRuntimeModule(Module):
                 key: value
                 for key, value in step.metadata.items()
                 if key in {"operation", "query", "provider", "prompt", "text", "key", "keys", "button", "clicks", "interval", "amount", "seconds"}
-                and value not in {None, ""}
+                and value is not None
+                and value != ""
             },
         }
 

@@ -673,6 +673,7 @@ def test_gpu_share_releases_only_idle_users(monkeypatch):
         ("Okay, search for machine Chrome", "ओके सर्च फॉर हनुमान चलीस ऑन क्रोम"),
         ("Serch for human challeng", "सर्च फॉर हनुमान चली साहब"),
         ("Search for human challenges", "सर्च फॉर हनुमान चालीसा"),
+        ("Sermanchali Son", "सर्च फॉर हनुमान चले सौ उन क्रोम"),
     ],
 )
 def test_hindi_names_survive_different_phrasings(english, hindi):
@@ -742,3 +743,24 @@ def test_hindi_sentences_with_sach_stay_hindi():
     from voice.language_choice import choose_transcript
 
     assert choose_transcript("", "सच में क्या हुआ") == ("hi", "सच में क्या हुआ")
+
+
+def test_hotkey_plan_step_with_key_list_builds_request():
+    from core.tools.computer import ComputerHotkeyTool
+
+    kernel = Kernel()
+    kernel.register_tool(ComputerHotkeyTool(SimpleNamespace()))
+    tasks = TaskRuntimeModule(kernel)
+    task = SimpleNamespace(
+        id="task-1", goal="search", metadata={},
+        plan=SimpleNamespace(metadata={"planner": "deterministic"}),
+    )
+    step = SimpleNamespace(
+        id="step-3",
+        description="hotkey",
+        metadata={"action": "hotkey", "tool": "computer.hotkey", "keys": ["ctrl", "l"], "user_directed": True},
+    )
+    request = tasks.build_plan_request(task, step)
+    assert request.tool == "computer.hotkey"
+    assert request.arguments["keys"] == ["ctrl", "l"]
+    assert request.metadata["user_directed"] is True

@@ -490,7 +490,7 @@ HINDI_TERMS = frozenset(
     bhagavan bhagwat gita geeta ramayan ramayana mahabharat katha kirtan
     gayatri sundarkand jai jay mata maa devi baba sai
     guru nanak gurbani shabad waheguru vishnu narayan om namah shivay shivaya
-    hare rama bajrang bali balaji tirupati kedarnath badrinath vrindavan
+    hare rama bajrang bali tandav mandir balaji tirupati kedarnath badrinath vrindavan
     mathura ayodhya kashi banaras varanasi haridwar rishikesh
     bollywood ghazal qawwali sufi shayari dohe doha kabir tulsidas surdas
     arijit kishore lata mangeshkar rafi mukesh asha bhosle sonu nigam
@@ -522,32 +522,53 @@ _EN_QUERY = re.compile(
 _HI_QUERY = re.compile(
     r"(?:सर्च(?:\s+(?:फॉर|फोर|फ़ॉर|फार))?|लुक\s+अप|गूगल|प्ले)\s+(?P<query>[^,.?!।]+)$"
 )
+_HI_ON_WORDS = {"ऑन", "आन", "इन", "ओन", "उन"}
 # "... ऑन क्रोम" / "... इन क्रोम" / "... क्रोम पर|में" at the end of a query.
 _HI_TAIL = re.compile(
     r"\s+(?:(?:ऑन|आन|इन|यूज़िंग|यूजिंग)\s+\S+|\S+\s+(?:पर|में|मे))$"
 )
 
 
-def _snap_term(roman: str, *, after_term: bool = False) -> tuple[str | None, str]:
-    """(term, missing suffix) for a romanised token close to a known term."""
+# Words that usually follow a term ("hanuman" -> "chalisa").
+_TERM_PARTNERS = {
+    "hanuman": ("chalisa", "aarti", "bhajan", "mantra", "ji"),
+    "durga": ("chalisa", "aarti"), "shiv": ("chalisa", "tandav", "aarti"),
+    "ganesh": ("aarti", "chalisa"), "sai": ("baba",), "gayatri": ("mantra",),
+    "ram": ("mandir", "bhajan", "katha"), "jai": ("shri", "hanuman", "mata"),
+}
+
+
+def _snap_scored(roman: str, *, previous: str | None = None) -> tuple[str | None, str, float]:
+    """(term, missing suffix, score) for a romanised token near a known term."""
     simple = _simplify_roman(roman)
+    partners = _TERM_PARTNERS.get(previous or "", ())
     if simple in _HINDI_TERMS_SIMPLE:
-        return _HINDI_TERMS_SIMPLE[simple], ""
+        return _HINDI_TERMS_SIMPLE[simple], "", 1.0
     if len(simple) < 4:
-        return None, ""
+        return None, "", 0.0
     best, best_score = None, 0.0
     for candidate, term in _HINDI_TERMS_SIMPLE.items():
         if candidate.startswith(simple) and len(candidate) - len(simple) <= 3:
             # Clipped by the decoder: "chali" / "chalis" -> "chalisa".
-            return term, candidate[len(simple):]
+            return term, candidate[len(simple):], 0.95
         score = SequenceMatcher(None, simple, candidate, autojunk=False).ratio()
+        if term in partners:
+            score += 0.1
         if score > best_score:
             best, best_score = term, score
     # Names come in pairs ("hanuman chalisa"), so a word right after a known
     # term may be a little further off ("चलेशन").
+    after_term = previous == "" or previous in HINDI_TERMS
     if best_score >= (0.72 if after_term else 0.8):
-        return best, ""
-    return None, ""
+        return best, "", best_score
+    return None, "", 0.0
+
+
+def _snap_term(roman: str, *, after_term: bool = False) -> tuple[str | None, str]:
+    term, missing, _ = _snap_scored(roman, previous="" if after_term else None)
+    if term is None and after_term:
+        return None, ""
+    return term, missing
 
 
 def _english_word(token: str) -> str | None:
@@ -563,19 +584,37 @@ def hindi_query_terms(hindi_query: str, *, drop_tail: tuple[str, ...] = ()) -> s
         tokens.pop()
     if not tokens or not all(_DEVANAGARI.search(t) for t in tokens):
         return None
-    out, known, missing = [], 0, ""
-    for token in tokens:
-        roman = _simplify_roman(romanize(token))
+    while tokens and tokens[-1] in _HI_ON_WORDS:
+        tokens.pop()
+    if not tokens:
+        return None
+    romans = [_simplify_roman(romanize(t)) for t in tokens]
+    out, known, missing, i = [], 0, "", 0
+    while i < len(tokens):
+        roman = romans[i]
         if missing and roman[:1] == missing[:1] and len(roman) <= 5:
             # Remainder of a word the decoder split ("चली सॉन", "चली साहब").
             missing = ""
+            i += 1
             continue
-        term, missing = _snap_term(roman, after_term=bool(out) and out[-1] in HINDI_TERMS)
+        previous = out[-1] if out and out[-1] in HINDI_TERMS else None
+        best = (*_snap_scored(roman, previous=previous), 1)
+        # The decoder also splits one word into several ("चले सौ" = chalisa).
+        for span in (2, 3):
+            if i + span > len(tokens):
+                break
+            joined = "".join(romans[i:i + span])
+            term, miss, score = _snap_scored(joined, previous=previous)
+            if term and score >= best[2]:
+                best = (term, miss, score, span)
+        term, missing, _, span = best
         if term:
             known += 1
             out.append(term)
+            i += span
             continue
-        out.append(DEVANAGARI_TO_ENGLISH.get(token) or roman)
+        out.append(DEVANAGARI_TO_ENGLISH.get(tokens[i]) or roman)
+        i += 1
     if known == 0 or known * 2 < len(out):
         return None
     return " ".join(out)
@@ -641,7 +680,7 @@ def fix_verb_typos(text: str) -> str:
 # stream was empty or garbled ("Shurma salis on chrome").
 _HI_SEARCH_VERBS = {"सर्च", "सर्चर", "सर्ज", "सच", "सर्छ", "सार्च"}
 _HI_FOR = {"फॉर", "फोर", "फ़ॉर", "फार", "फर", "पर", "फॉ"}
-_HI_ON = {"ऑन", "आन", "इन", "ओन"}
+_HI_ON = {"ऑन", "आन", "इन", "ओन", "उन"}
 _COMMAND_VERBS = re.compile(
     r"\b(?:search|look\s+up|google|open|close|launch|start|play|pause|stop|"
     r"type|mute|unmute|resume|skip|next|previous|volume|turn|set|remind|note)\b",
