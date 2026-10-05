@@ -3,6 +3,7 @@ import re
 import time
 
 from core.quick_answers import quick_math, unsupported_file_action
+from core.agent import work_awareness
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from core.module import Module
@@ -299,6 +300,9 @@ class AIModule(Module):
             self._emit_assistant_text(file_reply)
             return
 
+        if self._handle_work_followup(text):
+            return
+
         if self._is_unknown_name_question(text):
             self._emit_assistant_text(
                 "I don't know your name yet. I don't have that information stored."
@@ -347,7 +351,33 @@ class AIModule(Module):
             self._emit_assistant_text(capability_response)
             return
 
-        self._generate_response(text)
+        work = work_awareness.recent_work(getattr(self.kernel, "task_manager", None))
+        note = work_awareness.llm_context(work)
+        self._generate_response(text, runtime_context=f"[{note}]\n{text}" if note else None)
+
+    def _handle_work_followup(self, text):
+        """"Try again" / "what happened?" refer to the task that just ran."""
+        retry = work_awareness.is_retry_request(text)
+        status = not retry and work_awareness.is_status_question(text)
+        if not (retry or status):
+            return False
+        work = work_awareness.recent_work(getattr(self.kernel, "task_manager", None))
+        if status:
+            if work is None:
+                return False  # nothing of ours to explain; let the LLM answer
+            print(f"[AI] Explaining recent work: {work.goal} ({work.status})", flush=True)
+            self._emit_assistant_text(work_awareness.describe(work))
+            return True
+        if work is None:
+            if self.kernel.intent_router.analyze(text).intent == IntentType.COMMAND:
+                return False  # "play it again" with nothing to retry = resume
+            self._emit_assistant_text("There's nothing recent for me to retry. What would you like me to do?")
+            return True
+        if not work.failed and self.kernel.intent_router.analyze(text).intent == IntentType.COMMAND:
+            return False  # last task worked; "play it again" keeps its own meaning
+        print(f"[AI] Retrying recent task: {work.goal} (was {work.status})", flush=True)
+        self.on_user_message(work.goal)
+        return True
 
     def _recover_recent_command(
         self,

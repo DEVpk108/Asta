@@ -65,6 +65,22 @@ if ($best) {
 $result | ConvertTo-Json -Compress
 """
 
+# A minimized window has no usable accessibility tree or pixels, so bring it
+# back (SW_RESTORE) and to the front before looking for the Play button.
+_RESTORE_WINDOW = r"""
+Add-Type -Namespace AstaWin -Name U -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+[DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+'@
+$restored = $false
+foreach ($w in @(Get-Process -Name $env:ASTA_UI_PROCESS -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })) {
+  if ([AstaWin.U]::IsIconic($w.MainWindowHandle)) { [AstaWin.U]::ShowWindow($w.MainWindowHandle, 9) | Out-Null; $restored = $true }
+  [AstaWin.U]::SetForegroundWindow($w.MainWindowHandle) | Out-Null
+}
+if ($restored) { Start-Sleep -Milliseconds 700; 'restored' } else { 'ok' }
+"""
+
 _WINDOW_TITLE = r"""
 $t = @(Get-Process -Name $env:ASTA_UI_PROCESS -ErrorAction SilentlyContinue |
   Where-Object { $_.MainWindowTitle } | Select-Object -ExpandProperty MainWindowTitle)
@@ -158,6 +174,7 @@ class UIPlayTool(Tool):
         if not query:
             return done(False, "Argument 'query' must be a non-empty string.")
 
+        output["window"] = self._restore_window(process)
         before = self._window_title(process)
         method = None
         if os.name == "nt" or self.runner is not _powershell:
@@ -209,6 +226,18 @@ class UIPlayTool(Tool):
         except Exception as exc:
             return {"invoked": False, "error": f"{type(exc).__name__}: {exc}"}
         return data if isinstance(data, dict) else {}
+
+    def _restore_window(self, process: str) -> str:
+        if not (os.name == "nt" or self.runner is not _powershell):
+            return "skipped"
+        try:
+            raw = self.runner(_RESTORE_WINDOW, {"ASTA_UI_PROCESS": process}, 8.0)
+        except Exception:
+            return "unknown"
+        state = (str(raw or "").strip().splitlines() or ["unknown"])[-1]
+        if state == "restored":
+            print(f"[UIPlay] Restored minimized {process} window.", flush=True)
+        return state
 
     def _window_title(self, process: str) -> str:
         try:

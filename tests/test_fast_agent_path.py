@@ -1067,6 +1067,8 @@ class _Runner:
     def __call__(self, script, env, timeout):
         import json as _json
 
+        if "IsIconic" in script:
+            return "ok"
         self.calls.append(env)
         if "ASTA_UI_TOKENS" in env:
             return _json.dumps(self.found)
@@ -1448,3 +1450,89 @@ def test_play_without_an_app_uses_the_default_music_app(monkeypatch):
         [{"action": "media", "operation": "play", "query": "udit narayan", "artist": "udit narayan"}]
     )
     assert commands[0] == {"action": "open", "target": "spotify:search:udit%20narayan"}
+
+
+def _fake_task(goal, status, step_error=None):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from core.contracts.plan import PlanStepStatus
+
+    steps = []
+    if step_error:
+        steps.append(SimpleNamespace(description="ui_play", status=PlanStepStatus.FAILED, metadata={"error": step_error}))
+    return SimpleNamespace(
+        goal=goal, status=SimpleNamespace(value=status), error=None,
+        plan=SimpleNamespace(steps=steps), updated_at=datetime.now(timezone.utc),
+    )
+
+
+def _work_ai(task):
+    from types import SimpleNamespace
+
+    from ai.ai_module import AIModule
+
+    ai = AIModule.__new__(AIModule)
+    said, reran = [], []
+    ai.kernel = SimpleNamespace(
+        task_manager=SimpleNamespace(list=lambda: [task] if task else []),
+        intent_router=IntentRouter(),
+    )
+    ai._emit_assistant_text = said.append
+    ai.on_user_message = reran.append
+    return ai, said, reran
+
+
+@pytest.mark.parametrize("phrase", ["Try again", "ट्राई अगेन", "Again", "phir se try karo", "play it again"])
+def test_try_again_retries_the_failed_task(phrase):
+    goal = "play some songs by arijit singh on spotify"
+    ai, said, reran = _work_ai(_fake_task(goal, "failed", "Pressed play but playback did not start"))
+    assert ai._handle_work_followup(phrase)
+    assert reran == [goal]
+
+
+def test_play_it_again_after_success_keeps_resume_meaning():
+    ai, _, reran = _work_ai(_fake_task("play barish on spotify", "completed"))
+    assert not ai._handle_work_followup("play it again")
+    assert reran == []
+
+
+def test_what_happened_explains_the_failure():
+    ai, said, _ = _work_ai(_fake_task("play arijit singh on spotify", "failed", "playback did not start"))
+    assert ai._handle_work_followup("what happened?")
+    assert "arijit singh" in said[0] and "playback did not start" in said[0] and "try again" in said[0]
+
+
+def test_try_again_with_nothing_recent_says_so():
+    ai, said, reran = _work_ai(None)
+    assert ai._handle_work_followup("try again")
+    assert reran == [] and "nothing recent" in said[0]
+
+
+def test_llm_gets_recent_work_context():
+    from core.agent.work_awareness import llm_context, recent_work
+    from types import SimpleNamespace
+
+    task = _fake_task("play remix songs on spotify", "failed", "playback did not start")
+    note = llm_context(recent_work(SimpleNamespace(list=lambda: [task])))
+    assert "play remix songs on spotify" in note and "failed" in note
+
+
+def test_ui_play_restores_a_minimized_window():
+    from core.contracts import ToolRequest
+    from core.tools.ui_play import UIPlayTool
+
+    scripts = []
+
+    def runner(script, env, timeout):
+        scripts.append(script)
+        if "IsIconic" in script:
+            return "restored"
+        if "InvokePattern" in script:
+            return '{"invoked": true, "name": "Play Arijit Singh"}'
+        return "Arijit Singh - Tum Hi Ho"
+
+    tool = UIPlayTool(runner=runner, sleep=lambda _s: None)
+    result = tool.execute(ToolRequest(tool="media.ui_play", arguments={"query": "arijit singh"}, request_id="r"))
+    assert result.success and result.output["window"] == "restored"
+    assert "IsIconic" in scripts[0]
