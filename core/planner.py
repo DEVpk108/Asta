@@ -880,6 +880,16 @@ class Planner:
                         infer_provider(str(recent_name)) or ""
                     ).strip()
 
+            if not provider and operation == "play" and query and self.media_manager is not None:
+                # "play some Udit Narayan songs" with no app named: use the
+                # default music app rather than a bare media key that has
+                # nothing to search with.
+                default = os.getenv("ASTA_DEFAULT_MUSIC_PROVIDER", "spotify").strip().lower()
+                resolve_default = getattr(self.media_manager, "application_for_provider", None)
+                if default and callable(resolve_default) and resolve_default(default):
+                    provider = default
+                    normalized["provider"] = default
+
             application = None
             if provider and self.media_manager is not None:
                 resolve_app = getattr(

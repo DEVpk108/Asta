@@ -151,3 +151,25 @@ def quick_math(text: str) -> str | None:
     if not isinstance(result, (int, float)) or abs(result) > 1e15:
         return None
     return f"That's {_format(float(result))}."
+
+
+_FILE_ACTION = re.compile(
+    r"\b(?P<verb>delete|remove|erase|wipe|rename|move|copy|clean\s+up)\b.*\b(?:files?|folders?|director(?:y|ies))\b|"
+    r"\b(?:files?|folders?)\b.*\b(?P<verb2>delete|remove|erase|rename|move|copy)\b",
+    re.IGNORECASE,
+)
+
+
+def unsupported_file_action(text: str, tool_names) -> str | None:
+    """Honest reply for file management when no file tool is registered.
+
+    Without this the LLM answered "I'll delete all the patch files, let me
+    do that now" and nothing happened.
+    """
+    if any(str(name).startswith(("files.", "file.", "filesystem.")) for name in tool_names or ()):
+        return None
+    match = _FILE_ACTION.search(str(text or ""))
+    if not match:
+        return None
+    verb = (match.group("verb") or match.group("verb2") or "manage").lower()
+    return f"I can't {verb} files yet, so I haven't touched anything. Please do that one yourself for now."

@@ -61,7 +61,7 @@ def _squash(text: str) -> str:
     return value
 
 
-def _match_artist(span: str) -> tuple[str | None, float]:
+def _match_artist(span: str, *, minimum: float = 0.82) -> tuple[str | None, float]:
     squashed = _squash(span)
     if len(squashed) < 2:
         return None, 0.0
@@ -70,12 +70,12 @@ def _match_artist(span: str) -> tuple[str | None, float]:
         target = _squash(name)
         if squashed == target:
             return name, 1.0
-        if len(target) < 8 or len(squashed) < 6 or abs(len(target) - len(squashed)) > 3:
+        if len(target) < 8 or len(squashed) < 6 or abs(len(target) - len(squashed)) > (3 if minimum >= 0.8 else 4):
             continue  # short names ("kk", "king") must match exactly
         score = SequenceMatcher(None, squashed, target, autojunk=False).ratio()
         if score > best_score:
             best, best_score = name, score
-    return (best, best_score) if best_score >= 0.82 else (None, 0.0)
+    return (best, best_score) if best_score >= minimum else (None, 0.0)
 
 
 _GLUE_WORDS = frozenset(
@@ -126,3 +126,13 @@ def artist_request(query: str) -> str | None:
             # "atif aslam ke gaane" / "taylor's songs" name a person even if unknown.
             return artist
     return None
+
+
+def best_artist(candidates, *, minimum: float = 0.7) -> str | None:
+    """Known artist closest to any candidate spelling (explicit "by X" slot)."""
+    best, best_score = None, 0.0
+    for candidate in candidates:
+        name, score = _match_artist(candidate, minimum=minimum)
+        if name and score > best_score:
+            best, best_score = name, score
+    return best

@@ -371,7 +371,7 @@ class IntentRouter:
         return {}
 
     _TRANSPORT_LEAD = re.compile(
-        r"^(?:(?:okay|ok|hey|hi|please|so|and|now|asta|just|"
+        r"^(?:(?:okay|ok|uk|hey|hi|please|so|and|now|asta|just|uh|um|"
         r"can you|could you|would you|will you)[\s,]+)+"
     )
     _ITEM = r"(?:(?:the|this|that|my|current)\s+)?(?:song|track|music|gaana|gana|one|playback|audio|it)"
@@ -389,6 +389,7 @@ class IntentRouter:
         ("next", re.compile(
             rf"^(?:next|skip|change|switch)(?:\s+{_ITEM})?(?:\s+please)?$|"
             r"^(?:play|go to|put on)\s+(?:the\s+)?next(?:\s+(?:song|track|one))?$|"
+            r"^(?:play|put on)\s+(?:(?:a|an|some|any)\s+)?(?:different|another|other|new|else)\s+(?:song|track|one)$|"
             r"^(?:agla|agla wala|next)\s+(?:gaana|gana|song)(?:\s+(?:chalao|lagao|bajao))?$|"
             r"^(?:gaana|gana|song)\s+(?:badlo|badal do|change karo)$"
         )),
@@ -412,6 +413,7 @@ class IntentRouter:
         """Pause / resume / next / previous / what's playing, no vision needed."""
         value = cls._TRANSPORT_LEAD.sub("", str(text or "").strip().lower())
         value = re.sub(r"[.!?,]+", " ", value)
+        value = re.sub(r"\b(?:uh+|um+|erm|hmm)\b", " ", value)
         value = re.sub(r"\s+(?:please|now|right now|for me)$", "", " ".join(value.split()))
         provider = None
         suffix = cls._APP_SUFFIX.search(value)

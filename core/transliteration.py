@@ -999,3 +999,40 @@ def devanagari_play_command(hindi: str, *, require_verb: bool = True) -> str | N
                 out.append(_query_word(token, out))
             query = " ".join(out)
     return f"play {query} on {app}"
+
+
+# --------------------------------------------------------------------------
+# "songs by <artist>" with the name clipped or garbled in English
+# --------------------------------------------------------------------------
+_EN_BY_ARTIST = re.compile(
+    r"^(?P<lead>.*\b(?:songs?|music|tracks?|hits|gaane|gane)\s+(?:by|of|from))"
+    r"(?:\s+(?P<artist>[^,.?!]*?))?(?P<tail>\s+(?:on|in)\s+(?:spotify|youtube(?:\s+music)?))?\s*[.?!]?$",
+    re.IGNORECASE,
+)
+_HI_BY = {"बाय", "बाइ", "बाई", "बायो", "ऑफ", "फ्रॉम"}
+
+
+def repair_artist_from_hindi(english: str, hindi: str) -> str:
+    """"Play some songs by" + "... बाय अरिजीत सिंह" -> "... by arijit singh"."""
+    from core.media.artists import _match_artist, best_artist
+
+    match = _EN_BY_ARTIST.match(str(english or "").strip())
+    if not match:
+        return english
+    en_artist = (match.group("artist") or "").strip()
+    if en_artist and _match_artist(en_artist)[0]:
+        return english  # already a known name
+    tokens = words(hindi)
+    by_index = next((i for i, t in enumerate(tokens) if t in _HI_BY), None)
+    after = tokens[by_index + 1:] if by_index is not None else []
+    after, app = split_hindi_app_tail(after)
+    while after and after[-1] in _HI_ON_WORDS:
+        after.pop()
+    hi_artist = _hinglish_tokens(after) if after else ""
+    candidates = [c for c in (en_artist, hi_artist) if c]
+    artist = best_artist(candidates)
+    if not artist:
+        return english
+    tail = match.group("tail") or (f" on {app}" if app in _MEDIA_APPS else "")
+    print(f"[STT] Artist from Hindi decode: {en_artist!r} -> {artist!r}", flush=True)
+    return f"{match.group('lead')} {artist}{tail}"

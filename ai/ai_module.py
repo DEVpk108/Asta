@@ -2,7 +2,7 @@ import os
 import re
 import time
 
-from core.quick_answers import quick_math
+from core.quick_answers import quick_math, unsupported_file_action
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from core.module import Module
@@ -177,6 +177,12 @@ class AIModule(Module):
 
         print("[AI] Stopped", flush=True)
 
+    def _registered_tool_names(self):
+        try:
+            return [definition.name for definition in self.kernel.tool_registry.definitions()]
+        except Exception:
+            return []
+
     def _ground_engine_in_capabilities(self):
         definitions = self.kernel.tool_registry.definitions()
         if definitions:
@@ -285,6 +291,12 @@ class AIModule(Module):
         if quick:
             print(f"[AI] System 1 quick answer: {quick}", flush=True)
             self._emit_assistant_text(quick)
+            return
+
+        file_reply = unsupported_file_action(text, self._registered_tool_names())
+        if file_reply:
+            print("[AI] No file tool registered; answering honestly", flush=True)
+            self._emit_assistant_text(file_reply)
             return
 
         if self._is_unknown_name_question(text):

@@ -1403,3 +1403,48 @@ def test_ui_play_prefers_the_shortest_full_match_for_artists():
     from core.tools.ui_play import query_tokens
 
     assert query_tokens("udit narayan") == ["udit", "narayan"]
+
+
+@pytest.mark.parametrize(
+    "text", ["Uk now can you play uh different song", "play another song", "play some other song"]
+)
+def test_play_a_different_song_skips(text):
+    assert IntentRouter().analyze(text).entities == {"action": "media", "operation": "next"}
+
+
+@pytest.mark.parametrize(
+    ("english", "hindi", "artist"),
+    [
+        ("Play some songs by", "प्लेसम सॉंग्स बाय अरिजीत सिंह", "arijit singh"),
+        ("Can you play some songs by Ari", "कैन यू प्ले सम सॉंग्स बाइ अरिजीत सि", "arijit singh"),
+        ("Play some music by with it no rand on Spotify", "प्ले सम म्यूजिक बायो इतना रैंड ऑन स्पॉटीफाई", "udit narayan"),
+    ],
+)
+def test_artist_name_from_the_hindi_decode(english, hindi, artist):
+    from voice.language_choice import choose_transcript
+
+    _, text = choose_transcript(english, hindi)
+    assert IntentRouter().analyze(text).entities["artist"] == artist
+
+
+def test_file_actions_without_a_file_tool_are_declined_honestly():
+    from core.quick_answers import unsupported_file_action
+
+    reply = unsupported_file_action("in your project folder, delete all the dot patch files", ["notes.create_note"])
+    assert reply and "haven't touched" in reply
+    assert unsupported_file_action("delete the note about milk", []) is None
+    assert unsupported_file_action("delete the patch files", ["files.delete"]) is None
+
+
+def test_play_without_an_app_uses_the_default_music_app(monkeypatch):
+    from core import Planner as _Planner
+
+    monkeypatch.delenv("ASTA_SPOTIFY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("ASTA_MEDIA_API_SETUP", raising=False)
+    monkeypatch.delenv("ASTA_DEFAULT_MUSIC_PROVIDER", raising=False)
+    kernel = Kernel()
+    planner = _Planner(kernel.tool_registry, media_manager=kernel.media_manager)
+    commands = planner._expand_media_commands(
+        [{"action": "media", "operation": "play", "query": "udit narayan", "artist": "udit narayan"}]
+    )
+    assert commands[0] == {"action": "open", "target": "spotify:search:udit%20narayan"}
