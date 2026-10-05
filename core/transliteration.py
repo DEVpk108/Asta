@@ -692,11 +692,24 @@ def split_hindi_app_tail(tokens: list[str]) -> tuple[list[str], str | None]:
     return tokens, last
 
 
+def _cut_at_app_tail(tokens: list[str], drop_tail: tuple[str, ...]) -> list[str]:
+    """English heard "on <app>": cut the Hindi query at its last "ऑन" too,
+    so multi-word apps ("ऑन एप्पल म्यूजिक") don't leak into the title."""
+    if not drop_tail or drop_tail[0] not in {"on", "in", "using", "with"}:
+        return tokens
+    app_words = len(drop_tail) - 1
+    for index in range(len(tokens) - 1, 0, -1):
+        if tokens[index] in _HI_ON_WORDS and 1 <= len(tokens) - index - 1 <= app_words + 1:
+            return tokens[:index]
+    return tokens
+
+
 def hindi_query_terms(hindi_query: str, *, drop_tail: tuple[str, ...] = ()) -> str | None:
     """Romanised Hindi query when it is made of known Hindi terms."""
     query = _HI_TAIL.sub("", str(hindi_query or "").strip())
     tokens = words(query)
     # Drop a trailing app name the English decode put in "on <app>".
+    tokens = _cut_at_app_tail(tokens, drop_tail)
     while tokens and drop_tail and (_english_word(tokens[-1]) or "").lower() in drop_tail:
         tokens.pop()
     tokens, _ = split_hindi_app_tail(tokens)
@@ -803,6 +816,7 @@ def hinglish_query(hindi_query: str, english_query: str, *, drop_tail: tuple[str
     """Romanised Hindi title when the English decode garbled a Hindi query."""
     query = _HI_TAIL.sub("", str(hindi_query or "").strip())
     tokens = words(query)
+    tokens = _cut_at_app_tail(tokens, drop_tail)
     while tokens and drop_tail and (_english_word(tokens[-1]) or "").lower() in drop_tail:
         tokens.pop()
     tokens, _ = split_hindi_app_tail(tokens)
@@ -1036,3 +1050,29 @@ def repair_artist_from_hindi(english: str, hindi: str) -> str:
     tail = match.group("tail") or (f" on {app}" if app in _MEDIA_APPS else "")
     print(f"[STT] Artist from Hindi decode: {en_artist!r} -> {artist!r}", flush=True)
     return f"{match.group('lead')} {artist}{tail}"
+
+
+# --------------------------------------------------------------------------
+# open/close targets the English decode misheard ("Close sport")
+# --------------------------------------------------------------------------
+_EN_TARGET = re.compile(r"^(?P<lead>.*?\b(?:open|close|launch|start|quit|exit)\s+)(?P<target>[\w .+-]{2,30}?)\s*[.?!]?$", re.IGNORECASE)
+_HI_TARGET_VERBS = {"ओपन", "क्लोज", "क्लोज़", "लॉन्च", "स्टार्ट", "खोलो", "बंद"}
+
+
+def repair_target_from_hindi(english: str, hindi: str) -> str:
+    """"Close sport" + "क्लोज स्पटिफाई" -> "Close spotify"."""
+    match = _EN_TARGET.match(str(english or "").strip())
+    if not match:
+        return english
+    known = {v.lower() for v in target_aliases().values()} | set(_APP_WORDS)
+    target = match.group("target").strip().lower()
+    if target in known or target in target_aliases():
+        return english
+    tokens = words(hindi)
+    for index, token in enumerate(tokens[:-1]):
+        if token in _HI_TARGET_VERBS:
+            app = (_english_word(tokens[index + 1]) or "").lower()
+            if app in known and SequenceMatcher(None, target, app).ratio() >= 0.5:
+                print(f"[STT] App name from Hindi decode: {target!r} -> {app!r}", flush=True)
+                return f"{match.group('lead')}{app}"
+    return english

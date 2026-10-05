@@ -21,6 +21,13 @@ from .planner import PlanningError
 from .module import Module
 
 
+
+# Music apps ASTA has no integration for; requests fall back to Spotify.
+UNSUPPORTED_MUSIC_APPS = frozenset(
+    {"apple music", "amazon music", "jiosaavn", "saavn", "gaana", "wynk", "wynk music",
+     "soundcloud", "deezer", "tidal", "pandora"}
+)
+
 class TaskRuntimeModule(Module):
     """Bind user goals and tool activity to the active AgentTask.
 
@@ -1755,6 +1762,17 @@ class TaskRuntimeModule(Module):
             if action == "media":
                 operation = str(command.get("operation") or "").strip().lower()
                 query = str(command.get("query") or "").strip()
+                requested = str(command.get("requested_provider") or "").strip()
+                provider_name = str(command.get("provider") or "").strip().lower()
+                if not requested and provider_name in UNSUPPORTED_MUSIC_APPS:
+                    requested, command = provider_name, {**command, "provider": "spotify"}
+                if operation == "play" and query and requested:
+                    target = f"songs by {command['artist']}" if command.get("artist") else query
+                    used = str(command.get("provider") or "Spotify")
+                    return (
+                        f"Okay, sir. I can't use {requested.title()} yet, so I'm playing "
+                        f"{target.title()} on {used.title()}."
+                    )
                 if operation == "play" and command.get("artist"):
                     return f"Okay, sir. Playing songs by {str(command['artist']).title()}."
                 if operation == "play" and query:

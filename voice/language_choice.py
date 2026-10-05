@@ -19,6 +19,7 @@ from core.transliteration import (
     devanagari_search_command,
     has_command_verb,
     repair_artist_from_hindi,
+    repair_target_from_hindi,
     repair_query_from_hindi,
     strip_wake_remnant,
 )
@@ -130,6 +131,7 @@ def choose_transcript(*args, repair: bool = True, **kwargs) -> tuple[str, str]:
     if repair and language == "en" and len(args) >= 2:
         text = repair_query_from_hindi(text, strip_wake_remnant(str(args[1] or "")))
         text = repair_artist_from_hindi(text, strip_wake_remnant(str(args[1] or "")))
+        text = repair_target_from_hindi(text, strip_wake_remnant(str(args[1] or "")))
     return language, text
 
 

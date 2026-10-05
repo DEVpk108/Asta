@@ -880,6 +880,21 @@ class Planner:
                         infer_provider(str(recent_name)) or ""
                     ).strip()
 
+            resolve_named = getattr(self.media_manager, "application_for_provider", None)
+            if (
+                provider
+                and operation == "play"
+                and query
+                and callable(resolve_named)
+                and not provider.lower().startswith(("youtube", "system"))
+                and not resolve_named(provider)
+            ):
+                # "on Apple Music": an app ASTA can't drive. Say so and use the
+                # default music app instead of failing silently.
+                normalized["requested_provider"] = provider
+                provider = ""
+                normalized.pop("provider", None)
+
             if not provider and operation == "play" and query and self.media_manager is not None:
                 # "play some Udit Narayan songs" with no app named: use the
                 # default music app rather than a bare media key that has

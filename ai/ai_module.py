@@ -375,6 +375,18 @@ class AIModule(Module):
             return True
         if not work.failed and self.kernel.intent_router.analyze(text).intent == IntentType.COMMAND:
             return False  # last task worked; "play it again" keeps its own meaning
+        previous = getattr(self, "_retried_goal", None)
+        if work.failed and previous == work.goal:
+            # Repeating the identical plan a third time won't change anything.
+            reason = work_awareness._plain_error(work.error)
+            self._emit_assistant_text(
+                "I already retried that and it failed the same way"
+                + (f": {reason}." if reason else ".")
+                + " Could you say it differently, or tell me what to change?"
+            )
+            self._retried_goal = None
+            return True
+        self._retried_goal = work.goal
         print(f"[AI] Retrying recent task: {work.goal} (was {work.status})", flush=True)
         self.on_user_message(work.goal)
         return True
@@ -1261,6 +1273,10 @@ class AIModule(Module):
             if result.tool == "system.launch_application" and target:
                 return f"Launched {target}."
             if result.tool == "system.close_application" and target:
+                # Say what was actually closed ("Close sport" closed Spotify.exe).
+                process = re.sub(r"\.exe$", "", str(output.get("process") or ""), flags=re.IGNORECASE)
+                if process and process.lower().replace(" ", "") != str(target).lower().replace(" ", ""):
+                    return f"Closed {process}."
                 return f"Closed {target}."
             if result.tool == "media.ui_play":
                 return str(output.get("message") or "Playing it now.")

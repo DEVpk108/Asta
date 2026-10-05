@@ -1536,3 +1536,68 @@ def test_ui_play_restores_a_minimized_window():
     result = tool.execute(ToolRequest(tool="media.ui_play", arguments={"query": "arijit singh"}, request_id="r"))
     assert result.success and result.output["window"] == "restored"
     assert "IsIconic" in scripts[0]
+
+
+def test_second_retry_of_the_same_failure_asks_instead_of_looping():
+    goal = "play baithi hai on apple music"
+    ai, said, reran = _work_ai(_fake_task(goal, "paused", "playback did not start"))
+    assert ai._handle_work_followup("try again") and reran == [goal]
+    assert ai._handle_work_followup("try again") and reran == [goal]
+    assert "already retried" in said[-1]
+
+
+def test_multi_word_app_tail_stays_out_of_the_title():
+    from voice.language_choice import choose_transcript
+
+    _, text = choose_transcript("Play bathing on Apple music", "प्ले बैठी है ऑन एप्पल म्यूजिक")
+    assert text == "Play baithi hai on Apple music"
+    entities = IntentRouter().analyze(text).entities
+    assert entities["query"] == "baithi hai" and entities["provider"] == "apple music"
+
+
+def test_unsupported_music_app_falls_back_to_spotify(monkeypatch):
+    from core import Planner as _Planner
+    from core.task_runtime import TaskRuntimeModule
+
+    monkeypatch.delenv("ASTA_SPOTIFY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("ASTA_MEDIA_API_SETUP", raising=False)
+    kernel = Kernel()
+    planner = _Planner(kernel.tool_registry, media_manager=kernel.media_manager)
+    commands = planner._expand_media_commands(
+        [{"action": "media", "operation": "play", "query": "baithi hai", "provider": "apple music"}]
+    )
+    assert commands[0] == {"action": "open", "target": "spotify:search:baithi%20hai"}
+    ack = TaskRuntimeModule._acknowledgment_for_intent(
+        IntentRouter().analyze("play baithi hai on apple music")
+    )
+    assert ack == "Okay, sir. I can't use Apple Music yet, so I'm playing Baithi Hai on Spotify."
+
+
+def test_misheard_app_name_comes_from_the_hindi_decode():
+    from voice.language_choice import choose_transcript
+
+    assert choose_transcript("Close sport", "क्लोज स्पटिफाई") == ("en", "Close spotify")
+    assert choose_transcript("open the door", "ओपन द डोर")[1] == "open the door"
+
+
+def test_ui_play_retries_with_the_title_without_a_leaked_app_tail():
+    from core.contracts import ToolRequest
+    from core.tools.ui_play import UIPlayTool, core_query
+
+    assert core_query("baithi hai on eppal on apple music") == "baithi hai"
+    tokens_seen = []
+
+    def runner(script, env, timeout):
+        if "IsIconic" in script:
+            return "ok"
+        if "ASTA_UI_TOKENS" in env:
+            tokens_seen.append(env["ASTA_UI_TOKENS"])
+            if env["ASTA_UI_TOKENS"] == "baithi|hai":
+                return '{"invoked": true, "name": "Play Baithi Hai"}'
+            return '{"invoked": false, "error": "no_match"}'
+        return "Amit Trivedi - Baithi Hai" if tokens_seen else "Spotify Free"
+
+    result = UIPlayTool(runner=runner, sleep=lambda _s: None).execute(
+        ToolRequest(tool="media.ui_play", arguments={"query": "baithi hai on eppal on apple music"}, request_id="r")
+    )
+    assert result.success and tokens_seen[-1] == "baithi|hai"

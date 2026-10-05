@@ -94,6 +94,13 @@ def query_tokens(query: str) -> list[str]:
     return tokens or words
 
 
+def core_query(query: str) -> str:
+    """Title words before a leaked "on <app>" tail."""
+    value = " ".join(str(query or "").split())
+    head = re.split(r"\s+(?:on|in|using)\s+", value, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    return head if len(head) >= 2 else value
+
+
 def title_matches(title: str, query: str) -> bool:
     lower = str(title or "").lower()
     tokens = query_tokens(query)
@@ -179,6 +186,12 @@ class UIPlayTool(Tool):
         method = None
         if os.name == "nt" or self.runner is not _powershell:
             found = self._invoke_by_name(process, query)
+            core = core_query(query)
+            if not found.get("invoked") and not found.get("rect") and core != query:
+                # "baithi hai on eppal on apple music": the app name leaked
+                # into the title; match the title words alone.
+                found = self._invoke_by_name(process, core)
+                output["matched_query"] = core
             output["ui_automation"] = found
             if found.get("invoked"):
                 method = "ui_automation"
