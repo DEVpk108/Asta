@@ -14,6 +14,7 @@ import unicodedata
 from core.transliteration import (
     DEVANAGARI_TO_ENGLISH,
     devanagari_english,
+    devanagari_play_command,
     devanagari_search_command,
     has_command_verb,
     repair_query_from_hindi,
@@ -109,6 +110,11 @@ def choose_transcript(*args, repair: bool = True, **kwargs) -> tuple[str, str]:
         if hindi_command and not (language == "en" and has_command_verb(text)):
             print(f"[STT] Search command from Hindi decode: {hindi_command!r}", flush=True)
             return "en", hindi_command
+        # "Plena bre on Spotify": the verb only survived in the Hindi decode.
+        play_command = devanagari_play_command(strip_wake_remnant(str(args[1] or "")))
+        if play_command and not has_command_verb(text):
+            print(f"[STT] Play command from Hindi decode: {play_command!r}", flush=True)
+            return "en", play_command
     if repair and language == "en" and len(args) >= 2:
         text = repair_query_from_hindi(text, strip_wake_remnant(str(args[1] or "")))
     return language, text

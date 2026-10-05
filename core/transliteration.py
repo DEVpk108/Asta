@@ -610,9 +610,11 @@ _HINDI_TERMS_SIMPLE = {
     _simplify_roman(term): term for term in sorted(HINDI_TERMS, key=lambda t: (-len(t), t))
 }
 _EN_QUERY = re.compile(
-    r"^(?P<lead>.*?\b(?:search(?:\s+for)?|look\s+up|google|play)\s+)"
+    r"^(?P<lead>.*?\b(?:search(?:\s+for)?|look\s+up|google|play)[,:]?\s+)"
     r"(?P<query>[^,.?!]+?)"
-    r"(?P<tail>\s+(?:on|in|using|with)\s+[\w .+-]{2,30})?\s*[.?!]?$",
+    # "on Spotify", or a bare app name when "on" was garbled ("... brought spotify").
+    r"(?P<tail>\s+(?:on|in|using|with)\s+[\w .+-]{2,30}|"
+    r"\s+(?:spotify|youtube(?:\s+music)?|chrome|google\s+chrome|edge|firefox|brave))?\s*[.?!]?$",
     re.IGNORECASE,
 )
 _HI_QUERY = re.compile(
@@ -758,8 +760,42 @@ _HINDI_MARKERS = frozenset(
     गया गई गए रहा रही रहे आजा चल चलो बैठी बैठा बैठे दीवाना दीवानी मोहब्बत
     जिंदगी ज़िंदगी सनम साथिया माही रांझा कुड़ी मुंडा गाना गाने हम हमें
     तू तेरी रे ओ लगदा लगदी नैना नैनों आँखें आंखें बातें रातें सपने
+    से का की के को में ने फिर भी ही तो ना न जो कोई कहीं कहाँ बिना संग साथ आज
+    रात दिन याद जब तब अब यहाँ वहाँ सारा सारी सारे दुनिया जहाँ जान रूह खुदा रब
+    पिया सैयां बलम चांद चाँद तारे बारिश सावन मौसम हवा पानी आग धड़कन
+    होना हुआ हुई हुए करना कर दे दो लेना ले आना आए आई जाए जाने कहना कहो सुन सुनो
     """.split()
 )
+# Letters and endings English loanwords almost never use when written in
+# Devanagari (aspirates, retroflex nasal, chandrabindu, plural nasals).
+_HINDI_ONLY_LETTERS = re.compile("[भधझढठणञङृँ]|ड़|ढ़|(?:ों|ें|ीं|ाँ)$")
+
+
+def is_hindi_word(token: str) -> bool:
+    """True for a genuine Hindi word (not transliterated English)."""
+    token = unicodedata.normalize("NFC", str(token or ""))
+    if not _DEVANAGARI.search(token):
+        return False
+    if token in _HINDI_MARKERS:
+        return True
+    if token in DEVANAGARI_TO_ENGLISH or "ॉ" in token:
+        return False
+    return bool(_HINDI_ONLY_LETTERS.search(token))
+
+
+def hindi_word_share(text: str) -> tuple[int, int, int]:
+    """(hindi words, transliterated-English words, total words)."""
+    tokens = words(text)
+    hindi = sum(1 for t in tokens if is_hindi_word(t))
+    english = sum(
+        1 for t in tokens
+        if not is_hindi_word(t) and (t in DEVANAGARI_TO_ENGLISH or "ॉ" in t or not _DEVANAGARI.search(t))
+    )
+    return hindi, english, len(tokens)
+
+
+def _hinglish_tokens(tokens: list[str]) -> str:
+    return " ".join(DEVANAGARI_TO_ENGLISH.get(t) or romanize_hinglish(t) for t in tokens)
 
 
 def hinglish_query(hindi_query: str, english_query: str, *, drop_tail: tuple[str, ...] = ()) -> str | None:
@@ -773,17 +809,19 @@ def hinglish_query(hindi_query: str, english_query: str, *, drop_tail: tuple[str
         tokens.pop()
     if not tokens or not all(_DEVANAGARI.search(t) for t in tokens):
         return None
-    if not any(t in _HINDI_MARKERS for t in tokens):
+    hindi_tokens = [t for t in tokens if is_hindi_word(t)]
+    english_count = sum(1 for t in tokens if t in DEVANAGARI_TO_ENGLISH or "ॉ" in t)
+    # A Hindi title has genuine Hindi words; an English title spelled in
+    # Devanagari ("ब्लाइंडिंग लाइट्स") has none.
+    if not hindi_tokens or len(hindi_tokens) < english_count:
         return None
-    romans = [DEVANAGARI_TO_ENGLISH.get(t) or romanize_hinglish(t) for t in tokens]
-    roman = " ".join(romans)
+    roman = _hinglish_tokens(tokens)
     english_simple = _simplify_roman(" ".join(words(english_query)))
     english_words = set(english_simple.split())
     # The English decode already heard the Hindi words ("baithi hai").
-    markers = [romanize_hinglish(t) for t in tokens if t in _HINDI_MARKERS]
-    if all(m in english_words for m in markers):
+    if all(_simplify_roman(romanize_hinglish(t)) in english_words for t in hindi_tokens):
         return None
-    if SequenceMatcher(None, english_simple, roman, autojunk=False).ratio() >= 0.9:
+    if SequenceMatcher(None, english_simple, _simplify_roman(roman), autojunk=False).ratio() >= 0.9:
         return None
     return roman
 
@@ -797,9 +835,15 @@ def repair_query_from_hindi(english: str, hindi: str) -> str:
         return english
     tail_words = tuple(words(en.group("tail") or ""))
     en_query = en.group("query").strip()
-    query = hindi_query_terms(hi.group("query"), drop_tail=tail_words)
-    if not query:
+    hindi_count, _, total = hindi_word_share(hi.group("query"))
+    if total and hindi_count * 2 >= total:
+        # Mostly genuine Hindi words ("फिर से नैना भरे"): romanise them as
+        # spoken rather than snapping to devotional names ("nanak").
         query = hinglish_query(hi.group("query"), en_query, drop_tail=tail_words)
+        query = query or hindi_query_terms(hi.group("query"), drop_tail=tail_words)
+    else:
+        query = hindi_query_terms(hi.group("query"), drop_tail=tail_words)
+        query = query or hinglish_query(hi.group("query"), en_query, drop_tail=tail_words)
     if not query:
         return english
     if query.lower() == en_query.lower():
@@ -810,13 +854,16 @@ def repair_query_from_hindi(english: str, hindi: str) -> str:
         # The English decode already has the Hindi names.
         return english
     tail = en.group("tail") or ""
+    if tail and not re.match(r"\s+(?:on|in|using|with)\b", tail, re.IGNORECASE):
+        tail = f" on {tail.strip()}"
     if not tail:
         # English missed "on Chrome" but Hindi heard it ("... सॉन क्रोम").
         _, app = split_hindi_app_tail(words(hi.group("query")))
         if app:
             tail = f" on {app}"
     print(f"[STT] Search query from Hindi decode: {en_query!r} -> {query + tail!r}", flush=True)
-    return f"{en.group('lead')}{query}{tail}"
+    lead = re.sub(r"[,:]\s*$", " ", en.group("lead"))
+    return f"{lead}{query}{tail}"
 
 
 # Common misrecognitions of command verbs.
@@ -906,3 +953,41 @@ def devanagari_search_command(hindi: str) -> str | None:
             out.append(_query_word(token, out))
         query = " ".join(out)
     return f"search for {query}" + (f" on {app}" if app else "")
+
+
+# --------------------------------------------------------------------------
+# Play commands decoded only in Devanagari
+# --------------------------------------------------------------------------
+# "प्लेन है ना भरे ऑन स्पॉटिफाई": the English stream merged "play naina"
+# into "Plena" and lost the verb. Only trusted with a media-app tail, since
+# "प्लेन" is also "plane".
+_HI_PLAY = "प्ले"
+_MEDIA_APPS = ("spotify", "youtube")
+
+
+def devanagari_play_command(hindi: str) -> str | None:
+    """English "play X on <app>" from a Devanagari play command."""
+    tokens = words(strip_wake_remnant(str(hindi or "")))
+    while tokens and tokens[0] in {"ओके", "ओकेय", "हे", "प्लीज़", "प्लीज", "कैन", "यू"}:
+        tokens.pop(0)
+    if len(tokens) < 3 or not tokens[0].startswith(_HI_PLAY):
+        return None
+    first = tokens.pop(0)
+    remainder = first[len(_HI_PLAY):]
+    if len(remainder) >= 2 and _DEVANAGARI.match(remainder) and not unicodedata.category(remainder[0]).startswith("M"):
+        # "प्लेनैना" -> "प्ले" + "नैना".
+        tokens.insert(0, remainder)
+    query_tokens, app = split_hindi_app_tail(tokens)
+    if app not in _MEDIA_APPS or not query_tokens:
+        return None
+    hindi, _, total = hindi_word_share(" ".join(query_tokens))
+    query = None if hindi * 2 >= total else hindi_query_terms(" ".join(query_tokens))
+    if not query:
+        if hindi:
+            query = _hinglish_tokens(query_tokens)
+        else:
+            out: list[str] = []
+            for token in query_tokens:
+                out.append(_query_word(token, out))
+            query = " ".join(out)
+    return f"play {query} on {app}"

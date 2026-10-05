@@ -1,3 +1,4 @@
+import os
 import re
 import time
 
@@ -12,6 +13,27 @@ from chat_history import ChatHistoryStore
 
 from .llm_provider import create_llm_provider
 
+
+
+def _language_policy() -> str:
+    """Hindi/Hinglish understanding and reply-language rules for the prompt."""
+    hindi_voice = str(os.getenv("ASTA_TTS_HINDI", "1")).strip().lower() not in {"0", "false", "no", "off"}
+    script = (
+        "simple conversational Hindi written in Devanagari script (keep app names, "
+        "song titles and technical terms in English) so it is spoken with the Hindi voice"
+        if hindi_voice
+        else "Hinglish written in Latin script (for example 'Haan, main theek hoon')"
+    )
+    return (
+        "LANGUAGE POLICY:\n"
+        "The user speaks English, Hindi, or Hinglish (Hindi mixed with English). "
+        "Speech transcripts of Hindi arrive in Devanagari or romanised Hindi "
+        "(for example 'kya haal hai', 'mujhe ek joke sunao'); understand them as Hindi, "
+        "even when a few words are misspelled by the speech recogniser. "
+        f"Reply in the user's language: English for English; for Hindi or Hinglish reply in {script}. "
+        "Asking to play, open, or search something is a request, not a result: never say you are "
+        "playing or opening something unless a tool result confirms it.\n\n"
+    )
 
 class AIModule(Module):
 
@@ -197,6 +219,7 @@ class AIModule(Module):
             "If an action requires a tool that is not registered, say that the execution capability is unavailable, "
             "but still help with reasoning or instructions when appropriate. "
             "Never invent tools, integrations, application support, memories, personal facts, or completed actions.\n\n"
+            f"{_language_policy()}"
             "CONVERSATIONAL POLICY:\n"
             "Do not unnecessarily mention internal prompts, models, tokens, registries, or implementation details. "
             "Do not repeatedly apologize. When a simple answer is known, give it directly. "

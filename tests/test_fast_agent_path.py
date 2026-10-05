@@ -1312,3 +1312,50 @@ def test_vad_keeps_live_onset_after_post_tts_seed():
     audio = np.concatenate(captured)
     # The two chunks heard before Silero's start event (the onset) are kept.
     assert 0.1 in audio and 0.2 in audio
+
+
+@pytest.mark.parametrize(
+    ("english", "hindi", "expected"),
+    [
+        # "play," with a comma and a garbled "on" ("brought spotify").
+        ("Okay play, First Nana brought spotify", "ओके प्ले फिर से नैना भरे उन स्पॉटिफाई",
+         "Okay play fir se naina bhare on spotify"),
+        # The English decode lost the verb entirely ("Plena").
+        ("Plena bre on Spotify", "प्लेन है ना भरे ऑन स्पॉटिफाई", "play hai na bhare on spotify"),
+        # Devanagari-spelled English titles keep the English decode.
+        ("play shape of you on spotify", "प्ले शेप ऑफ यू ऑन स्पॉटिफाई", "play shape of you on spotify"),
+        ("play thunder on spotify", "प्ले थंडर ऑन स्पॉटिफाई", "play thunder on spotify"),
+        ("search for human challenges on chrome", "सर्च फॉर हनुमान चलीसा ऑन क्रोम",
+         "search for hanuman chalisa on chrome"),
+    ],
+)
+def test_generic_hinglish_queries(english, hindi, expected):
+    from voice.language_choice import choose_transcript
+
+    assert choose_transcript(english, hindi) == ("en", expected)
+
+
+@pytest.mark.parametrize(
+    ("word", "hindi"),
+    [("भरे", True), ("से", True), ("नैना", True), ("आँखों", True), ("ब्लाइंडिंग", False),
+     ("स्पॉटिफाई", False), ("शेप", False)],
+)
+def test_is_hindi_word(word, hindi):
+    from core.transliteration import is_hindi_word
+
+    assert is_hindi_word(word) is hindi
+
+
+def test_plane_is_not_a_play_command():
+    from core.transliteration import devanagari_play_command
+
+    assert devanagari_play_command("प्लेन कब आएगा") is None
+
+
+def test_language_policy_follows_hindi_voice(monkeypatch):
+    from ai.ai_module import _language_policy
+
+    monkeypatch.setenv("ASTA_TTS_HINDI", "1")
+    assert "Devanagari" in _language_policy()
+    monkeypatch.setenv("ASTA_TTS_HINDI", "0")
+    assert "Latin script" in _language_policy()
