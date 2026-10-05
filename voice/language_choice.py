@@ -9,6 +9,7 @@ pronouns and verbs, while English-sounding speech decoded as Hindi is not.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
 from core.transliteration import (
@@ -62,6 +63,12 @@ HINDI_COMMON = frozenset(
     """.split()
 )
 
+# "m on spotify": the English decode kept only the app tail.
+_BARE_APP_TAIL = re.compile(
+    r"^\W*(?:(?:okay|ok|play)\W+)*\S{0,2}\W*\s*on\s+(?:spotify|youtube)\W*$", re.IGNORECASE
+)
+
+
 def _words(text: str) -> list[str]:
     # Keep letters and combining vowel signs (Devanagari matras are category
     # M, which \w-based regexes treat as punctuation).
@@ -112,7 +119,11 @@ def choose_transcript(*args, repair: bool = True, **kwargs) -> tuple[str, str]:
             return "en", hindi_command
         # "Plena bre on Spotify": the verb only survived in the Hindi decode.
         play_command = devanagari_play_command(strip_wake_remnant(str(args[1] or "")))
-        if play_command and not has_command_verb(text):
+        if not play_command and _BARE_APP_TAIL.match(str(text or "")):
+            play_command = devanagari_play_command(
+                strip_wake_remnant(str(args[1] or "")), require_verb=False
+            )
+        if play_command and (not has_command_verb(text) or _BARE_APP_TAIL.match(str(text or ""))):
             print(f"[STT] Play command from Hindi decode: {play_command!r}", flush=True)
             return "en", play_command
     if repair and language == "en" and len(args) >= 2:

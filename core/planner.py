@@ -917,7 +917,9 @@ class Planner:
                                 "application": str(application),
                                 "process": process,
                                 "fallback_target": (
-                                    f"the first song in the search results in {application}"
+                                    f"the Play button of the artist {query} in the top result in {application}"
+                                    if normalized.get("artist")
+                                    else f"the first song in the search results in {application}"
                                 ),
                             },
                         )

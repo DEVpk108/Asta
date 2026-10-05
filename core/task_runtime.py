@@ -1755,6 +1755,8 @@ class TaskRuntimeModule(Module):
             if action == "media":
                 operation = str(command.get("operation") or "").strip().lower()
                 query = str(command.get("query") or "").strip()
+                if operation == "play" and command.get("artist"):
+                    return f"Okay, sir. Playing songs by {str(command['artist']).title()}."
                 if operation == "play" and query:
                     spoken_query = query.title()
                     return f"Okay, sir. Playing {spoken_query}."

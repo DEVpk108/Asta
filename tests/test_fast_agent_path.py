@@ -1359,3 +1359,47 @@ def test_language_policy_follows_hindi_voice(monkeypatch):
     assert "Devanagari" in _language_policy()
     monkeypatch.setenv("ASTA_TTS_HINDI", "0")
     assert "Latin script" in _language_policy()
+
+
+@pytest.mark.parametrize(
+    ("text", "artist"),
+    [
+        ("play some udit narayan songs on spotify", "udit narayan"),
+        ("play sam uditnarayan music on spotify", "udit narayan"),
+        ("play songs by arijit singh on spotify", "arijit singh"),
+        ("udit narayan ke gaane spotify pe chalao", "udit narayan"),
+        ("play romantic songs of kumar sanu on spotify", "kumar sanu"),
+    ],
+)
+def test_artist_requests_play_the_artist(text, artist):
+    entities = IntentRouter().analyze(text).entities
+    assert entities["query"] == artist and entities["artist"] == artist
+
+
+@pytest.mark.parametrize(
+    "text", ["play egyptian music on spotify", "play sad songs on spotify", "play baithi hai on spotify"]
+)
+def test_genres_and_titles_are_not_artists(text):
+    assert "artist" not in IntentRouter().analyze(text).entities
+
+
+@pytest.mark.parametrize(
+    ("english", "hindi", "expected"),
+    [
+        ("m on spotify", "उदितनारायण म्यूजिक ऑन स्पॉटिफाई", "play uditnarayan music on spotify"),
+        ("Playsm Udnarayan music on Spotify", "प्लेसम उदितनारायण म्यूजिक ऑन स्पॉटिफाई",
+         "play sam uditnarayan music on spotify"),
+        ("Okay, can you play First Nana bre on Spotify", "ओके, कैन यू प्लेट से नैना भरे ऑन स्पॉटिफाई",
+         "Okay, can you play se naina bhare on Spotify"),
+    ],
+)
+def test_hindi_decode_rescues_clipped_play(english, hindi, expected):
+    from voice.language_choice import choose_transcript
+
+    assert choose_transcript(english, hindi) == ("en", expected)
+
+
+def test_ui_play_prefers_the_shortest_full_match_for_artists():
+    from core.tools.ui_play import query_tokens
+
+    assert query_tokens("udit narayan") == ["udit", "narayan"]

@@ -748,6 +748,17 @@ class IntentRouter:
             operation = str(entities.get("operation") or "").lower()
             query = str(entities.get("query") or "").strip().lower()
             if operation == "play" and query:
+                from core.media.artists import artist_request, snap_artist_names
+
+                # "some udit narayan songs" means the artist's songs, not a
+                # track literally called that; also repair glued names.
+                snapped = snap_artist_names(query)
+                artist = artist_request(snapped)
+                if artist:
+                    return {**entities, "query": artist, "artist": artist}
+                if snapped != query:
+                    entities = {**entities, "query": snapped}
+                    query = snapped
                 vague = cls._clean_vague_media_query(query)
                 if vague and vague != query:
                     entities = {**entities, "query": vague}

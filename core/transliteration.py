@@ -618,7 +618,8 @@ _EN_QUERY = re.compile(
     re.IGNORECASE,
 )
 _HI_QUERY = re.compile(
-    r"(?:सर्च(?:\s+(?:फॉर|फोर|फ़ॉर|फार))?|लुक\s+अप|गूगल|प्ले)\s+(?P<query>[^,.?!।]+)$"
+    # "प्लेस"/"प्लेट": "play" glued to the next sound.
+    r"(?:सर्च(?:\s+(?:फॉर|फोर|फ़ॉर|फार))?|लुक\s+अप|गूगल|प्ले\S{0,2})\s+(?P<query>[^,.?!।]+)$"
 )
 _HI_ON_WORDS = {"ऑन", "आन", "इन", "ओन", "उन", "वन"}
 # "... ऑन क्रोम" / "... इन क्रोम" / "... क्रोम पर|में" at the end of a query.
@@ -965,18 +966,25 @@ _HI_PLAY = "प्ले"
 _MEDIA_APPS = ("spotify", "youtube")
 
 
-def devanagari_play_command(hindi: str) -> str | None:
-    """English "play X on <app>" from a Devanagari play command."""
+def devanagari_play_command(hindi: str, *, require_verb: bool = True) -> str | None:
+    """English "play X on <app>" from a Devanagari play command.
+
+    ``require_verb=False`` is for an English decode that kept only
+    "... on Spotify" ("m on spotify") while Hindi heard the whole title.
+    """
     tokens = words(strip_wake_remnant(str(hindi or "")))
     while tokens and tokens[0] in {"ओके", "ओकेय", "हे", "प्लीज़", "प्लीज", "कैन", "यू"}:
         tokens.pop(0)
-    if len(tokens) < 3 or not tokens[0].startswith(_HI_PLAY):
+    if tokens and tokens[0].startswith(_HI_PLAY):
+        first = tokens.pop(0)
+        remainder = first[len(_HI_PLAY):]
+        if len(remainder) >= 2 and _DEVANAGARI.match(remainder) and not unicodedata.category(remainder[0]).startswith("M"):
+            # "प्लेनैना" -> "प्ले" + "नैना", "प्लेसम" -> "प्ले" + "सम" (some).
+            tokens.insert(0, remainder)
+    elif require_verb:
         return None
-    first = tokens.pop(0)
-    remainder = first[len(_HI_PLAY):]
-    if len(remainder) >= 2 and _DEVANAGARI.match(remainder) and not unicodedata.category(remainder[0]).startswith("M"):
-        # "प्लेनैना" -> "प्ले" + "नैना".
-        tokens.insert(0, remainder)
+    if len(tokens) < 2:
+        return None
     query_tokens, app = split_hindi_app_tail(tokens)
     if app not in _MEDIA_APPS or not query_tokens:
         return None
