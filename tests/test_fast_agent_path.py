@@ -1230,3 +1230,85 @@ def test_superseded_failure_is_not_spoken():
     assert _is_superseded_failure(ai, failed)
     step.status = PlanStepStatus.FAILED
     assert not _is_superseded_failure(ai, failed)
+
+
+@pytest.mark.parametrize(
+    ("word", "roman"),
+    [("बैठी", "baithi"), ("है", "hai"), ("धड़कन", "dhadkan"), ("कमला", "kamla"),
+     ("नमस्ते", "namaste"), ("लड़की", "ladki"), ("तेरी", "teri"), ("प्यार", "pyar")],
+)
+def test_romanize_hinglish(word, roman):
+    from core.transliteration import romanize_hinglish
+
+    assert romanize_hinglish(word) == roman
+
+
+@pytest.mark.parametrize(
+    ("english", "hindi", "expected"),
+    [
+        ("Can you play bate on Spotify", "कैन यू प्ले बैठी है ऑन स्पॉटिफाई", "Can you play baithi hai on Spotify"),
+        # English titles and correctly heard Hindi stay as the English decode.
+        ("Can you play blinding lights on Spotify", "कैन यू प्ले ब्लाइंडिंग लाइट्स ऑन स्पॉटिफाई", "Can you play blinding lights on Spotify"),
+        ("Play tum hi ho on Spotify", "प्ले तुम ही हो ऑन स्पॉटिफाई", "Play tum hi ho on Spotify"),
+    ],
+)
+def test_hinglish_titles_come_from_the_hindi_decode(english, hindi, expected):
+    from voice.language_choice import choose_transcript
+
+    assert choose_transcript(english, hindi) == ("en", expected)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["बैठी है स्पॉटिफाई पर चलाओ", "spotify pe baithi hai chalao"],
+)
+def test_hindi_play_grammar_names_the_app(text):
+    entities = IntentRouter().analyze(text).entities
+    assert entities["query"] == "baithi hai" and entities["provider"] == "spotify"
+
+
+def test_vad_keeps_live_onset_after_post_tts_seed():
+    from voice.vad_engine import VADEngine
+
+    vad = VADEngine.__new__(VADEngine)
+    vad.pre_roll_samples = 4
+    vad.sample_rate = 16000
+    vad.start_chunk_rms = 0.0
+    vad.min_rms = 0.0
+    vad.min_peak = 0.0
+    vad.min_speech_duration = 0.0
+    import itertools
+    import time as _time
+
+    events = itertools.chain([None, None, {"start": 0}], itertools.repeat({"end": 0}))
+    vad.debug = False
+
+    class FakeIterator:
+        def __call__(self, _tensor):
+            return next(events, None)
+
+        def reset_states(self):
+            pass
+
+    vad.vad = FakeIterator()
+
+    class Tracker:
+        def update(self, *, started, ended, chunk_samples, get_audio):
+            return ended
+
+    vad.new_turn_tracker = lambda **_kw: Tracker()
+    chunks = itertools.chain(
+        [np.full(2, 0.1, np.float32), np.full(2, 0.2, np.float32), np.full(2, 0.3, np.float32)],
+        itertools.repeat(np.full(2, 0.4, np.float32)),
+    )
+
+    def get_chunk():
+        _time.sleep(0.05)
+        return next(chunks)
+
+    mic = SimpleNamespace(get_chunk=get_chunk)
+    captured = []
+    vad.collect_utterance(mic, initial_audio=np.zeros(2, np.float32), on_audio=captured.append)
+    audio = np.concatenate(captured)
+    # The two chunks heard before Silero's start event (the onset) are kept.
+    assert 0.1 in audio and 0.2 in audio

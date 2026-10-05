@@ -41,7 +41,7 @@ class VADEngine:
         self.start_chunk_rms = start_chunk_rms
         if pre_roll_ms is None:
             try:
-                pre_roll_ms = int(os.getenv("ASTA_VAD_PRE_ROLL_MS", "900"))
+                pre_roll_ms = int(os.getenv("ASTA_VAD_PRE_ROLL_MS", "1200"))
             except ValueError:
                 pre_roll_ms = 800
         pre_roll_ms = max(250, min(1600, int(pre_roll_ms)))
@@ -205,10 +205,14 @@ class VADEngine:
                     recording = True
                     recording_started_at = time.monotonic()
 
-                    if initial_seed is not None:
+                    # The live pre-roll holds the actual onset ("can you
+                    # ..."): Silero only fires a few hundred ms into speech.
+                    # The post-TTS seed is older audio, so prepend it only
+                    # while the live buffer has not yet filled (no gap).
+                    if initial_seed is not None and len(pre_roll) < self.pre_roll_samples:
                         capture(initial_seed)
-                        initial_seed = None
-                    elif pre_roll:
+                    initial_seed = None
+                    if pre_roll:
                         capture(np.asarray(pre_roll, dtype=np.float32))
                     started_now = True
                 else:

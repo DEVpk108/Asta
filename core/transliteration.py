@@ -203,6 +203,59 @@ def romanize(token: str) -> str:
     return "".join(out)
 
 
+# Hinglish spelling (how people type Hindi in Latin script) for search
+# queries: medial/final schwa deletion ("धड़कन" -> "dhadkan", "कमला" ->
+# "kamla") and ड़ -> "d" ("लड़की" -> "ladki").
+_HINGLISH_CONSONANTS = {**_CONSONANTS, "ड़": "d", "ढ़": "dh", "ज़": "z", "फ़": "f", "ष": "sh"}
+
+
+def romanize_hinglish(token: str) -> str:
+    token = unicodedata.normalize("NFC", str(token or ""))
+    units: list[list] = []  # [consonant or "", vowel or None(=inherent a) or ""(virama)]
+    i = 0
+    while i < len(token):
+        char = token[i]
+        if i + 1 < len(token) and token[i + 1] == "\u093c" and char + "\u093c" in _HINGLISH_CONSONANTS:
+            char = char + "\u093c"
+            i += 1
+        if char in _HINGLISH_CONSONANTS:
+            units.append([_HINGLISH_CONSONANTS[char], None])
+        elif char in _MATRAS and units and units[-1][0] and units[-1][1] is None:
+            units[-1][1] = _MATRAS[char]
+        elif char == _VIRAMA and units:
+            units[-1][1] = ""
+        elif char in _VOWELS:
+            units.append(["", _VOWELS[char]])
+        elif char in _NASALS and units:
+            unit = units[-1]
+            unit[1] = ("a" if unit[1] is None else unit[1]) + _NASALS[char]
+        elif char == "\u093c":
+            pass
+        else:
+            units.append([char, ""])
+        i += 1
+    if not units:
+        return ""
+    # Word-final inherent schwa is silent.
+    if units[-1][0] and units[-1][1] is None and len(units) > 1:
+        units[-1][1] = ""
+
+    def has_vowel(unit) -> bool:
+        return unit[1] is None or bool(unit[1])
+
+    # Medial schwa deletion, right to left: V C(a) C V -> V C C V.
+    for index in range(len(units) - 2, 0, -1):
+        unit = units[index]
+        if unit[0] and unit[1] is None and has_vowel(units[index - 1]):
+            following = units[index + 1]
+            if following[0] and has_vowel(following):
+                unit[1] = ""
+    out = []
+    for consonant, vowel in units:
+        out.append(consonant + ("a" if vowel is None else vowel))
+    return _simplify_roman("".join(out))
+
+
 _ROMAN_VOCABULARY = tuple(
     (romanize(spelling), english)
     for spelling, english in DEVANAGARI_TO_ENGLISH.items()
@@ -324,6 +377,29 @@ def canonicalize_command(text: str) -> str:
     )
 
 
+_HINDI_APP_POSTPOSITION = re.compile(
+    r"^(?:(?P<app_first>\S+)\s+(?:पर|पे|में|मे|par|pe|pay|mein|me)\s+(?P<rest>.+)|"
+    r"(?P<rest2>.+?)\s+(?P<app_last>\S+)\s+(?:पर|पे|में|मे|par|pe|pay|mein|me))$",
+    re.IGNORECASE,
+)
+
+
+def _hindi_target_to_english(target: str) -> str:
+    """"spotify पर बैठी है" / "बैठी है spotify पे" -> "baithi hai on spotify"."""
+    value = str(target or "").strip()
+    match = _HINDI_APP_POSTPOSITION.match(value)
+    if match:
+        app = (match.group("app_first") or match.group("app_last") or "").lower()
+        app = DEVANAGARI_TO_ENGLISH.get(app, app)
+        known = {v.lower() for v in target_aliases().values()} | set(_APP_WORDS)
+        if app in known:
+            rest = match.group("rest") or match.group("rest2") or ""
+            value = f"{rest.strip()} on {app}"
+    if _DEVANAGARI.search(value):
+        value = romanize_devanagari_words(value)
+    return value
+
+
 def _canonicalize_language(value: str) -> str:
 
     has_devanagari = bool(_DEVANAGARI.search(value))
@@ -347,6 +423,7 @@ def _canonicalize_language(value: str) -> str:
             if match:
                 target = _HINDI_OBJECT_MARKERS.sub("", match.group("target")).strip()
                 target = _HINDI_TARGETS.get(target.lower(), target)
+                target = _hindi_target_to_english(target)
                 if target:
                     converted = f"{action} {target}"
                 break
@@ -666,9 +743,49 @@ def romanize_devanagari_words(text: str) -> str:
         if mapped:
             return mapped
         term, _ = _snap_term(romanize(token))
-        return term or _simplify_roman(romanize(token))
+        return term or romanize_hinglish(token)
 
     return re.sub(r"[\u0900-\u097F]+", convert, str(text or ""))
+
+
+# Unmistakably Hindi words: when the Hindi decode of a query contains one
+# and the English decode doesn't, the query is a Hindi title ("बैठी है"),
+# which the English model can only garble ("bate").
+_HINDI_MARKERS = frozenset(
+    """
+    है हैं हूँ हूं था थी थे तेरा तेरी तेरे मेरा मेरी मेरे दिल प्यार इश्क इश्क़
+    तुम तुझे तुझको मुझे मुझको मैं नहीं क्या कभी यार जाना सजना सजनी वाला वाली
+    गया गई गए रहा रही रहे आजा चल चलो बैठी बैठा बैठे दीवाना दीवानी मोहब्बत
+    जिंदगी ज़िंदगी सनम साथिया माही रांझा कुड़ी मुंडा गाना गाने हम हमें
+    तू तेरी रे ओ लगदा लगदी नैना नैनों आँखें आंखें बातें रातें सपने
+    """.split()
+)
+
+
+def hinglish_query(hindi_query: str, english_query: str, *, drop_tail: tuple[str, ...] = ()) -> str | None:
+    """Romanised Hindi title when the English decode garbled a Hindi query."""
+    query = _HI_TAIL.sub("", str(hindi_query or "").strip())
+    tokens = words(query)
+    while tokens and drop_tail and (_english_word(tokens[-1]) or "").lower() in drop_tail:
+        tokens.pop()
+    tokens, _ = split_hindi_app_tail(tokens)
+    while tokens and tokens[-1] in _HI_ON_WORDS:
+        tokens.pop()
+    if not tokens or not all(_DEVANAGARI.search(t) for t in tokens):
+        return None
+    if not any(t in _HINDI_MARKERS for t in tokens):
+        return None
+    romans = [DEVANAGARI_TO_ENGLISH.get(t) or romanize_hinglish(t) for t in tokens]
+    roman = " ".join(romans)
+    english_simple = _simplify_roman(" ".join(words(english_query)))
+    english_words = set(english_simple.split())
+    # The English decode already heard the Hindi words ("baithi hai").
+    markers = [romanize_hinglish(t) for t in tokens if t in _HINDI_MARKERS]
+    if all(m in english_words for m in markers):
+        return None
+    if SequenceMatcher(None, english_simple, roman, autojunk=False).ratio() >= 0.9:
+        return None
+    return roman
 
 
 def repair_query_from_hindi(english: str, hindi: str) -> str:
@@ -679,10 +796,12 @@ def repair_query_from_hindi(english: str, hindi: str) -> str:
     if not en or not hi:
         return english
     tail_words = tuple(words(en.group("tail") or ""))
+    en_query = en.group("query").strip()
     query = hindi_query_terms(hi.group("query"), drop_tail=tail_words)
     if not query:
+        query = hinglish_query(hi.group("query"), en_query, drop_tail=tail_words)
+    if not query:
         return english
-    en_query = en.group("query").strip()
     if query.lower() == en_query.lower():
         return english
     english_words = set(words(en_query))
