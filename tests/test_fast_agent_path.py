@@ -1141,3 +1141,92 @@ def test_spotify_plan_uses_ui_play_tool(monkeypatch):
     )
     assert [c.get("tool") or c["action"] for c in commands] == ["open", "computer.wait", "media.ui_play"]
     assert commands[-1]["process"] == "Spotify"
+
+
+@pytest.mark.parametrize(
+    ("text", "operation"),
+    [
+        ("Paus the song", "pause"),
+        ("okay okay paus", "pause"),
+        ("pause the song", "pause"),
+        ("gaana rok do", "pause"),
+        ("resume the song", "play"),
+        ("Change the song", "next"),
+        ("play the next song", "next"),
+        ("agla gaana", "next"),
+        ("play the previous song", "previous"),
+        ("go back to the previous song", "previous"),
+        ("pichla gaana", "previous"),
+        ("what song is this", "now_playing"),
+        ("who sings this", "now_playing"),
+    ],
+)
+def test_transport_commands_route_without_vision(text, operation):
+    entities = IntentRouter().analyze(text).entities
+    assert entities == {"action": "media", "operation": operation}
+
+
+def test_transport_keeps_spotify_and_resume_phrases():
+    router = IntentRouter()
+    assert router.analyze("pause spotify").entities["provider"] == "spotify"
+    assert router.analyze("play the last song I was listening to").entities == {
+        "action": "media", "operation": "play"
+    }
+    assert router.analyze("change the wallpaper").entities.get("action") != "media"
+
+
+def test_vague_music_query_is_cleaned():
+    entities = IntentRouter().analyze("Play something Egyptian music type on Spotify").entities
+    assert entities["query"] == "egyptian music"
+
+
+def test_media_session_messages_and_provider(monkeypatch):
+    import core.media.providers as providers
+    import core.media.smtc as smtc
+    from core.media import MediaRequest
+
+    calls = []
+
+    def fake_session(op, app, **_kw):
+        calls.append((op, app))
+        return {"ok": True, "app": "Spotify.exe", "title": "Bateu", "artist": "Masoom Sharma", "status": "Playing"}
+
+    monkeypatch.setattr(smtc, "media_session", fake_session)
+    monkeypatch.setattr(providers.platform, "system", lambda: "Windows")
+    spotify = providers.SpotifyProvider()
+    spotify.client_id = ""
+    result = spotify.execute(MediaRequest(operation="next"))
+    assert result.success and result.message == "Now playing Bateu by Masoom Sharma."
+    assert calls[-1] == ("next", "spotify")
+    assert smtc.spoken_message("pause", {"title": "Bateu", "artist": "X"}) == "Paused Bateu by X."
+    assert smtc.spoken_message("now_playing", {"title": "Bateu", "artist": "X", "status": "Paused"}) == "Bateu by X is paused."
+    assert spotify.execute(MediaRequest(operation="now_playing")).message == "This is Bateu by Masoom Sharma."
+    assert calls[-1] == ("", "spotify")
+
+
+def test_media_session_falls_back_to_media_keys(monkeypatch):
+    import core.media.providers as providers
+    import core.media.smtc as smtc
+    from core.media import MediaRequest
+
+    monkeypatch.setattr(smtc, "media_session", lambda *a, **k: {"ok": False, "error": "no_session"})
+    monkeypatch.setattr(providers.platform, "system", lambda: "Windows")
+    pressed = []
+    fake_user32 = SimpleNamespace(keybd_event=lambda vk, *a: pressed.append(vk))
+    monkeypatch.setattr(providers.ctypes, "windll", SimpleNamespace(user32=fake_user32), raising=False)
+    result = providers.WindowsMediaProvider().execute(MediaRequest(operation="pause"))
+    assert result.success and pressed[0] == 0xB3
+
+
+def test_superseded_failure_is_not_spoken():
+    from ai.runtime_patch import _is_superseded_failure
+    from core.contracts import PlanStep
+
+    step = PlanStep(id="step-3", description="ui_play", status=PlanStepStatus.COMPLETED)
+    plan = SimpleNamespace(get_step=lambda _id: step)
+    task = SimpleNamespace(plan=plan)
+    ai = SimpleNamespace(kernel=SimpleNamespace(task_manager=SimpleNamespace(get=lambda _id: task)))
+    failed = ToolResult(success=False, tool="media.ui_play", metadata={"task_id": "t", "plan_step_id": "step-3"})
+    assert _is_superseded_failure(ai, failed)
+    step.status = PlanStepStatus.FAILED
+    assert not _is_superseded_failure(ai, failed)

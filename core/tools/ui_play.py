@@ -42,8 +42,11 @@ for ($attempt = 0; $attempt -lt 3 -and -not $best; $attempt++) {
       if ($result.candidates.Count -lt 12) { $result.candidates += $name }
       $lower = $name.ToLower(); $hits = 0
       foreach ($t in $tokens) { if ($lower.Contains($t)) { $hits++ } }
-      if ($hits -lt $tokens.Count) { continue }
-      $score = 1000 - $name.Length
+      # All words match best; otherwise accept the result matching most words
+      # (at least half), earliest in the list on ties.
+      if ($hits -lt [Math]::Max(1, [Math]::Ceiling($tokens.Count / 2))) { continue }
+      $score = $hits * 1000 - $name.Length
+      if ($hits -lt $tokens.Count) { $score = $hits * 1000 - 500 }
       if ($score -gt $bestScore) { $best = $b; $bestScore = $score }
     }
   }

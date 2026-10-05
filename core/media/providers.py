@@ -67,8 +67,42 @@ class WindowsMediaProvider:
     def supports(self, request: MediaRequest) -> bool:
         return (
             platform.system() == "Windows"
-            and request.operation in self._VIRTUAL_KEYS
+            and (request.operation in self._VIRTUAL_KEYS or request.operation == "now_playing")
             and not request.query
+        )
+
+    @staticmethod
+    def _session_control(request: MediaRequest):
+        """Real play/pause/skip through the Windows media session."""
+        if os.getenv("ASTA_MEDIA_SESSION", "1").strip().lower() in {"0", "false", "no", "off"}:
+            return None
+        from .smtc import media_session, spoken_message
+
+        app = "" if request.provider in {None, "", "system", "windows"} else str(request.provider)
+        op = "" if request.operation == "now_playing" else request.operation
+        info = media_session(op, app)
+        if info.get("error") or not info.get("ok"):
+            print(f"[Media] Session control unavailable: {info.get('error') or 'failed'}", flush=True)
+            return None
+        print(
+            f"[Media] Session {request.operation}: app={info.get('app')!r} "
+            f"title={info.get('title')!r} status={info.get('status')!r}",
+            flush=True,
+        )
+        return MediaResult(
+            success=True,
+            provider="system",
+            operation=request.operation,
+            query=request.query,
+            message=spoken_message(request.operation, info),
+            output={
+                "provider": "system",
+                "operation": request.operation,
+                "session_app": info.get("app"),
+                "title": info.get("title"),
+                "artist": info.get("artist"),
+                "status": info.get("status"),
+            },
         )
 
     def execute(self, request: MediaRequest) -> MediaResult:
@@ -80,6 +114,19 @@ class WindowsMediaProvider:
                 query=request.query,
                 message="",
                 error="Windows media-key control does not support that request.",
+            )
+
+        session = self._session_control(request)
+        if session is not None:
+            return session
+        if request.operation == "now_playing":
+            return MediaResult(
+                success=False,
+                provider=self.name,
+                operation=request.operation,
+                query=request.query,
+                message="",
+                error="No media session information is available.",
             )
 
         vk = self._VIRTUAL_KEYS[request.operation]
@@ -163,6 +210,7 @@ class SpotifyProvider:
             "next",
             "previous",
             "stop",
+            "now_playing",
         } and not request.query
 
     @staticmethod
@@ -514,11 +562,11 @@ class SpotifyProvider:
         return track
 
     def _api_control(self, operation):
-        if not self.configured:
-            # Basic transport controls can still work against the active
-            # Windows media session without requiring Spotify credentials.
+        if not self.configured or operation == "now_playing":
+            # Transport controls work against Spotify's Windows media session
+            # without Spotify credentials.
             return self._system.execute(
-                MediaRequest(operation=operation)
+                MediaRequest(operation=operation, provider="spotify")
             )
 
         token = self._get_access_token()
@@ -788,6 +836,7 @@ class SpotifyProvider:
             "next",
             "previous",
             "stop",
+            "now_playing",
         }:
             operation = "play" if request.operation == "toggle" else request.operation
             try:
@@ -798,11 +847,7 @@ class SpotifyProvider:
                         provider=self.name,
                         operation=request.operation,
                         query=request.query,
-                        message=(
-                            "Toggled Spotify playback."
-                            if request.operation == "toggle"
-                            else result.message
-                        ),
+                        message=result.message,
                         output=result.output,
                         error=result.error,
                     )

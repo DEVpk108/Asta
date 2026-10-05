@@ -150,6 +150,17 @@ class IntentRouter:
                 classifier="rules",
             )
 
+        transport = self._extract_transport_command(normalized)
+        if transport:
+            return IntentResult(
+                intent=IntentType.COMMAND,
+                confidence=0.97,
+                normalized_text=normalized,
+                entities=transport,
+                requires_tools=True,
+                classifier="rules",
+            )
+
         screen_question = self._extract_screen_question(normalized)
         if screen_question:
             return IntentResult(
@@ -357,6 +368,64 @@ class IntentRouter:
                 result["title"] = title
             return result
 
+        return {}
+
+    _TRANSPORT_LEAD = re.compile(
+        r"^(?:(?:okay|ok|hey|hi|please|so|and|now|asta|just|"
+        r"can you|could you|would you|will you)[\s,]+)+"
+    )
+    _ITEM = r"(?:(?:the|this|that|my|current)\s+)?(?:song|track|music|gaana|gana|one|playback|audio|it)"
+    _APP_SUFFIX = re.compile(r"\s+(?:on|in)\s+(spotify|apple music|youtube music|youtube)$|\s+(spotify)$")
+    _TRANSPORT_PATTERNS = (
+        ("pause", re.compile(
+            rf"^(?:pause|paus|pauze|pose|paws)(?:\s+{_ITEM})?$|"
+            rf"^(?:stop|hold)\s+{_ITEM}$|"
+            r"^(?:gaana|gana|song|music)\s+(?:rok|roko|ruko|band|bandh)(?:\s+(?:do|karo|kar do|kardo))?$"
+        )),
+        ("play", re.compile(
+            rf"^(?:resume|unpause|continue)(?:\s+{_ITEM})?(?:\s+playing)?$|"
+            r"^(?:play|start)\s+(?:it\s+)?again$|^(?:gaana|gana)\s+(?:chalao|chala do|shuru karo)$"
+        )),
+        ("next", re.compile(
+            rf"^(?:next|skip|change|switch)(?:\s+{_ITEM})?(?:\s+please)?$|"
+            r"^(?:play|go to|put on)\s+(?:the\s+)?next(?:\s+(?:song|track|one))?$|"
+            r"^(?:agla|agla wala|next)\s+(?:gaana|gana|song)(?:\s+(?:chalao|lagao|bajao))?$|"
+            r"^(?:gaana|gana|song)\s+(?:badlo|badal do|change karo)$"
+        )),
+        ("previous", re.compile(
+            r"^(?:previous|prev)(?:\s+(?:song|track|one))?$|"
+            r"^(?:play|go to|go back to)\s+(?:the\s+)?previous(?:\s+(?:song|track|one))?$|"
+            r"^go\s+back(?:\s+(?:a|one)\s+(?:song|track))?$|"
+            r"^(?:go back to|back to)\s+(?:the\s+)?last\s+(?:song|track)$|"
+            r"^(?:pichla|pichhla|previous)\s+(?:gaana|gana|song)(?:\s+(?:chalao|lagao|bajao))?$"
+        )),
+        ("now_playing", re.compile(
+            r"^(?:what|which)(?:'s|\s+is)?\s+(?:song|track|music)\s+(?:is\s+)?(?:this|playing|that|on)(?:\s+(?:right\s+)?now)?$|"
+            r"^what(?:'s|\s+is)\s+(?:playing|this song|this track|the song|the current song)(?:\s+(?:right\s+)?now)?$|"
+            r"^(?:who\s+(?:sings|sang)\s+(?:this|that)(?:\s+song)?|what(?:'s|\s+is)\s+the\s+name\s+of\s+(?:this|the)\s+song)$|"
+            r"^(?:kaun\s+sa|konsa)\s+(?:gaana|gana)\s+(?:hai|chal raha hai)$"
+        )),
+    )
+
+    @classmethod
+    def _extract_transport_command(cls, text: str) -> dict[str, Any]:
+        """Pause / resume / next / previous / what's playing, no vision needed."""
+        value = cls._TRANSPORT_LEAD.sub("", str(text or "").strip().lower())
+        value = re.sub(r"[.!?,]+", " ", value)
+        value = re.sub(r"\s+(?:please|now|right now|for me)$", "", " ".join(value.split()))
+        provider = None
+        suffix = cls._APP_SUFFIX.search(value)
+        if suffix:
+            provider = (suffix.group(1) or suffix.group(2)).replace(" ", "_")
+            value = value[: suffix.start()].strip()
+        if not value:
+            return {}
+        for operation, pattern in cls._TRANSPORT_PATTERNS:
+            if pattern.match(value):
+                entities = {"action": "media", "operation": operation}
+                if provider == "spotify":
+                    entities["provider"] = provider
+                return entities
         return {}
 
     _SCREEN_QUESTION = re.compile(
@@ -647,6 +716,18 @@ class IntentRouter:
         r"(?:\s*,?\s+(?:for me|for us|please|right now|now))+$"
     )
 
+    _VAGUE_LEAD = re.compile(
+        r"^(?:(?:something|anything|some|any|a|an)\s+)?(?:(?:like|kind of|type of|sort of|of)\s+)?"
+    )
+    _VAGUE_TAIL = re.compile(r"\s+(?:type|kind|style|vibes?|sort|types)$")
+
+    @classmethod
+    def _clean_vague_media_query(cls, query: str) -> str:
+        """"something egyptian music type" -> "egyptian music"."""
+        value = " ".join(str(query or "").split())
+        cleaned = cls._VAGUE_TAIL.sub("", cls._VAGUE_LEAD.sub("", value)).strip()
+        return cleaned if cleaned and len(cleaned) >= 3 else value
+
     @classmethod
     def _refine_command_entities(cls, entities: dict[str, Any]) -> dict[str, Any]:
         """Reject or correct common voice misroutes before tool selection."""
@@ -666,6 +747,11 @@ class IntentRouter:
         if action == "media":
             operation = str(entities.get("operation") or "").lower()
             query = str(entities.get("query") or "").strip().lower()
+            if operation == "play" and query:
+                vague = cls._clean_vague_media_query(query)
+                if vague and vague != query:
+                    entities = {**entities, "query": vague}
+                    query = vague
             if operation == "play" and cls._RESUME_QUERY.match(query):
                 # "play the last song I was listening to" / "play that song":
                 # resume the player instead of searching for those words.
