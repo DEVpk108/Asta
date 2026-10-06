@@ -16,6 +16,7 @@ import time
 from typing import Any, Callable
 
 from core.contracts import ToolDefinition, ToolRequest, ToolResult
+from core.media.catalog import note_play_success
 from core.tools.base import Tool
 
 _STOPWORDS = {"the", "a", "an", "of", "by", "song", "songs", "track", "on", "and"}
@@ -75,6 +76,9 @@ if (-not $best -and $env:ASTA_UI_ITEMS -eq '1') {
       foreach ($t in $tokens) { if ($lower.Contains($t)) { $hits++ } }
       if ($hits -lt [Math]::Max(1, [Math]::Ceiling($tokens.Count / 2))) { continue }
       $score = $hits * 1000 - $name.Length
+      # A search suggestion is the typed text echoed in lower case
+      # ("baithi hai amit trivedi"); a real song row is capitalised.
+      if ($name -cmatch '[A-Z]') { $score += 5000 }
       if ($score -gt $bestScore) { $best = $item; $bestScore = $score; $isItem = $true }
     }
   }
@@ -408,6 +412,7 @@ class UIPlayTool(Tool):
                 output["now_playing"] = title
                 output["verified"] = True
                 output["message"] = f"Playing {self._spoken_title(title)}."
+                note_play_success(query)
                 return done(True)
             if session_app:
                 # Apps whose window title never changes (Apple Music):
@@ -423,6 +428,7 @@ class UIPlayTool(Tool):
                     output["now_playing"] = f"{artist} - {now}" if artist else now
                     output["verified"] = True
                     output["message"] = f"Playing {now}" + (f" by {artist}." if artist else ".")
+                    note_play_success(query, now, artist)
                     return done(True)
         output["now_playing"] = title
         output["verified"] = False

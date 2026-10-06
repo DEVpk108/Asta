@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from core.media.catalog import resolve_play_query
 from core.contracts import (
     IntentResult,
     IntentType,
@@ -836,6 +837,14 @@ class Planner:
             operation = str(normalized.get("operation") or "").strip().lower()
             query = str(normalized.get("query") or "").strip()
             provider = str(normalized.get("provider") or "").strip()
+
+            if operation == "play" and query and not provider.lower().startswith(("youtube", "system")):
+                # Speech mangles Hindi titles: play the catalog title that
+                # sounds like what was heard, when one clearly does.
+                resolved = resolve_play_query(query)
+                if resolved != query:
+                    normalized["heard_query"] = query
+                    normalized["query"] = query = resolved
 
             # An explicit preceding "open <app>" means the user asked A.S.T.A.
             # to operate the application through its visible UI. Keep that path

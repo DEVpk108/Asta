@@ -17,6 +17,7 @@ from typing import Protocol
 
 import requests
 
+from .catalog import note_play_success
 from .request import MediaRequest
 
 
@@ -810,6 +811,7 @@ class SpotifyProvider:
                     error=str(exc),
                 )
 
+            note_play_success(request.query, track["name"], track["artists"])
             return MediaResult(
                 success=True,
                 provider=self.name,
