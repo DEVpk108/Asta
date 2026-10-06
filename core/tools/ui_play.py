@@ -240,14 +240,19 @@ _RESTORE_WINDOW = r"""
 Add-Type -Namespace AstaWin -Name U -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
 [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+[DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
 '@
-$restored = $false
+$restored = $false; $maximized = $false
 foreach ($w in @(Get-Process -Name $env:ASTA_UI_PROCESS -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })) {
   if ([AstaWin.U]::IsIconic($w.MainWindowHandle)) { [AstaWin.U]::ShowWindow($w.MainWindowHandle, 9) | Out-Null; $restored = $true }
+  # A narrow window collapses the app into its compact layout: the sidebar
+  # becomes an overlay that covers the results. Maximise so it stays docked.
+  if ($env:ASTA_UI_MAXIMIZE -eq '1' -and -not [AstaWin.U]::IsZoomed($w.MainWindowHandle)) { [AstaWin.U]::ShowWindow($w.MainWindowHandle, 3) | Out-Null; $maximized = $true }
   [AstaWin.U]::SetForegroundWindow($w.MainWindowHandle) | Out-Null
 }
-if ($restored) { Start-Sleep -Milliseconds 700; 'restored' } else { 'ok' }
+if ($restored -or $maximized) { Start-Sleep -Milliseconds 900 }
+if ($maximized) { 'maximized' } elseif ($restored) { 'restored' } else { 'ok' }
 """
 
 _WINDOW_TITLE = r"""
@@ -283,9 +288,12 @@ def title_matches(title: str, query: str) -> bool:
 
 def _powershell(script: str, env: dict[str, str], timeout: float) -> str:
     completed = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + script],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         env={**os.environ, **env},
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -358,9 +366,10 @@ class UIPlayTool(Tool):
         if not query:
             return done(False, "Argument 'query' must be a non-empty string.")
 
-        output["window"] = self._restore_window(process)
-        before = self._window_title(process)
         session_app = str(args.get("session_app") or "").strip()
+        # Apps driven through their search box (Apple Music) need the full layout.
+        output["window"] = self._restore_window(process, maximize=bool(session_app and args.get("search")))
+        before = self._window_title(process)
         before_session = self._session_title(session_app) if session_app else ""
         searched = bool(args.get("search"))
         # Song rows (not just Play buttons) count when the app shows results
@@ -384,6 +393,11 @@ class UIPlayTool(Tool):
                 # into the title; match the title words alone.
                 found = self._invoke_by_name(process, core, attempts=2, items=rows, skip=search_text(query) if searched else "")
                 output["matched_query"] = core
+            if rows and not found.get("invoked") and not found.get("rect"):
+                # Results from the network can take a moment to appear.
+                self.sleep(2.0)
+                found = self._invoke_by_name(process, query, attempts=3, items=rows, skip=search_text(query) if searched else "")
+                output["retried_lookup"] = True
             output["ui_automation"] = found
             if found.get("invoked"):
                 method = "ui_automation"
@@ -485,16 +499,24 @@ class UIPlayTool(Tool):
             return {"invoked": False, "error": f"{type(exc).__name__}: {exc}"}
         return data if isinstance(data, dict) else {}
 
-    def _restore_window(self, process: str) -> str:
+    def _restore_window(self, process: str, maximize: bool = False) -> str:
         if not (os.name == "nt" or self.runner is not _powershell):
             return "skipped"
+        if os.getenv("ASTA_UI_MAXIMIZE", "1").strip().lower() in {"0", "false", "no", "off"}:
+            maximize = False
         try:
-            raw = self.runner(_RESTORE_WINDOW, {"ASTA_UI_PROCESS": process}, 8.0)
+            raw = self.runner(
+                _RESTORE_WINDOW,
+                {"ASTA_UI_PROCESS": process, "ASTA_UI_MAXIMIZE": "1" if maximize else "0"},
+                10.0,
+            )
         except Exception:
             return "unknown"
         state = (str(raw or "").strip().splitlines() or ["unknown"])[-1]
         if state == "restored":
             print(f"[UIPlay] Restored minimized {process} window.", flush=True)
+        elif state == "maximized":
+            print(f"[UIPlay] Maximised the {process} window so its sidebar stays docked.", flush=True)
         return state
 
     def _window_title(self, process: str) -> str:

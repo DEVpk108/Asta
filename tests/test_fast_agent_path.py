@@ -1933,3 +1933,36 @@ def test_okay_after_an_action_stays_quiet():
 
     AIModule.on_user_message(ai, "Okay")
     assert said == [] and replies == [] and reran == []
+
+
+def test_apple_music_window_is_maximised_and_slow_results_are_retried():
+    import json as _json
+
+    from core.contracts import ToolRequest
+    from core.tools.ui_play import UIPlayTool
+
+    seen = {"maximize": None, "finds": 0}
+
+    def runner(script, env, timeout):
+        if "IsIconic" in script:
+            seen["maximize"] = env.get("ASTA_UI_MAXIMIZE")
+            return "maximized"
+        if "ASTA_UI_QUERY" in env:
+            return _json.dumps({"found": True, "typed": True, "name": "Search"})
+        if "ASTA_UI_TOKENS" in env:
+            seen["finds"] += 1
+            if seen["finds"] == 1:
+                return _json.dumps({"invoked": False})
+            return _json.dumps({"invoked": True, "name": "Baithi Hai"})
+        if "ASTA_MEDIA_OP" in env:
+            return _json.dumps({"ok": True, "title": "Baithi Hai", "artist": "Amit Trivedi", "status": "Playing"})
+        return "Apple Music"
+
+    result = UIPlayTool(runner=runner, sleep=lambda _s: None).execute(ToolRequest(
+        tool="media.ui_play",
+        arguments={"query": "Baithi Hai", "application": "Apple Music", "process": "AppleMusic",
+                   "search": True, "session_app": "applemusic"},
+        request_id="r",
+    ))
+    assert seen["maximize"] == "1" and seen["finds"] == 2
+    assert result.success
