@@ -65,10 +65,14 @@ if (-not $best -and $env:ASTA_UI_ITEMS -eq '1') {
   # Apps without per-result Play buttons (Apple Music): a song row whose
   # name has the query words; the caller double-clicks it.
   $CT = [System.Windows.Automation.ControlType]
-  $itemCond = New-Object System.Windows.Automation.OrCondition(@(
-    (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::ListItem)),
-    (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::DataItem)),
-    (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::TreeItem))))
+  $itemTypes = @($CT::ListItem, $CT::DataItem, $CT::TreeItem)
+  # On an album/playlist page the track rows may not be list items: also accept
+  # generic containers and text, but only for an exact (strict) title match.
+  if ($env:ASTA_UI_ROWS -eq '1') { $itemTypes += @($CT::Custom, $CT::Group, $CT::Text) }
+  $itemCond = New-Object System.Windows.Automation.OrCondition(@($itemTypes | ForEach-Object { New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $_) }))
+  # "Baithi Hai  Song · Amit Trivedi": a search-result card. Opening it goes to
+  # the album page; it does not play the song.
+  $cardPattern = '(Song|Album|Playlist|Artist|EP|Single|Station|Video)[\s\u202f\u00a0]*' + [char]0x00B7
   foreach ($w in $windows) {
     $root = $A::FromHandle($w.MainWindowHandle)
     foreach ($item in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $itemCond)) {
@@ -80,7 +84,11 @@ if (-not $best -and $env:ASTA_UI_ITEMS -eq '1') {
       if ($env:ASTA_UI_SKIP -and $lower.Trim() -eq $env:ASTA_UI_SKIP) { continue }
       foreach ($t in $tokens) { if ($lower.Contains($t)) { $hits++ } }
       if ($hits -lt [Math]::Max(1, [Math]::Ceiling($tokens.Count / 2))) { continue }
+      # Second pass (after opening a card): only real song rows with every title word.
+      if ($env:ASTA_UI_ROWS -eq '1' -and ($name -match $cardPattern)) { continue }
+      if ($env:ASTA_UI_STRICT -eq '1' -and $hits -lt $tokens.Count) { continue }
       $score = $hits * 1000 - $name.Length
+      try { if ($item.Current.ControlType.Id -eq $CT::ListItem.Id -or $item.Current.ControlType.Id -eq $CT::DataItem.Id) { $score += 1000 } } catch {}
       # A search suggestion is the typed text echoed in lower case
       # ("baithi hai amit trivedi"); a real song row is capitalised.
       if ($name -cmatch '[A-Z]') { $score += 5000 }
@@ -101,6 +109,7 @@ function Get-Rect($el) {
 if ($best -and $isItem) {
   $result.name = [string]$best.Current.Name
   $result.item = $true
+  $result.card = [bool]($result.name -match $cardPattern)
   $rect = Get-Rect $best
   if (-not $rect) {
     # Virtualised list: scroll the row into view so it has a real position.
@@ -473,6 +482,21 @@ class UIPlayTool(Tool):
                 method = self._click_rect(found["rect"], clicks=2) and "ui_automation_double_click"
             elif found.get("rect"):
                 method = self._click_rect(found["rect"]) and "ui_automation_click"
+        title_only = self._title_query(query)
+        if method and rows and (output.get("ui_automation") or {}).get("card"):
+            # A search-result card only opens the album page. Wait for it, then
+            # play the song's own row there.
+            self.sleep(2.0)
+            row = self._invoke_by_name(
+                process, title_only, attempts=3, items=True, skip="", prefer=prefer, rows_only=True,
+            )
+            output["row_lookup"] = row
+            print(f"[UIPlay] {application}: opened the result page; song row={row.get('name')!r} "
+                  f"invoked={row.get('invoked')} rect={'yes' if row.get('rect') else 'no'}", flush=True)
+            if row.get("invoked"):
+                method = "ui_automation_row"
+            elif row.get("rect"):
+                method = (self._click_rect(row["rect"], clicks=2) and "ui_automation_row_double_click") or method
         if not method and rows and (os.name == "nt" or self.runner is not _powershell):
             # No usable position for the row: select it and press Enter instead
             # of guessing coordinates with vision.
@@ -530,11 +554,11 @@ class UIPlayTool(Tool):
         result = verify(12 if session_app else 6)
         if result:
             return result
-        if rows and method not in {"ui_automation", "ui_automation_keyboard"} and (os.name == "nt" or self.runner is not _powershell):
+        if rows and method not in {"ui_automation", "ui_automation_keyboard", "ui_automation_row"} and (os.name == "nt" or self.runner is not _powershell):
             # Second, coordinate-free attempt: select the result row and press Enter.
             again = self._invoke_by_name(
-                process, query, attempts=2, items=True, skip=search_text(query) if searched else "",
-                enter=True, prefer=prefer,
+                process, title_only, attempts=2, items=True, skip="", enter=True, prefer=prefer,
+                rows_only=bool((output.get("ui_automation") or {}).get("card") or output.get("row_lookup")),
             )
             output["keyboard_retry"] = again
             print(f"[UIPlay] {application}: keyboard retry name={again.get('name')!r} invoked={again.get('invoked')}", flush=True)
@@ -581,6 +605,19 @@ class UIPlayTool(Tool):
     def _session_title(self, app: str) -> str:
         return str(self._session(app).get("title") or "")
 
+    @staticmethod
+    def _title_query(query: str) -> str:
+        """The song title without the artist ("Baithi Hai Amit Trivedi" -> "Baithi Hai")."""
+        try:
+            from core.media.catalog import get_resolver
+
+            last = get_resolver().last
+            if last and last.query.strip().lower() == str(query).strip().lower() and last.title:
+                return last.title
+        except Exception:
+            pass
+        return core_query(query)
+
     def _preferred_artist_tokens(self, query: str) -> tuple[str, ...]:
         """Artist words from the catalog match, so the right version of a song wins."""
         try:
@@ -612,9 +649,11 @@ class UIPlayTool(Tool):
 
     def _invoke_by_name(
         self, process: str, query: str, attempts: int = 6, items: bool = False, skip: str = "",
-        enter: bool = False, prefer: tuple[str, ...] = (),
+        enter: bool = False, prefer: tuple[str, ...] = (), rows_only: bool = False,
     ) -> dict[str, Any]:
         env = {
+            "ASTA_UI_ROWS": "1" if rows_only else "0",
+            "ASTA_UI_STRICT": "1" if rows_only else "0",
             "ASTA_UI_ENTER": "1" if enter else "0",
             "ASTA_UI_PREFER": "|".join(prefer),
             "ASTA_UI_ITEMS": "1" if items else "0",

@@ -2008,3 +2008,55 @@ def test_ui_play_falls_back_to_keyboard_when_the_row_has_no_usable_position():
     ))
     assert result.success and result.output["method"] == "ui_automation_keyboard"
     assert "1" in envs
+
+
+def test_search_result_card_opens_the_album_then_the_song_row_is_played():
+    import json as _json
+
+    from core.contracts import ToolRequest
+    from core.tools.ui_play import UIPlayTool
+
+    calls, clicks = [], []
+    state = {"opened": False, "playing": False}
+
+    def runner(script, env, timeout):
+        if "IsIconic" in script:
+            return "ok"
+        if "ASTA_UI_QUERY" in env:
+            return _json.dumps({"found": True, "typed": True, "name": "Search"})
+        if "ASTA_UI_TOKENS" in env:
+            if env["ASTA_UI_ROWS"] == "1":
+                calls.append(("row", env["ASTA_UI_TOKENS"]))
+                return _json.dumps({"invoked": False, "item": True, "rect": [500, 600, 800, 60], "name": "Baithi Hai"})
+            calls.append(("card", env["ASTA_UI_TOKENS"]))
+            return _json.dumps({"invoked": False, "item": True, "card": True, "rect": [100, 200, 300, 120],
+                                "name": "Baithi Hai Song \u00b7 Amit Trivedi"})
+        if "ASTA_MEDIA_OP" in env:
+            if state["playing"]:
+                return _json.dumps({"ok": True, "title": "Baithi Hai", "artist": "Amit Trivedi", "status": "Playing"})
+            return _json.dumps({"ok": True, "title": "", "status": "Opened"})
+        return "Apple Music"
+
+    def click(**kw):
+        clicks.append(kw)
+        if kw["y"] > 500:  # the song row on the album page
+            state["playing"] = True
+
+    from types import SimpleNamespace
+
+    result = UIPlayTool(runner=runner, controller=SimpleNamespace(click=click), sleep=lambda _s: None).execute(ToolRequest(
+        tool="media.ui_play",
+        arguments={"query": "Baithi Hai Amit Trivedi", "application": "Apple Music", "process": "AppleMusic",
+                   "search": True, "session_app": "applemusic"},
+        request_id="r",
+    ))
+    assert [c[0] for c in calls][:2] == ["card", "row"]
+    assert result.success and result.output["method"] == "ui_automation_row_double_click"
+    assert len(clicks) == 2 and clicks[1]["clicks"] == 2
+
+
+def test_card_pattern_and_row_filters_are_in_the_script():
+    from core.tools import ui_play
+
+    script = ui_play._FIND_AND_INVOKE
+    assert "$cardPattern" in script and "ASTA_UI_STRICT" in script and "ASTA_UI_ROWS" in script
