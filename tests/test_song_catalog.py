@@ -94,3 +94,10 @@ def test_ui_play_prefers_capitalised_song_rows_over_lowercase_suggestions():
     from core.tools import ui_play
 
     assert "-cmatch '[A-Z]'" in ui_play._FIND_AND_INVOKE
+
+
+def test_misheard_by_still_splits_title_and_artist(resolver):
+    assert resolver.resolve("baithi hai bay amit").query == "Baithi Hai Amit Trivedi"
+    from core.tools.ui_play import search_text
+
+    assert search_text("baithi hai bay amit") == "baithi hai amit"

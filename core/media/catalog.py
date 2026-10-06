@@ -31,7 +31,7 @@ _APP_TAIL = re.compile(
     r"\s+(?:on|in|using|with)\s+(?:the\s+)?(?:\w+\s+){0,2}(?:music|musik|muzic|spotify|youtube|tube)\s*$",
     re.IGNORECASE,
 )
-_BY = re.compile(r"\s+by\s+", re.IGNORECASE)
+_BY = re.compile(r"\s+(?:by|bay|bye|buy)\s+", re.IGNORECASE)
 _STRIP_TITLE = re.compile(r"\s*[\(\[].*?[\)\]]|\s+-\s+(?:from|feat|with|remix|reprise|lofi|lo-fi)\b.*$", re.IGNORECASE)
 _ARTIST_SPLIT = re.compile(r"\s*(?:,|&|\band\b|\bfeat\.?|\bft\.?|\bwith\b)\s*", re.IGNORECASE)
 _GENERIC_WORDS = {"song", "songs", "music", "track", "tracks", "playlist", "album", "some", "any", "something"}

@@ -1966,3 +1966,45 @@ def test_apple_music_window_is_maximised_and_slow_results_are_retried():
     ))
     assert seen["maximize"] == "1" and seen["finds"] == 2
     assert result.success
+
+
+def test_ui_automation_scripts_report_real_screen_pixels():
+    from core.tools import ui_play
+
+    # A DPI-unaware PowerShell reports scaled rectangles, so clicks miss at 125-150% scaling.
+    for script in (ui_play._FIND_AND_INVOKE, ui_play._SEARCH_IN_APP, ui_play._DUMP_UI):
+        assert "SetProcessDPIAware" in script
+    assert "ScrollIntoView" in ui_play._FIND_AND_INVOKE and "{ENTER}" in ui_play._FIND_AND_INVOKE
+    assert '`n"' in ui_play._DUMP_UI
+
+
+def test_ui_play_falls_back_to_keyboard_when_the_row_has_no_usable_position():
+    import json as _json
+
+    from core.contracts import ToolRequest
+    from core.tools.ui_play import UIPlayTool
+
+    envs = []
+
+    def runner(script, env, timeout):
+        if "IsIconic" in script:
+            return "ok"
+        if "ASTA_UI_QUERY" in env:
+            return _json.dumps({"found": True, "typed": True, "name": "Search"})
+        if "ASTA_UI_TOKENS" in env:
+            envs.append(env["ASTA_UI_ENTER"])
+            if env["ASTA_UI_ENTER"] == "1":
+                return _json.dumps({"invoked": True, "item": True, "name": "Baithi Hai", "inner": "focus+enter"})
+            return _json.dumps({"invoked": False, "item": True, "rect": None, "name": "Baithi Hai"})
+        if "ASTA_MEDIA_OP" in env:
+            return _json.dumps({"ok": True, "title": "Baithi Hai", "artist": "Amit Trivedi", "status": "Playing"})
+        return "Apple Music"
+
+    result = UIPlayTool(runner=runner, sleep=lambda _s: None).execute(ToolRequest(
+        tool="media.ui_play",
+        arguments={"query": "Baithi Hai", "application": "Apple Music", "process": "AppleMusic",
+                   "search": True, "session_app": "applemusic"},
+        request_id="r",
+    ))
+    assert result.success and result.output["method"] == "ui_automation_keyboard"
+    assert "1" in envs
