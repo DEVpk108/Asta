@@ -16,7 +16,7 @@ import time
 from typing import Any, Callable
 
 from core.contracts import ToolDefinition, ToolRequest, ToolResult
-from core.media.catalog import note_play_success
+from core.media.catalog import note_play_success, primary_artist
 from core.tools.base import Tool
 
 _STOPWORDS = {"the", "a", "an", "of", "by", "song", "songs", "track", "on", "and"}
@@ -486,10 +486,15 @@ class UIPlayTool(Tool):
         if method and rows and (output.get("ui_automation") or {}).get("card"):
             # A search-result card only opens the album page. Wait for it, then
             # play the song's own row there.
-            self.sleep(2.0)
-            row = self._invoke_by_name(
-                process, title_only, attempts=3, items=True, skip="", prefer=prefer, rows_only=True,
-            )
+            row: dict[str, Any] = {}
+            for _ in range(5):
+                # The album page loads over the network: poll for the row for up to ~10 s.
+                self.sleep(1.5)
+                row = self._invoke_by_name(
+                    process, title_only, attempts=1, items=True, skip="", prefer=prefer, rows_only=True,
+                )
+                if row.get("invoked") or row.get("rect"):
+                    break
             output["row_lookup"] = row
             print(f"[UIPlay] {application}: opened the result page; song row={row.get('name')!r} "
                   f"invoked={row.get('invoked')} rect={'yes' if row.get('rect') else 'no'}", flush=True)
@@ -545,7 +550,9 @@ class UIPlayTool(Tool):
                         artist = str(info.get("artist") or "").strip()
                         output["now_playing"] = f"{artist} - {now}" if artist else now
                         output["verified"] = True
-                        output["message"] = f"Playing {now}" + (f" by {artist}." if artist else ".")
+                        # Apple Music reports "Artist, Artist - Album"; speak just the lead artist.
+                        spoken = primary_artist(re.split(r"\s+[-\u2014\u2013]\s+", artist)[0]) if artist else ""
+                        output["message"] = f"Playing {now}" + (f" by {spoken}." if spoken else ".")
                         note_play_success(query, now, artist)
                         return done(True)
             output["now_playing"] = title

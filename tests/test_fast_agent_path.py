@@ -2060,3 +2060,48 @@ def test_card_pattern_and_row_filters_are_in_the_script():
 
     script = ui_play._FIND_AND_INVOKE
     assert "$cardPattern" in script and "ASTA_UI_STRICT" in script and "ASTA_UI_ROWS" in script
+
+
+def test_album_row_is_polled_until_the_page_loads_and_spoken_artist_is_short():
+    import json as _json
+
+    from core.contracts import ToolRequest
+    from core.tools.ui_play import UIPlayTool
+
+    rows = {"n": 0}
+    state = {"playing": False}
+
+    def runner(script, env, timeout):
+        if "IsIconic" in script:
+            return "ok"
+        if "ASTA_UI_QUERY" in env:
+            return _json.dumps({"found": True, "typed": True, "name": "Search"})
+        if "ASTA_UI_TOKENS" in env:
+            if env["ASTA_UI_ROWS"] == "1":
+                rows["n"] += 1
+                if rows["n"] < 3:  # album page still loading
+                    return _json.dumps({"invoked": False})
+                return _json.dumps({"invoked": False, "item": True, "rect": [500, 600, 800, 60], "name": "Track 3 Baithi Hai"})
+            return _json.dumps({"invoked": False, "item": True, "card": True, "rect": [100, 200, 300, 120],
+                                "name": "Baithi Hai Song \u00b7 Amit Trivedi"})
+        if "ASTA_MEDIA_OP" in env:
+            if state["playing"]:
+                return _json.dumps({"ok": True, "title": "Baithi Hai", "status": "Playing",
+                                    "artist": "Amit Trivedi, Amitabh Bhattacharya - Songs of Trance - EP"})
+            return _json.dumps({"ok": True, "title": "", "status": "Opened"})
+        return "Apple Music"
+
+    def click(**kw):
+        if kw["y"] > 500:
+            state["playing"] = True
+
+    from types import SimpleNamespace
+
+    result = UIPlayTool(runner=runner, controller=SimpleNamespace(click=click), sleep=lambda _s: None).execute(ToolRequest(
+        tool="media.ui_play",
+        arguments={"query": "Baithi Hai Amit Trivedi", "application": "Apple Music", "process": "AppleMusic",
+                   "search": True, "session_app": "applemusic"},
+        request_id="r",
+    ))
+    assert rows["n"] == 3
+    assert result.success and result.output["message"] == "Playing Baithi Hai by Amit Trivedi."
