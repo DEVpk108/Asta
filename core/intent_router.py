@@ -6,6 +6,7 @@ from .contracts.intent import (
     IntentType,
 )
 from .media import parse_media_request
+from .media.request import app_last
 from .transliteration import canonicalize_command, strip_wake_remnant
 
 
@@ -117,6 +118,7 @@ class IntentRouter:
         # Drop a dangling clause the STT cut off ("open chrome and search
         # for"), so the complete first command still runs.
         normalized = self._DANGLING_CLAUSE_PATTERN.sub("", normalized).strip()
+        normalized = app_last(normalized)
 
         memory_phrases = (
             "remember that",

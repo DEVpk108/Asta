@@ -1828,3 +1828,46 @@ def test_llm_resolver_open_and_garbage():
     open_app = parse_resolution('{"action": "open", "query": "", "app": "Paint"}')
     assert resolution_entities(open_app, None) == {"action": "open", "target": "Paint"}
     assert resolution_entities(parse_resolution('{"action": "open", "app": ""}'), None) is None
+
+
+@pytest.mark.parametrize("text, query, provider", [
+    ("Play baithi hai on Apple music by amit", "baithi hai by amit", "apple music"),
+    ("play tum hi ho on spotify by arijit", "tum hi ho by arijit", "spotify"),
+])
+def test_artist_after_the_app_name_stays_in_the_query(text, query, provider):
+    for router in (IntentRouter(), Kernel().intent_router):
+        entities = router.analyze(text).entities
+        assert entities["query"] == query and entities["provider"] == provider
+
+
+def test_apple_music_search_skips_suggestion_echo_and_waits_for_the_session():
+    import json as _json
+
+    from core.contracts import ToolRequest
+    from core.tools.ui_play import UIPlayTool, search_text
+
+    assert search_text("baithi hai by amit") == "baithi hai amit"
+    typed, skips, polls = [], [], []
+
+    def runner(script, env, timeout):
+        if "IsIconic" in script:
+            return "ok"
+        if "ASTA_UI_QUERY" in env:
+            typed.append(env["ASTA_UI_QUERY"])
+            return _json.dumps({"found": True, "typed": True, "name": "Search"})
+        if "ASTA_UI_TOKENS" in env:
+            skips.append(env["ASTA_UI_SKIP"])
+            return _json.dumps({"invoked": True, "item": True, "rect": [1, 1, 5, 5], "name": "Baithi Hai Amit Trivedi"})
+        if "ASTA_MEDIA_OP" in env:
+            polls.append(1)
+            if len(polls) < 6:  # buffering: no track yet
+                return _json.dumps({"ok": True, "title": "", "status": "Changing"})
+            return _json.dumps({"ok": True, "title": "Baithi Hai", "artist": "Amit Trivedi", "status": "Changing"})
+        return "Apple Music"
+
+    tool = UIPlayTool(runner=runner, sleep=lambda _s: None)
+    result = tool.execute(ToolRequest(tool="media.ui_play", request_id="r", arguments={
+        "query": "baithi hai by amit", "application": "Apple Music", "process": "AppleMusic",
+        "search": True, "session_app": "applemusic"}))
+    assert typed == ["baithi hai amit"] and skips[0] == "baithi hai amit"
+    assert result.success and result.output["method"] == "ui_automation"

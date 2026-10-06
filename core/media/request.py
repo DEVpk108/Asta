@@ -140,12 +140,31 @@ UNSUPPORTED_MUSIC_APPS = frozenset(
 )
 
 
+_APP_NAMES = r"apple\s+music|itunes|spotify|youtube\s+music|youtube|amazon\s+music|jiosaavn|saavn|gaana|wynk(?:\s+music)?|soundcloud|deezer|tidal|pandora"
+_APP_BEFORE_ARTIST = re.compile(
+    rf"^(?P<head>.+?)\s+(?P<prep>on|in)\s+(?P<app>{_APP_NAMES})\s+(?P<by>by\s+\S.*?)[\s.!?]*$",
+    re.IGNORECASE,
+)
+
+
+def app_last(text: str) -> str:
+    """"play X on Apple Music by Amit" -> "play X by Amit on Apple Music".
+
+    The app is always parsed from the end of the sentence; an artist said
+    after it would otherwise glue onto the app name or the title.
+    """
+    match = _APP_BEFORE_ARTIST.match(str(text or "").strip())
+    if not match:
+        return text
+    return f"{match.group('head')} {match.group('by')} {match.group('prep')} {match.group('app')}"
+
+
 def parse_media_request(
     text: str,
     *,
     known_providers=None,
 ) -> MediaRequest | None:
-    normalized = _strip_polite_leads(_normalize(text))
+    normalized = _strip_polite_leads(_normalize(app_last(_normalize(text))))
     if not normalized:
         return None
 

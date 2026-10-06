@@ -69,6 +69,9 @@ if (-not $best -and $env:ASTA_UI_ITEMS -eq '1') {
       $name = [string]$item.Current.Name
       if (-not $name) { continue }
       $lower = $name.ToLower(); $hits = 0
+      # The search box's own suggestions echo the typed text verbatim
+      # ("baithi hai"); real song rows carry the artist too.
+      if ($env:ASTA_UI_SKIP -and $lower.Trim() -eq $env:ASTA_UI_SKIP) { continue }
       foreach ($t in $tokens) { if ($lower.Contains($t)) { $hits++ } }
       if ($hits -lt [Math]::Max(1, [Math]::Ceiling($tokens.Count / 2))) { continue }
       $score = $hits * 1000 - $name.Length
@@ -81,6 +84,15 @@ if ($best -and $isItem) {
   $r = $best.Current.BoundingRectangle
   $result.rect = @($r.X, $r.Y, $r.Width, $r.Height)
   $result.item = $true
+  # A row's own Play button (shown on hover) beats a double-click.
+  foreach ($inner in $best.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)) {
+    $innerName = [string]$inner.Current.Name
+    if (-not $innerName -or -not $innerName.ToLower().StartsWith('play')) { continue }
+    try {
+      $inner.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+      $result.invoked = $true; $result.inner = $innerName; break
+    } catch {}
+  }
 } elseif ($best) {
   $result.name = [string]$best.Current.Name
   $r = $best.Current.BoundingRectangle
@@ -176,6 +188,11 @@ def core_query(query: str) -> str:
     return head if len(head) >= 2 else value
 
 
+def search_text(query: str) -> str:
+    """What to type into an app's search box: "baithi hai by amit" -> "baithi hai amit"."""
+    return " ".join(re.sub(r"\bby\b", " ", core_query(query), flags=re.IGNORECASE).split())
+
+
 def title_matches(title: str, query: str) -> bool:
     lower = str(title or "").lower()
     tokens = query_tokens(query)
@@ -269,7 +286,7 @@ class UIPlayTool(Tool):
         rows = searched or bool(args.get("on_screen"))
         method = None
         if searched and (os.name == "nt" or self.runner is not _powershell):
-            typed = self._search_in_app(process, query)
+            typed = self._search_in_app(process, search_text(query))
             output["search"] = typed
             print(f"[UIPlay] {application}: search box={typed.get('name')!r} typed={typed.get('typed')} "
                   f"error={typed.get('error') or ''}", flush=True)
@@ -277,12 +294,12 @@ class UIPlayTool(Tool):
                 return done(False, f"I couldn't find the search box in {application}.")
             self.sleep(2.5)
         if os.name == "nt" or self.runner is not _powershell:
-            found = self._invoke_by_name(process, query, items=rows)
+            found = self._invoke_by_name(process, query, items=rows, skip=search_text(query) if searched else "")
             core = core_query(query)
             if not found.get("invoked") and not found.get("rect") and core != query:
                 # "baithi hai on eppal on apple music": the app name leaked
                 # into the title; match the title words alone.
-                found = self._invoke_by_name(process, core, attempts=2, items=rows)
+                found = self._invoke_by_name(process, core, attempts=2, items=rows, skip=search_text(query) if searched else "")
                 output["matched_query"] = core
             output["ui_automation"] = found
             if found.get("invoked"):
@@ -303,8 +320,10 @@ class UIPlayTool(Tool):
             return done(False, f"Could not find a playable result for '{query}' in {application}.")
 
         title = ""
-        for _ in range(6):
-            self.sleep(0.6)
+        # Streaming apps (Apple Music) buffer for a few seconds before their
+        # media session reports the new track.
+        for _ in range(12 if session_app else 6):
+            self.sleep(0.7 if session_app else 0.6)
             title = self._window_title(process)
             if title_matches(title, query) or (title and title != before and " - " in title):
                 output["now_playing"] = title
@@ -316,8 +335,11 @@ class UIPlayTool(Tool):
                 # confirm through the Windows media session instead.
                 info = self._session(session_app)
                 now = str(info.get("title") or "")
-                playing = str(info.get("status") or "").lower() == "playing"
-                if now and playing and (title_matches(f"{now} {info.get('artist') or ''}", query) or now != before_session):
+                status = str(info.get("status") or "").lower()
+                playing = status == "playing"
+                named = title_matches(f"{now} {info.get('artist') or ''}", core_query(query))
+                output["session"] = {"title": now, "status": status, "app": info.get("app")}
+                if now and ((named and status not in {"stopped", "closed", ""}) or (playing and now != before_session)):
                     artist = str(info.get("artist") or "").strip()
                     output["now_playing"] = f"{artist} - {now}" if artist else now
                     output["verified"] = True
@@ -325,6 +347,8 @@ class UIPlayTool(Tool):
                     return done(True)
         output["now_playing"] = title
         output["verified"] = False
+        if session_app:
+            print(f"[UIPlay] {application}: media session after play: {output.get('session')}", flush=True)
         return done(
             False,
             f"Pressed play for '{query}' in {application}, but playback did not start "
@@ -358,13 +382,16 @@ class UIPlayTool(Tool):
     def _session_title(self, app: str) -> str:
         return str(self._session(app).get("title") or "")
 
-    def _invoke_by_name(self, process: str, query: str, attempts: int = 6, items: bool = False) -> dict[str, Any]:
+    def _invoke_by_name(
+        self, process: str, query: str, attempts: int = 6, items: bool = False, skip: str = ""
+    ) -> dict[str, Any]:
         env = {
             "ASTA_UI_ITEMS": "1" if items else "0",
             "ASTA_UI_ATTEMPTS": str(attempts),
             "ASTA_UI_PROCESS": process,
             "ASTA_UI_PREFIX": "Play",
             "ASTA_UI_TOKENS": "|".join(query_tokens(query)),
+            "ASTA_UI_SKIP": " ".join(str(skip or "").lower().split()),
         }
         try:
             raw = self.runner(_FIND_AND_INVOKE, env, 20.0)
