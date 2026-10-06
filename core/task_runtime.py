@@ -22,11 +22,7 @@ from .module import Module
 
 
 
-# Music apps ASTA has no integration for; requests fall back to Spotify.
-UNSUPPORTED_MUSIC_APPS = frozenset(
-    {"apple music", "amazon music", "jiosaavn", "saavn", "gaana", "wynk", "wynk music",
-     "soundcloud", "deezer", "tidal", "pandora"}
-)
+from core.media.request import UNSUPPORTED_MUSIC_APPS  # noqa: E402
 
 class TaskRuntimeModule(Module):
     """Bind user goals and tool activity to the active AgentTask.

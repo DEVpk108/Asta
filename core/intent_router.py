@@ -753,6 +753,9 @@ class IntentRouter:
             if " on " in f" {provider} ":
                 # "eppal on apple music": keep the last named app.
                 entities = {**entities, "provider": provider.rsplit(" on ", 1)[-1].strip()}
+            if operation == "play" and query and str(entities.get("provider") or "").startswith("youtube"):
+                # No YouTube player integration: show the YouTube results.
+                return {"action": "search", "query": query, "target": "youtube"}
             if operation == "play" and query:
                 from core.media.artists import artist_request, snap_artist_names
 

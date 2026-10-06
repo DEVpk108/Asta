@@ -1601,3 +1601,17 @@ def test_ui_play_retries_with_the_title_without_a_leaked_app_tail():
         ToolRequest(tool="media.ui_play", arguments={"query": "baithi hai on eppal on apple music"}, request_id="r")
     )
     assert result.success and tokens_seen[-1] == "baithi|hai"
+
+
+@pytest.mark.parametrize(
+    ("text", "entities"),
+    [
+        ("Play baithi hai on Apple music",
+         {"action": "media", "operation": "play", "query": "baithi hai", "provider": "apple music"}),
+        ("play despacito on youtube", {"action": "search", "query": "despacito", "target": "youtube"}),
+        ("play baithi hai on spotify",
+         {"action": "media", "operation": "play", "query": "baithi hai", "provider": "spotify"}),
+    ],
+)
+def test_kernel_router_keeps_app_names_out_of_titles(text, entities):
+    assert Kernel().intent_router.analyze(text).entities == entities

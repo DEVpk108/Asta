@@ -32,7 +32,8 @@ if (-not $windows) { $result.error = 'window_not_found'; $result | ConvertTo-Jso
 $A = [System.Windows.Automation.AutomationElement]
 $cond = New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
 $best = $null; $bestScore = -1
-for ($attempt = 0; $attempt -lt 3 -and -not $best; $attempt++) {
+$maxAttempts = [int]($env:ASTA_UI_ATTEMPTS); if ($maxAttempts -lt 1) { $maxAttempts = 6 }
+for ($attempt = 0; $attempt -lt $maxAttempts -and -not $best; $attempt++) {
   foreach ($w in $windows) {
     $root = $A::FromHandle($w.MainWindowHandle)
     $buttons = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
@@ -51,7 +52,7 @@ for ($attempt = 0; $attempt -lt 3 -and -not $best; $attempt++) {
     }
   }
   # Chromium/CEF builds its accessibility tree on the first UIA query.
-  if (-not $best) { Start-Sleep -Milliseconds 700 }
+  if (-not $best) { Start-Sleep -Milliseconds 800 }
 }
 if ($best) {
   $result.name = [string]$best.Current.Name
@@ -190,7 +191,7 @@ class UIPlayTool(Tool):
             if not found.get("invoked") and not found.get("rect") and core != query:
                 # "baithi hai on eppal on apple music": the app name leaked
                 # into the title; match the title words alone.
-                found = self._invoke_by_name(process, core)
+                found = self._invoke_by_name(process, core, attempts=2)
                 output["matched_query"] = core
             output["ui_automation"] = found
             if found.get("invoked"):
@@ -227,8 +228,9 @@ class UIPlayTool(Tool):
 
     # -- helpers -------------------------------------------------------
 
-    def _invoke_by_name(self, process: str, query: str) -> dict[str, Any]:
+    def _invoke_by_name(self, process: str, query: str, attempts: int = 6) -> dict[str, Any]:
         env = {
+            "ASTA_UI_ATTEMPTS": str(attempts),
             "ASTA_UI_PROCESS": process,
             "ASTA_UI_PREFIX": "Play",
             "ASTA_UI_TOKENS": "|".join(query_tokens(query)),

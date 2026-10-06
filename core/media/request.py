@@ -133,6 +133,13 @@ def _clean_play_query(query: str) -> str:
     return cleaned
 
 
+# Music apps ASTA has no integration for; requests fall back to Spotify.
+UNSUPPORTED_MUSIC_APPS = frozenset(
+    {"apple music", "amazon music", "jiosaavn", "saavn", "gaana", "wynk", "wynk music",
+     "soundcloud", "deezer", "tidal", "pandora"}
+)
+
+
 def parse_media_request(
     text: str,
     *,
@@ -150,6 +157,18 @@ def parse_media_request(
         )
         if provider:
             normalized = remaining
+        else:
+            # A music app ASTA has no integration for ("on apple music") is
+            # still the app, not part of the song title; the planner falls
+            # back to the default app and says so.
+            other = re.search(
+                rf"\s+(?:on|in)\s+(?P<provider>youtube\s+music|youtube|{'|'.join(re.escape(n) for n in sorted(UNSUPPORTED_MUSIC_APPS, key=len, reverse=True))})$",
+                normalized,
+                re.IGNORECASE,
+            )
+            if other:
+                provider = other.group("provider").lower()
+                normalized = normalized[:other.start()].strip()
     else:
         provider_match = re.search(
             r"\s+on\s+(?P<provider>[a-z0-9][a-z0-9 ._-]*)$",
