@@ -1676,6 +1676,42 @@ def test_ui_play_searches_in_app_and_verifies_via_media_session():
     assert result.success and result.output["message"] == "Playing Baithi Hai by Amit Trivedi."
 
 
+def test_ui_play_opens_a_collapsed_search_field_before_giving_up():
+    import json as _json
+
+    from core.contracts import ToolRequest
+    from core.tools import ui_play
+    from core.tools.ui_play import UIPlayTool
+
+    # Apple Music hides its search box behind a sidebar icon in a narrow window:
+    # the script must activate search (button, then Ctrl+F) and bring the app forward.
+    script = ui_play._SEARCH_IN_APP
+    for needle in ("Open-Search", "SetForegroundWindow", "^f", "FocusedElement", "InvokePattern"):
+        assert needle in script
+    assert "$result.activation" in script
+
+    seen = {}
+
+    def runner(script_text, env, timeout):
+        if "IsIconic" in script_text:
+            return "ok"
+        if "ASTA_UI_QUERY" in env:
+            seen["timeout"] = timeout
+            return _json.dumps({"found": False, "typed": False, "error": "search_box_not_found",
+                                "activation": "invoke ctrl+f", "candidates": ["Button:Search"]})
+        return "Apple Music"
+
+    result = UIPlayTool(runner=runner, sleep=lambda _s: None).execute(ToolRequest(
+        tool="media.ui_play",
+        arguments={"query": "baithi hai", "application": "Apple Music", "process": "AppleMusic",
+                   "search": True, "session_app": "applemusic"},
+        request_id="r",
+    ))
+    assert not result.success and "search box" in result.error
+    assert result.output["search"]["activation"] == "invoke ctrl+f"
+    assert seen["timeout"] >= 30
+
+
 def test_apple_music_transport_uses_its_media_session(monkeypatch):
     from core.media import providers
     from core.media.request import MediaRequest

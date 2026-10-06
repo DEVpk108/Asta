@@ -106,28 +106,106 @@ $result | ConvertTo-Json -Compress
 """
 
 # Type the query into the app's own search box (no deep link available).
+# Apple Music collapses its search field into a sidebar icon when the window is
+# narrow (and on non-search pages), so there is no Edit control to find until
+# search is activated: invoke the Search button, then fall back to Ctrl+F.
 _SEARCH_IN_APP = r"""
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms
-$result = @{ found = $false; typed = $false; name = ''; error = '' }
+Add-Type -Namespace AstaWin -Name S -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+[DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+[DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
+'@
+$result = @{ found = $false; typed = $false; name = ''; error = ''; activation = ''; candidates = @() }
 $windows = @(Get-Process -Name $env:ASTA_UI_PROCESS -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
 if (-not $windows) { $result.error = 'window_not_found'; $result | ConvertTo-Json -Compress; exit }
 $A = [System.Windows.Automation.AutomationElement]
-$cond = New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
-$box = $null; $fallback = $null
-for ($attempt = 0; $attempt -lt 8 -and -not $box; $attempt++) {
+$CT = [System.Windows.Automation.ControlType]
+$TS = [System.Windows.Automation.TreeScope]
+$editCond = New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::Edit)
+$actCond = New-Object System.Windows.Automation.OrCondition(@(
+  (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::Button)),
+  (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::ListItem)),
+  (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::TabItem)),
+  (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::RadioButton)),
+  (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::Hyperlink)),
+  (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::MenuItem)),
+  (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::Custom))))
+$script:fallback = $null
+
+function Focus-App { foreach ($w in $windows) { [AstaWin.S]::SetForegroundWindow($w.MainWindowHandle) | Out-Null } }
+
+function Find-Box {
   foreach ($w in $windows) {
-    $edits = $A::FromHandle($w.MainWindowHandle).FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+    $edits = $A::FromHandle($w.MainWindowHandle).FindAll($TS::Descendants, $editCond)
     foreach ($e in $edits) {
       $label = ([string]$e.Current.Name + ' ' + [string]$e.Current.AutomationId + ' ' + [string]$e.Current.HelpText).ToLower()
-      if ($label.Contains('search')) { $box = $e; break }
-      if (-not $fallback) { $fallback = $e }
+      if ($label.Contains('search')) { return $e }
+      if (-not $script:fallback) { $script:fallback = $e }
     }
-    if ($box) { break }
   }
-  if (-not $box) { Start-Sleep -Milliseconds 700 }
+  return $null
 }
-if (-not $box) { $box = $fallback }
+
+# The collapsed search icon: invoke/select it, or click its centre.
+function Open-Search {
+  foreach ($w in $windows) {
+    $root = $A::FromHandle($w.MainWindowHandle)
+    foreach ($c in $root.FindAll($TS::Descendants, $actCond)) {
+      $label = ([string]$c.Current.Name + ' ' + [string]$c.Current.AutomationId).ToLower()
+      if (-not $label.Contains('search')) { continue }
+      if ($result.candidates.Count -lt 10) { $result.candidates += ([string]$c.Current.ControlType.ProgrammaticName + ':' + [string]$c.Current.Name) }
+      try { $c.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); return 'invoke' } catch {}
+      try { $c.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select(); return 'select' } catch {}
+      $r = $c.Current.BoundingRectangle
+      if ($r.Width -gt 0 -and $r.Height -gt 0) {
+        [AstaWin.S]::SetCursorPos([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2)) | Out-Null
+        Start-Sleep -Milliseconds 80
+        [AstaWin.S]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+        [AstaWin.S]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+        return 'click'
+      }
+    }
+  }
+  return ''
+}
+
+# Whatever just took keyboard focus, when it is a text box of this app.
+function Focused-Edit {
+  try {
+    $f = $A::FocusedElement
+    $pids = @($windows | ForEach-Object { $_.Id })
+    if ($f -and $f.Current.ControlType.Id -eq $CT::Edit.Id -and $pids -contains $f.Current.ProcessId) { return $f }
+  } catch {}
+  return $null
+}
+
+$box = $null; $how = ''
+Focus-App
+for ($attempt = 0; $attempt -lt 9 -and -not $box; $attempt++) {
+  $box = Find-Box
+  if ($box) { break }
+  if ($attempt -eq 1) {
+    # No text box yet: the search field is collapsed. Open it.
+    Focus-App
+    $how = Open-Search
+    Start-Sleep -Milliseconds 700
+    $box = Find-Box
+    if (-not $box) { $box = Focused-Edit }
+  } elseif ($attempt -eq 4 -or $attempt -eq 7) {
+    # Still nothing: Ctrl+F opens and focuses search in Apple Music.
+    Focus-App
+    [System.Windows.Forms.SendKeys]::SendWait('^f')
+    $how = ($how + ' ctrl+f').Trim()
+    Start-Sleep -Milliseconds 700
+    $box = Find-Box
+    if (-not $box) { $box = Focused-Edit }
+  }
+  if (-not $box) { Start-Sleep -Milliseconds 500 }
+}
+$result.activation = $how
+if (-not $box) { $box = $script:fallback }
 if (-not $box) { $result.error = 'search_box_not_found'; $result | ConvertTo-Json -Compress; exit }
 $result.found = $true; $result.name = [string]$box.Current.Name
 try { $box.SetFocus() } catch {}
@@ -289,7 +367,8 @@ class UIPlayTool(Tool):
             typed = self._search_in_app(process, search_text(query))
             output["search"] = typed
             print(f"[UIPlay] {application}: search box={typed.get('name')!r} typed={typed.get('typed')} "
-                  f"error={typed.get('error') or ''}", flush=True)
+                  f"activation={typed.get('activation') or 'none'} error={typed.get('error') or ''}"
+                  + (f" candidates={typed.get('candidates')}" if typed.get("error") else ""), flush=True)
             if not typed.get("typed"):
                 return done(False, f"I couldn't find the search box in {application}.")
             self.sleep(2.5)
@@ -364,7 +443,7 @@ class UIPlayTool(Tool):
             "ASTA_UI_KEYS": sendkeys_escape(query),
         }
         try:
-            raw = self.runner(_SEARCH_IN_APP, env, 20.0)
+            raw = self.runner(_SEARCH_IN_APP, env, 30.0)
             data = json.loads(raw.splitlines()[-1]) if raw else {}
         except Exception as exc:
             return {"typed": False, "error": f"{type(exc).__name__}: {exc}"}
