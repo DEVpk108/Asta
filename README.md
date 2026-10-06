@@ -293,6 +293,8 @@ already set in the environment take precedence.
 | `ASTA_TTS_HINDI_PRELOAD` | `1` | Load the Hindi voice in the background at startup |
 | `ASTA_APPLE_MUSIC_APP` | `Apple Music` | App name ASTA opens for "play … on Apple Music" |
 | `ASTA_APPLE_MUSIC_PROCESS` | `AppleMusic` | Apple Music process name (UI Automation search + play); inspect with `python scripts/uia_dump.py AppleMusic` |
+| `ASTA_INTENT_LLM` | `1` | Let the local LLM turn free phrasing the rule router misses ("Baithi Hai is up now, put it on") into one structured action, grounded in the most recent task; `0` = rules only |
+| `ASTA_INTENT_LLM_TIMEOUT` | `8` | Seconds to wait for that intent pass before falling back to chat |
 | `ASTA_TTS_FIRST_CLAUSE` | `1` | Speak a reply's first clause on its own so audio starts sooner |
 | `ASTA_TTS_OUTPUT_LATENCY` | `low` | Audio output buffer (`low`, `high` or seconds) |
 | `ASTA_CHAT_HISTORY_DB` | `data/chat_history.db` | SQLite chat history location |

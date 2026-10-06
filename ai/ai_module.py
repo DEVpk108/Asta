@@ -3,7 +3,7 @@ import re
 import time
 
 from core.quick_answers import quick_math, unsupported_file_action
-from core.agent import work_awareness
+from core.agent import intent_resolver, work_awareness
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from core.module import Module
@@ -198,8 +198,10 @@ class AIModule(Module):
             "You are ASTA, a local-first AI engineering assistant and personal AI system. "
             "You were created by Mr. PRASANT KUMAR. "
             "Mention your creator only when the user explicitly asks who created, made, built, or developed you. "
-            "If the user's message is unclear, very short, or looks like a misheard fragment, "
-            "do not guess and do not introduce yourself: say \"Sorry, I didn't catch that. Could you say it again?\" "
+            "Only if the user's message is a misheard fragment of a few words that forms no request, "
+            "say \"Sorry, I didn't catch that. Could you say it again?\" and do not introduce yourself. "
+            "For a full sentence, answer it; if it asks for an action that was not carried out, say briefly what you "
+            "understood and ask the user to confirm or rephrase, using your most recent action when it is relevant. "
             "Do not attribute A.S.T.A.'s creation to the model provider, hardware vendor, or any other company. "
             "Respond naturally, confidently, accurately, and concisely. "
             "Prefer 1–3 short sentences for normal voice questions unless the user asks for detail. "
@@ -313,6 +315,9 @@ class AIModule(Module):
         recovered_intent = self._recover_recent_command(text, intent_hint)
         if recovered_intent is not None:
             intent_hint = recovered_intent
+        contextual = self._resolve_contextual_intent(text, intent_hint)
+        if contextual is not None:
+            intent_hint = contextual
 
         if self._run_system1_decision(text, intent_hint=intent_hint):
             return
@@ -390,6 +395,79 @@ class AIModule(Module):
         print(f"[AI] Retrying recent task: {work.goal} (was {work.status})", flush=True)
         self.on_user_message(work.goal)
         return True
+
+    _REFERENCE_WORDS = re.compile(
+        r"\b(?:it|this|that|these|those|screen|ise|isko|isse|ye|yeh|wo|woh|usko|use)\b", re.IGNORECASE
+    )
+    _HINGLISH_VERBS = re.compile(
+        r"\b(?:chala\w*|baja\w*|band|khol\w*|bajao|lagao|laga\w*|rok\w*|hata\w*|dikha\w*)\b", re.IGNORECASE
+    )
+
+    def _resolve_contextual_intent(self, text, intent):
+        """Commands the rule router missed, resolved against recent work.
+
+        "Baithi Hai is on the screen, play it" and other free phrasings go
+        through a screen-reference rule, then (for anything else that reads
+        like a request) a JSON-only LLM pass that picks one action.
+        """
+        work = work_awareness.recent_work(getattr(self.kernel, "task_manager", None))
+        entities = intent_resolver.resolve_screen_reference(text, work)
+        classifier = "screen_reference"
+        if entities is None:
+            if intent.intent is not IntentType.UNKNOWN or not self._worth_llm_intent(text, work):
+                return None
+            complete = getattr(self.engine, "complete_json", None)
+            if not callable(complete) or os.getenv("ASTA_INTENT_LLM", "1").strip().lower() in {"0", "false", "off", "no"}:
+                return None
+            applications = getattr(self.kernel, "application_manager", None)
+            recent = getattr(applications, "last_opened_application", None) if applications is not None else None
+            last_app = str(getattr(recent, "name", recent) or "")
+            started = time.perf_counter()
+            resolution = intent_resolver.resolve_with_llm(text, complete, work=work, last_app=last_app)
+            print(
+                f"[AI] LLM intent: {resolution.action if resolution else 'unparsed'}"
+                f" query={getattr(resolution, 'query', '')!r} app={getattr(resolution, 'app', '')!r}"
+                f" ({time.perf_counter() - started:.2f}s)",
+                flush=True,
+            )
+            if resolution is None or resolution.action == "none":
+                return None
+            if resolution.action == "retry":
+                if work is None:
+                    return None
+                retried = self.kernel.intent_router.analyze(work.goal)
+                return retried if retried.intent is IntentType.COMMAND else None
+            manager = getattr(self.kernel, "media_manager", None)
+            provider_for = getattr(manager, "provider_for_application", None)
+            entities = intent_resolver.resolution_entities(
+                resolution, work, provider_for if callable(provider_for) else None
+            )
+            classifier = "llm_resolver"
+        if not entities:
+            return None
+        if entities.get("on_screen"):
+            where = entities.get("provider") or "the app"
+            goal = f"play {entities['query']} from the screen in {where}"
+        else:
+            goal = " ".join(str(text).strip().lower().split())
+        print(f"[AI] Understood from context ({classifier}): {entities}", flush=True)
+        return IntentResult(
+            intent=IntentType.COMMAND,
+            confidence=0.85,
+            normalized_text=goal,
+            entities=entities,
+            requires_tools=True,
+            classifier=classifier,
+        )
+
+    def _worth_llm_intent(self, text, work):
+        """Only sentences that read like requests pay for an LLM pass."""
+        words = re.findall(r"\w+", str(text))
+        if len(words) < 2:
+            return False
+        if self._looks_like_action_request(text) or self._HINGLISH_VERBS.search(str(text)):
+            return True
+        return work is not None and bool(self._REFERENCE_WORDS.search(str(text)))
 
     def _recover_recent_command(
         self,

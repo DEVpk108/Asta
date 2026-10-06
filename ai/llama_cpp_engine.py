@@ -562,6 +562,38 @@ Your goal is not merely to produce an answer. Help the user understand the probl
         self._trim_history()
         return result
 
+    def complete_json(self, system, user, max_tokens=96, timeout=None):
+        """One stateless JSON completion (no chat history, not spoken).
+
+        Used to understand commands; never touches the conversation, so
+        it can run before the chat reply without polluting it.
+        """
+        if self.model is None:
+            self._discover_model()
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+            "max_tokens": int(max_tokens),
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"},
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        gpu_share.release_idle("understanding the command")
+        try:
+            limit = float(timeout or os.getenv("ASTA_INTENT_LLM_TIMEOUT", "8"))
+        except ValueError:
+            limit = 8.0
+        response = self.session.post(self.chat_url, json=payload, timeout=limit)
+        response.raise_for_status()
+        data = response.json()
+        choice = (data.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
+        return str(message.get("content") or "")
+
     def generate_response(self, text, on_sentence=None, context=None):
         if not text:
             return ""

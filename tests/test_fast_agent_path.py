@@ -1690,3 +1690,141 @@ def test_apple_music_transport_uses_its_media_session(monkeypatch):
     result = providers.AppleMusicProvider().execute(MediaRequest(operation="pause", provider="apple music"))
     assert result.success and result.provider == "apple music" and seen["provider"] == "applemusic"
     assert not providers.AppleMusicProvider().supports(MediaRequest(operation="pause"))
+
+
+def _apple_music_task(status="failed"):
+    from datetime import datetime, timezone
+
+    from core.contracts.plan import PlanStepStatus
+
+    steps = [
+        SimpleNamespace(description="media", status=PlanStepStatus.COMPLETED,
+                        metadata={"action": "media", "operation": "play", "query": "hi hai", "provider": "apple music"}),
+        SimpleNamespace(description="ui_play", status=PlanStepStatus.FAILED,
+                        metadata={"action": "ui_play", "query": "hi hai", "application": "Apple Music",
+                                  "error": "I couldn't find hi hai in Apple Music's results."}),
+    ]
+    return SimpleNamespace(
+        goal="play hi hai on apple music", status=SimpleNamespace(value=status), error=None,
+        plan=SimpleNamespace(steps=steps), updated_at=datetime.now(timezone.utc),
+    )
+
+
+def _context_ai(task, llm_reply=None):
+    ai, said, _ = _work_ai(task)
+    prompts = []
+    if llm_reply is not None:
+        def complete_json(system, user):
+            prompts.append(user)
+            return llm_reply
+        ai.engine = SimpleNamespace(complete_json=complete_json)
+    else:
+        ai.engine = SimpleNamespace()
+    ai.kernel.media_manager = Kernel().media_manager
+    return ai, prompts
+
+
+def test_plan_step_passes_search_and_media_session_to_ui_play():
+    from core.tools.ui_play import UIPlayTool
+
+    kernel = Kernel()
+    kernel.register_tool(UIPlayTool(runner=lambda *a: "", sleep=lambda _s: None))
+    tasks = TaskRuntimeModule(kernel)
+    task = SimpleNamespace(id="t", goal="play baithi hai on apple music", metadata={},
+                           plan=SimpleNamespace(metadata={"planner": "deterministic"}))
+    step = SimpleNamespace(id="s", description="ui_play", metadata={
+        "action": "ui_play", "tool": "media.ui_play", "query": "baithi hai", "application": "Apple Music",
+        "process": "AppleMusic", "search": True, "session_app": "applemusic", "on_screen": True,
+    })
+    request = tasks.build_plan_request(task, step)
+    assert request.tool == "media.ui_play"
+    assert request.arguments["search"] is True and request.arguments["session_app"] == "applemusic"
+    assert request.arguments["on_screen"] is True
+
+
+@pytest.mark.parametrize("phrase", [
+    "I have changed the screen and now Baithi Hai is on the screen. Can you play it",
+    "play baithi hai from the screen",
+])
+def test_song_named_on_the_screen_plays_in_the_recent_app(phrase):
+    ai, prompts = _context_ai(_apple_music_task())
+    intent = ai._resolve_contextual_intent(phrase, IntentRouter().analyze(phrase))
+    assert intent.entities == {"action": "media", "operation": "play", "query": "Baithi Hai".lower()
+                               if phrase.startswith("play") else "Baithi Hai",
+                               "on_screen": True, "provider": "apple music"}
+    assert prompts == []  # deterministic, no LLM round trip
+
+
+def test_play_this_one_uses_the_recent_query():
+    ai, _ = _context_ai(_apple_music_task())
+    intent = ai._resolve_contextual_intent("play this one", IntentRouter().analyze("play this one"))
+    assert intent.entities["query"] == "hi hai" and intent.entities["on_screen"] is True
+
+
+def test_on_screen_play_presses_the_row_without_reopening(monkeypatch):
+    from core import Planner as _Planner
+
+    kernel = Kernel()
+    planner = _Planner(kernel.tool_registry, media_manager=kernel.media_manager)
+    monkeypatch.setattr(planner, "_has_tool", lambda _name: True)
+    commands = planner._expand_media_commands([
+        {"action": "media", "operation": "play", "query": "baithi hai", "provider": "apple music", "on_screen": True}
+    ])
+    assert len(commands) == 1
+    play = commands[0]
+    assert play["tool"] == "media.ui_play" and play["on_screen"] is True and not play.get("search")
+    assert play["process"] == "AppleMusic" and play["session_app"] == "applemusic"
+
+
+def test_ui_play_on_screen_matches_song_rows():
+    import json as _json
+
+    from core.contracts import ToolRequest
+    from core.tools.ui_play import UIPlayTool
+
+    seen = []
+
+    def runner(script, env, timeout):
+        if "IsIconic" in script:
+            return "ok"
+        if "ASTA_UI_TOKENS" in env:
+            seen.append(env["ASTA_UI_ITEMS"])
+            return _json.dumps({"invoked": True, "name": "Baithi Hai"})
+        return "Baithi Hai - Amit Trivedi"
+
+    tool = UIPlayTool(runner=runner, sleep=lambda _s: None)
+    tool.execute(ToolRequest(tool="media.ui_play", request_id="r", arguments={
+        "query": "baithi hai", "application": "Apple Music", "process": "AppleMusic", "on_screen": True}))
+    assert seen[0] == "1"
+
+
+def test_llm_resolves_free_phrasing_into_a_command():
+    ai, prompts = _context_ai(
+        _apple_music_task(),
+        '<think></think>{"action": "play_on_screen", "query": "Baithi Hai", "app": "Apple Music"}',
+    )
+    text = "the song I asked for is showing now, put it on"
+    intent = ai._resolve_contextual_intent(text, IntentRouter().analyze(text))
+    assert intent.classifier == "llm_resolver"
+    assert intent.entities == {"action": "media", "operation": "play", "query": "Baithi Hai",
+                               "on_screen": True, "provider": "apple music"}
+    assert "hi hai" in prompts[0] and "Apple Music" in prompts[0]
+
+
+def test_llm_resolver_none_falls_back_to_chat_and_skips_plain_questions():
+    ai, prompts = _context_ai(None, '{"action": "none", "query": "", "app": ""}')
+    text = "load up my drawing app for me"
+    assert ai._resolve_contextual_intent(text, IntentRouter().analyze(text)) is None
+    assert len(prompts) == 1
+    assert ai._resolve_contextual_intent("why is the sky blue", IntentRouter().analyze("why is the sky blue")) is None
+    assert len(prompts) == 1  # a plain question never pays for the LLM pass
+
+
+def test_llm_resolver_open_and_garbage():
+    from core.agent.intent_resolver import parse_resolution, resolution_entities
+
+    assert parse_resolution("not json") is None
+    assert parse_resolution('{"action": "launch_rocket"}') is None
+    open_app = parse_resolution('{"action": "open", "query": "", "app": "Paint"}')
+    assert resolution_entities(open_app, None) == {"action": "open", "target": "Paint"}
+    assert resolution_entities(parse_resolution('{"action": "open", "app": ""}'), None) is None

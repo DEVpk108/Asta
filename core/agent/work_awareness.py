@@ -73,6 +73,10 @@ class WorkSummary:
     failed_step: str | None
     error: str | None
     age_seconds: float
+    # What the task was about, from its plan steps ("baithi hai" on Apple Music).
+    query: str = ""
+    provider: str = ""
+    application: str = ""
 
     @property
     def failed(self) -> bool:
@@ -104,11 +108,17 @@ def recent_work(task_manager: Any, *, max_age: float = MAX_AGE_SECONDS) -> WorkS
     failed_step = None
     error = str(getattr(task, "error", "") or "").strip() or None
     plan = getattr(task, "plan", None)
+    found = {"query": "", "provider": "", "application": ""}
     for step in getattr(plan, "steps", None) or ():
+        metadata = getattr(step, "metadata", None) or {}
+        for key in found:
+            value = str(metadata.get(key) or "").strip()
+            if value and not found[key]:
+                found[key] = value
         if str(getattr(step.status, "value", step.status)) == "failed":
             failed_step = step.description
-            error = error or str((step.metadata or {}).get("error") or "").strip() or None
-    return WorkSummary(goal, status, failed_step, error, age)
+            error = error or str(metadata.get("error") or "").strip() or None
+    return WorkSummary(goal, status, failed_step, error, age, **found)
 
 
 def _plain_error(error: str | None) -> str:

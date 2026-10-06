@@ -915,6 +915,32 @@ class Planner:
                 if callable(resolve_app):
                     application = resolve_app(provider)
 
+            on_screen_process = self._provider_process(provider) if provider else ""
+            if (
+                operation == "play"
+                and normalized.get("on_screen")
+                and query
+                and application
+                and on_screen_process
+                and self._has_tool("media.ui_play")
+            ):
+                # "<title> is on the screen, play it": the user already has the
+                # result showing. Bring the app forward and press that row;
+                # no opening, no deep link, no typing.
+                expanded.append(
+                    {
+                        "action": "ui_play",
+                        "tool": "media.ui_play",
+                        "query": query,
+                        "application": str(application),
+                        "process": on_screen_process,
+                        "on_screen": True,
+                        "session_app": self._provider_session_app(provider),
+                        "fallback_target": f"the song {query} on the screen in {application}",
+                    }
+                )
+                continue
+
             if (
                 operation == "play"
                 and query

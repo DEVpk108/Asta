@@ -229,6 +229,7 @@ class UIPlayTool(Tool):
                     "fallback_target": {"type": "string"},
                     "search": {"type": "boolean"},
                     "session_app": {"type": "string"},
+                    "on_screen": {"type": "boolean"},
                 },
                 "required": ["query"],
             },
@@ -263,6 +264,9 @@ class UIPlayTool(Tool):
         session_app = str(args.get("session_app") or "").strip()
         before_session = self._session_title(session_app) if session_app else ""
         searched = bool(args.get("search"))
+        # Song rows (not just Play buttons) count when the app shows results
+        # we typed, or results the user put on the screen themselves.
+        rows = searched or bool(args.get("on_screen"))
         method = None
         if searched and (os.name == "nt" or self.runner is not _powershell):
             typed = self._search_in_app(process, query)
@@ -273,12 +277,12 @@ class UIPlayTool(Tool):
                 return done(False, f"I couldn't find the search box in {application}.")
             self.sleep(2.5)
         if os.name == "nt" or self.runner is not _powershell:
-            found = self._invoke_by_name(process, query, items=searched)
+            found = self._invoke_by_name(process, query, items=rows)
             core = core_query(query)
             if not found.get("invoked") and not found.get("rect") and core != query:
                 # "baithi hai on eppal on apple music": the app name leaked
                 # into the title; match the title words alone.
-                found = self._invoke_by_name(process, core, attempts=2, items=searched)
+                found = self._invoke_by_name(process, core, attempts=2, items=rows)
                 output["matched_query"] = core
             output["ui_automation"] = found
             if found.get("invoked"):
