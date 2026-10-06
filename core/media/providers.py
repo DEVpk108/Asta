@@ -79,6 +79,8 @@ class WindowsMediaProvider:
         from .smtc import media_session, spoken_message
 
         app = "" if request.provider in {None, "", "system", "windows"} else str(request.provider)
+        # "apple music" -> "applemusic" matches AppleInc.AppleMusicWin_...
+        app = app.replace(" ", "").replace("_", "")
         op = "" if request.operation == "now_playing" else request.operation
         info = media_session(op, app)
         if info.get("error") or not info.get("ok"):
@@ -872,11 +874,59 @@ class SpotifyProvider:
         )
 
 
+class AppleMusicProvider:
+    """Apple Music for Windows (Microsoft Store app).
+
+    No public desktop API or search deep link, so playback goes through the
+    app's own UI: ASTA types the query into its search box via UI Automation
+    and presses the result (media.ui_play with search=True). Transport and
+    now-playing go through the Windows media session.
+    """
+
+    name = "apple music"
+    aliases = ("apple_music", "applemusic", "itunes")
+    application_name = os.getenv("ASTA_APPLE_MUSIC_APP", "Apple Music")
+    process_name = os.getenv("ASTA_APPLE_MUSIC_PROCESS", "AppleMusic")
+    session_app = "applemusic"
+    ui_search = True
+    priority = 15
+    # No API: the UI path is the only path.
+    configured = False
+
+    def __init__(self):
+        self._system = WindowsMediaProvider()
+
+    def supports(self, request: MediaRequest) -> bool:
+        # Only when asked for by name; generic "pause" stays with the others.
+        named = str(request.provider or "").strip().lower() in {self.name, *self.aliases}
+        return named and request.operation in {
+            "play", "pause", "toggle", "next", "previous", "stop", "now_playing",
+        }
+
+    def execute(self, request: MediaRequest) -> MediaResult:
+        if request.query:
+            return MediaResult(
+                success=False,
+                provider=self.name,
+                operation=request.operation,
+                query=request.query,
+                message="",
+                error="Apple Music search runs through the app UI (media.ui_play).",
+            )
+        from dataclasses import replace
+
+        result = self._system.execute(
+            MediaRequest(operation=request.operation, provider=self.session_app)
+        )
+        return replace(result, provider=self.name)
+
+
 class MediaManager:
     def __init__(self, providers=None):
         self._providers: list[MediaProvider] = list(
             providers or (
                 SpotifyProvider(),
+                AppleMusicProvider(),
                 WindowsMediaProvider(),
             )
         )
@@ -918,6 +968,15 @@ class MediaManager:
         if not template or not text:
             return None
         return str(template).format(query=quote(text))
+
+    def ui_search(self, provider_name: str) -> bool:
+        """Whether playback means typing into the app's own search box."""
+        provider = self._by_name.get(str(provider_name or "").strip().lower())
+        return bool(getattr(provider, "ui_search", False))
+
+    def session_app(self, provider_name: str) -> str:
+        provider = self._by_name.get(str(provider_name or "").strip().lower())
+        return str(getattr(provider, "session_app", "") or "")
 
     def process_name(self, provider_name: str) -> str | None:
         provider = self._by_name.get(str(provider_name or "").strip().lower())

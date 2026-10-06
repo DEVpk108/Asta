@@ -54,7 +54,34 @@ for ($attempt = 0; $attempt -lt $maxAttempts -and -not $best; $attempt++) {
   # Chromium/CEF builds its accessibility tree on the first UIA query.
   if (-not $best) { Start-Sleep -Milliseconds 800 }
 }
-if ($best) {
+$isItem = $false
+if (-not $best -and $env:ASTA_UI_ITEMS -eq '1') {
+  # Apps without per-result Play buttons (Apple Music): a song row whose
+  # name has the query words; the caller double-clicks it.
+  $CT = [System.Windows.Automation.ControlType]
+  $itemCond = New-Object System.Windows.Automation.OrCondition(@(
+    (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::ListItem)),
+    (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::DataItem)),
+    (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, $CT::TreeItem))))
+  foreach ($w in $windows) {
+    $root = $A::FromHandle($w.MainWindowHandle)
+    foreach ($item in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $itemCond)) {
+      $name = [string]$item.Current.Name
+      if (-not $name) { continue }
+      $lower = $name.ToLower(); $hits = 0
+      foreach ($t in $tokens) { if ($lower.Contains($t)) { $hits++ } }
+      if ($hits -lt [Math]::Max(1, [Math]::Ceiling($tokens.Count / 2))) { continue }
+      $score = $hits * 1000 - $name.Length
+      if ($score -gt $bestScore) { $best = $item; $bestScore = $score; $isItem = $true }
+    }
+  }
+}
+if ($best -and $isItem) {
+  $result.name = [string]$best.Current.Name
+  $r = $best.Current.BoundingRectangle
+  $result.rect = @($r.X, $r.Y, $r.Width, $r.Height)
+  $result.item = $true
+} elseif ($best) {
   $result.name = [string]$best.Current.Name
   $r = $best.Current.BoundingRectangle
   $result.rect = @($r.X, $r.Y, $r.Width, $r.Height)
@@ -65,6 +92,53 @@ if ($best) {
 } elseif (-not $result.error) { $result.error = 'no_match' }
 $result | ConvertTo-Json -Compress
 """
+
+# Type the query into the app's own search box (no deep link available).
+_SEARCH_IN_APP = r"""
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms
+$result = @{ found = $false; typed = $false; name = ''; error = '' }
+$windows = @(Get-Process -Name $env:ASTA_UI_PROCESS -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
+if (-not $windows) { $result.error = 'window_not_found'; $result | ConvertTo-Json -Compress; exit }
+$A = [System.Windows.Automation.AutomationElement]
+$cond = New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
+$box = $null; $fallback = $null
+for ($attempt = 0; $attempt -lt 8 -and -not $box; $attempt++) {
+  foreach ($w in $windows) {
+    $edits = $A::FromHandle($w.MainWindowHandle).FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+    foreach ($e in $edits) {
+      $label = ([string]$e.Current.Name + ' ' + [string]$e.Current.AutomationId + ' ' + [string]$e.Current.HelpText).ToLower()
+      if ($label.Contains('search')) { $box = $e; break }
+      if (-not $fallback) { $fallback = $e }
+    }
+    if ($box) { break }
+  }
+  if (-not $box) { Start-Sleep -Milliseconds 700 }
+}
+if (-not $box) { $box = $fallback }
+if (-not $box) { $result.error = 'search_box_not_found'; $result | ConvertTo-Json -Compress; exit }
+$result.found = $true; $result.name = [string]$box.Current.Name
+try { $box.SetFocus() } catch {}
+Start-Sleep -Milliseconds 250
+try {
+  $vp = $box.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+  $vp.SetValue($env:ASTA_UI_QUERY); $result.typed = $true
+} catch {}
+if (-not $result.typed) {
+  [System.Windows.Forms.SendKeys]::SendWait('^a')
+  [System.Windows.Forms.SendKeys]::SendWait($env:ASTA_UI_KEYS); $result.typed = $true
+}
+Start-Sleep -Milliseconds 400
+try { $box.SetFocus() } catch {}
+[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+$result | ConvertTo-Json -Compress
+"""
+
+
+def sendkeys_escape(text: str) -> str:
+    """Literal text for SendKeys (+ ^ % ~ ( ) { } [ ] are commands)."""
+    return re.sub(r"([+^%~(){}\[\]])", r"{\1}", str(text or ""))
+
 
 # A minimized window has no usable accessibility tree or pixels, so bring it
 # back (SW_RESTORE) and to the front before looking for the Play button.
@@ -153,6 +227,8 @@ class UIPlayTool(Tool):
                     "application": {"type": "string"},
                     "process": {"type": "string"},
                     "fallback_target": {"type": "string"},
+                    "search": {"type": "boolean"},
+                    "session_app": {"type": "string"},
                 },
                 "required": ["query"],
             },
@@ -184,18 +260,31 @@ class UIPlayTool(Tool):
 
         output["window"] = self._restore_window(process)
         before = self._window_title(process)
+        session_app = str(args.get("session_app") or "").strip()
+        before_session = self._session_title(session_app) if session_app else ""
+        searched = bool(args.get("search"))
         method = None
+        if searched and (os.name == "nt" or self.runner is not _powershell):
+            typed = self._search_in_app(process, query)
+            output["search"] = typed
+            print(f"[UIPlay] {application}: search box={typed.get('name')!r} typed={typed.get('typed')} "
+                  f"error={typed.get('error') or ''}", flush=True)
+            if not typed.get("typed"):
+                return done(False, f"I couldn't find the search box in {application}.")
+            self.sleep(2.5)
         if os.name == "nt" or self.runner is not _powershell:
-            found = self._invoke_by_name(process, query)
+            found = self._invoke_by_name(process, query, items=searched)
             core = core_query(query)
             if not found.get("invoked") and not found.get("rect") and core != query:
                 # "baithi hai on eppal on apple music": the app name leaked
                 # into the title; match the title words alone.
-                found = self._invoke_by_name(process, core, attempts=2)
+                found = self._invoke_by_name(process, core, attempts=2, items=searched)
                 output["matched_query"] = core
             output["ui_automation"] = found
             if found.get("invoked"):
                 method = "ui_automation"
+            elif found.get("rect") and found.get("item"):
+                method = self._click_rect(found["rect"], clicks=2) and "ui_automation_double_click"
             elif found.get("rect"):
                 method = self._click_rect(found["rect"]) and "ui_automation_click"
         if not method:
@@ -218,6 +307,18 @@ class UIPlayTool(Tool):
                 output["verified"] = True
                 output["message"] = f"Playing {self._spoken_title(title)}."
                 return done(True)
+            if session_app:
+                # Apps whose window title never changes (Apple Music):
+                # confirm through the Windows media session instead.
+                info = self._session(session_app)
+                now = str(info.get("title") or "")
+                playing = str(info.get("status") or "").lower() == "playing"
+                if now and playing and (title_matches(f"{now} {info.get('artist') or ''}", query) or now != before_session):
+                    artist = str(info.get("artist") or "").strip()
+                    output["now_playing"] = f"{artist} - {now}" if artist else now
+                    output["verified"] = True
+                    output["message"] = f"Playing {now}" + (f" by {artist}." if artist else ".")
+                    return done(True)
         output["now_playing"] = title
         output["verified"] = False
         return done(
@@ -228,8 +329,34 @@ class UIPlayTool(Tool):
 
     # -- helpers -------------------------------------------------------
 
-    def _invoke_by_name(self, process: str, query: str, attempts: int = 6) -> dict[str, Any]:
+    def _search_in_app(self, process: str, query: str) -> dict[str, Any]:
         env = {
+            "ASTA_UI_PROCESS": process,
+            "ASTA_UI_QUERY": query,
+            "ASTA_UI_KEYS": sendkeys_escape(query),
+        }
+        try:
+            raw = self.runner(_SEARCH_IN_APP, env, 20.0)
+            data = json.loads(raw.splitlines()[-1]) if raw else {}
+        except Exception as exc:
+            return {"typed": False, "error": f"{type(exc).__name__}: {exc}"}
+        return data if isinstance(data, dict) else {}
+
+    def _session(self, app: str) -> dict[str, Any]:
+        from core.media.smtc import media_session
+
+        runner = None if self.runner is _powershell else self.runner
+        try:
+            return media_session("", app, runner=runner) or {}
+        except Exception:
+            return {}
+
+    def _session_title(self, app: str) -> str:
+        return str(self._session(app).get("title") or "")
+
+    def _invoke_by_name(self, process: str, query: str, attempts: int = 6, items: bool = False) -> dict[str, Any]:
+        env = {
+            "ASTA_UI_ITEMS": "1" if items else "0",
             "ASTA_UI_ATTEMPTS": str(attempts),
             "ASTA_UI_PROCESS": process,
             "ASTA_UI_PREFIX": "Play",
@@ -262,14 +389,17 @@ class UIPlayTool(Tool):
         lines = [line.strip() for line in str(raw or "").splitlines() if line.strip()]
         return lines[0] if lines else ""
 
-    def _click_rect(self, rect) -> bool:
+    def _click_rect(self, rect, clicks: int = 1) -> bool:
         if self.controller is None:
             return False
         try:
             x, y, w, h = (float(v) for v in rect)
             if w <= 0 or h <= 0:
                 return False
-            self.controller.click(x=x + w / 2, y=y + h / 2)
+            if clicks > 1:
+                self.controller.click(x=x + w / 2, y=y + h / 2, clicks=clicks, interval=0.08)
+            else:
+                self.controller.click(x=x + w / 2, y=y + h / 2)
             return True
         except Exception:
             return False

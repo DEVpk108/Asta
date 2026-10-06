@@ -135,7 +135,7 @@ def _clean_play_query(query: str) -> str:
 
 # Music apps ASTA has no integration for; requests fall back to Spotify.
 UNSUPPORTED_MUSIC_APPS = frozenset(
-    {"apple music", "amazon music", "jiosaavn", "saavn", "gaana", "wynk", "wynk music",
+    {"amazon music", "jiosaavn", "saavn", "gaana", "wynk", "wynk music",
      "soundcloud", "deezer", "tidal", "pandora"}
 )
 

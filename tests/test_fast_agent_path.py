@@ -1556,6 +1556,7 @@ def test_multi_word_app_tail_stays_out_of_the_title():
 
 
 def test_unsupported_music_app_falls_back_to_spotify(monkeypatch):
+    # Apple Music has its own integration now; Amazon Music still falls back.
     from core import Planner as _Planner
     from core.task_runtime import TaskRuntimeModule
 
@@ -1564,13 +1565,13 @@ def test_unsupported_music_app_falls_back_to_spotify(monkeypatch):
     kernel = Kernel()
     planner = _Planner(kernel.tool_registry, media_manager=kernel.media_manager)
     commands = planner._expand_media_commands(
-        [{"action": "media", "operation": "play", "query": "baithi hai", "provider": "apple music"}]
+        [{"action": "media", "operation": "play", "query": "baithi hai", "provider": "amazon music"}]
     )
     assert commands[0] == {"action": "open", "target": "spotify:search:baithi%20hai"}
     ack = TaskRuntimeModule._acknowledgment_for_intent(
-        IntentRouter().analyze("play baithi hai on apple music")
+        IntentRouter().analyze("play baithi hai on amazon music")
     )
-    assert ack == "Okay, sir. I can't use Apple Music yet, so I'm playing Baithi Hai on Spotify."
+    assert ack == "Okay, sir. I can't use Amazon Music yet, so I'm playing Baithi Hai on Spotify."
 
 
 def test_misheard_app_name_comes_from_the_hindi_decode():
@@ -1615,3 +1616,77 @@ def test_ui_play_retries_with_the_title_without_a_leaked_app_tail():
 )
 def test_kernel_router_keeps_app_names_out_of_titles(text, entities):
     assert Kernel().intent_router.analyze(text).entities == entities
+
+
+def test_apple_music_plays_through_its_search_box(monkeypatch):
+    from core import Planner as _Planner
+
+    kernel = Kernel()
+    entities = kernel.intent_router.analyze("Play baithi hai on Apple music").entities
+    assert entities == {"action": "media", "operation": "play", "query": "baithi hai", "provider": "apple music"}
+    planner = _Planner(kernel.tool_registry, media_manager=kernel.media_manager)
+    monkeypatch.setattr(planner, "_has_tool", lambda _name: True)  # registered on Windows
+    commands = planner._expand_media_commands([dict(entities)])
+    assert commands[0] == {"action": "open", "target": "Apple Music"}
+    play = commands[-1]
+    assert play["tool"] == "media.ui_play" and play["search"] is True
+    assert play["process"] == "AppleMusic" and play["session_app"] == "applemusic"
+
+
+def test_ui_play_searches_in_app_and_verifies_via_media_session():
+    import json as _json
+
+    from core.contracts import ToolRequest
+    from core.tools.ui_play import UIPlayTool, sendkeys_escape
+
+    assert sendkeys_escape("a+b (live)") == "a{+}b {(}live{)}"
+    calls, clicks = [], []
+    state = {"playing": False}
+
+    def runner(script, env, timeout):
+        if "IsIconic" in script:
+            return "ok"
+        if "ASTA_UI_QUERY" in env:
+            calls.append(("search", env["ASTA_UI_QUERY"]))
+            return _json.dumps({"found": True, "typed": True, "name": "Search"})
+        if "ASTA_UI_TOKENS" in env:
+            calls.append(("find", env["ASTA_UI_ITEMS"]))
+            return _json.dumps({"invoked": False, "item": True, "rect": [100, 200, 300, 40], "name": "Baithi Hai"})
+        if "ASTA_MEDIA_OP" in env:
+            if state["playing"]:
+                return _json.dumps({"ok": True, "title": "Baithi Hai", "artist": "Amit Trivedi", "status": "Playing"})
+            return _json.dumps({"ok": True, "title": "", "status": "Paused"})
+        return "Apple Music"
+
+    def click(**kw):
+        clicks.append(kw)
+        state["playing"] = True
+
+    from types import SimpleNamespace
+
+    tool = UIPlayTool(runner=runner, controller=SimpleNamespace(click=click), sleep=lambda _s: None)
+    result = tool.execute(ToolRequest(
+        tool="media.ui_play",
+        arguments={"query": "baithi hai", "application": "Apple Music", "process": "AppleMusic",
+                   "search": True, "session_app": "applemusic"},
+        request_id="r",
+    ))
+    assert calls[:2] == [("search", "baithi hai"), ("find", "1")]
+    assert clicks[0]["clicks"] == 2 and clicks[0]["x"] == 250
+    assert result.success and result.output["message"] == "Playing Baithi Hai by Amit Trivedi."
+
+
+def test_apple_music_transport_uses_its_media_session(monkeypatch):
+    from core.media import providers
+    from core.media.request import MediaRequest
+
+    seen = {}
+
+    def fake_session(self, request):
+        seen["provider"] = request.provider
+        return providers.MediaResult(success=True, provider="system", operation=request.operation, message="Paused.")
+
+    monkeypatch.setattr(providers.WindowsMediaProvider, "execute", fake_session)
+    result = providers.AppleMusicProvider().execute(MediaRequest(operation="pause", provider="apple music"))
+    assert result.success and result.provider == "apple music" and seen["provider"] == "applemusic"
+    assert not providers.AppleMusicProvider().supports(MediaRequest(operation="pause"))

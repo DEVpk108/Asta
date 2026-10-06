@@ -291,6 +291,8 @@ already set in the environment take precedence.
 | `ASTA_TTS_HINDI` | `1` | Speak Devanagari replies with Kokoro's Hindi pipeline |
 | `ASTA_TTS_HINDI_VOICE` | `hf_alpha` | Kokoro Hindi voice (`hf_alpha`, `hf_beta`, `hm_omega`, `hm_psi`) |
 | `ASTA_TTS_HINDI_PRELOAD` | `1` | Load the Hindi voice in the background at startup |
+| `ASTA_APPLE_MUSIC_APP` | `Apple Music` | App name ASTA opens for "play … on Apple Music" |
+| `ASTA_APPLE_MUSIC_PROCESS` | `AppleMusic` | Apple Music process name (UI Automation search + play); inspect with `python scripts/uia_dump.py AppleMusic` |
 | `ASTA_TTS_FIRST_CLAUSE` | `1` | Speak a reply's first clause on its own so audio starts sooner |
 | `ASTA_TTS_OUTPUT_LATENCY` | `low` | Audio output buffer (`low`, `high` or seconds) |
 | `ASTA_CHAT_HISTORY_DB` | `data/chat_history.db` | SQLite chat history location |

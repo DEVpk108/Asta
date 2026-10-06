@@ -949,6 +949,28 @@ class Planner:
                             },
                         )
                     )
+                elif process and self._has_tool("media.ui_play") and self._provider_ui_search(provider):
+                    # No deep link (Apple Music for Windows): open the app,
+                    # type into its own search box through UI Automation,
+                    # press the matching result, confirm via the media session.
+                    expanded.extend(
+                        (
+                            {"action": "open", "target": str(application)},
+                            {"action": "wait", "tool": "computer.wait", "seconds": 3.0},
+                            {
+                                "action": "ui_play",
+                                "tool": "media.ui_play",
+                                "query": query,
+                                "application": str(application),
+                                "process": process,
+                                "search": True,
+                                "session_app": self._provider_session_app(provider),
+                                "fallback_target": (
+                                    f"the first song in the search results in {application}"
+                                ),
+                            },
+                        )
+                    )
                 elif search_uri:
                     # The app's own deep link lands straight on the results
                     # page: no search box to find, nothing to type.
@@ -999,6 +1021,20 @@ class Planner:
             return bool(checker(provider))
         except Exception:
             return True
+
+    def _provider_ui_search(self, provider: str) -> bool:
+        checker = getattr(self.media_manager, "ui_search", None)
+        try:
+            return bool(checker(provider)) if callable(checker) else False
+        except Exception:
+            return False
+
+    def _provider_session_app(self, provider: str) -> str:
+        resolver = getattr(self.media_manager, "session_app", None)
+        try:
+            return str(resolver(provider) or "") if callable(resolver) else ""
+        except Exception:
+            return ""
 
     def _provider_process(self, provider: str) -> str:
         resolver = getattr(self.media_manager, "process_name", None)
