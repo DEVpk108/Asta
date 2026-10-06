@@ -147,6 +147,25 @@ _APP_BEFORE_ARTIST = re.compile(
 )
 
 
+# Consistent speech-recognition spellings of music app names (English and
+# romanised-Hindi decodes): "eppal music", "Apple muzic", "spotifai".
+_APP_MISHEARINGS = (
+    (re.compile(
+        r"\b(?:apple|appal|apal|aple|appel|apel|eppal|epal|eppel|epple|aipal|aippal|ippal|appl)\s*"
+        r"(?:music|muzic|musik|muzik|mujik|myuzik|myusic|mewsic|musique|mujic)\b", re.IGNORECASE), "apple music"),
+    (re.compile(r"\bi\s+tunes\b", re.IGNORECASE), "itunes"),
+    (re.compile(r"\b(?:spotifi|spotefy|spotyfy|spotfy|spotifai|spotifye)\b", re.IGNORECASE), "spotify"),
+    (re.compile(r"\byou\s+tube\b", re.IGNORECASE), "youtube"),
+)
+
+
+def canonical_app_names(text: str) -> str:
+    value = str(text or "")
+    for pattern, name in _APP_MISHEARINGS:
+        value = pattern.sub(name, value)
+    return value
+
+
 def app_last(text: str) -> str:
     """"play X on Apple Music by Amit" -> "play X by Amit on Apple Music".
 
@@ -164,7 +183,7 @@ def parse_media_request(
     *,
     known_providers=None,
 ) -> MediaRequest | None:
-    normalized = _strip_polite_leads(_normalize(app_last(_normalize(text))))
+    normalized = _strip_polite_leads(_normalize(app_last(_normalize(canonical_app_names(text)))))
     if not normalized:
         return None
 

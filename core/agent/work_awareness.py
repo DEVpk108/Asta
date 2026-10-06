@@ -62,6 +62,19 @@ def is_retry_request(text: str) -> bool:
     return bool(_RETRY.match(_roman(text)))
 
 
+_ACK = re.compile(
+    rf"^{_LEAD}(?:okay|ok|okey|alright|all\s+right|fine|cool|nice|great|good|perfect|thanks|thank\s+you|"
+    r"got\s+it|hmm+|mm+|yeah|yep|theek\s+hai|thik\s+hai|accha|acha|achha|shukriya|dhanyavaad|badhiya)"
+    r"(?:\s+(?:okay|ok|thanks|thank\s+you|sir|bro|yaar|then|good|great|nice))*\W*$",
+    re.IGNORECASE,
+)
+
+
+def is_acknowledgement(text: str) -> bool:
+    """"Okay" / "thanks" / "theek hai" after ASTA did something: nothing to do."""
+    return bool(_ACK.match(_roman(text)))
+
+
 def is_status_question(text: str) -> bool:
     return bool(_STATUS.match(_roman(text)))
 

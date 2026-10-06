@@ -1871,3 +1871,29 @@ def test_apple_music_search_skips_suggestion_echo_and_waits_for_the_session():
         "search": True, "session_app": "applemusic"}))
     assert typed == ["baithi hai amit"] and skips[0] == "baithi hai amit"
     assert result.success and result.output["method"] == "ui_automation"
+
+
+@pytest.mark.parametrize("english, hindi", [
+    ("Can you play B B Bon Apple music", "कैन यू प्ले बैठी है ऑन एप्पल म्यूजिक"),
+    ("Play Bathi on Apple muzic", "प्ले बैठी है ऑन एप्पल म्यूजिक"),
+    ("Can you play baithi hai on eppal music", ""),
+])
+def test_misheard_apple_music_still_goes_to_apple_music(english, hindi):
+    from voice.language_choice import choose_transcript
+
+    _, text = choose_transcript(english, hindi)
+    entities = Kernel().intent_router.analyze(text).entities
+    assert entities["query"] == "baithi hai" and entities["provider"] == "apple music"
+
+
+def test_okay_after_an_action_stays_quiet():
+    ai, said, reran = _work_ai(_fake_task("play baithi hai on spotify", "completed"))
+    replies = []
+    ai._generate_response = lambda *a, **k: replies.append(a)
+    ai._handle_approval_response = lambda _t: False
+    ai._handle_conversation_mode_command = lambda _t: False
+    ai._registered_tool_names = lambda: []
+    from ai.ai_module import AIModule
+
+    AIModule.on_user_message(ai, "Okay")
+    assert said == [] and replies == [] and reran == []

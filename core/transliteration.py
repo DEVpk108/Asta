@@ -56,7 +56,8 @@ _DEVANAGARI_ENGLISH = {
     "up": "अप",
     "down": "डाउन",
     "song": "सॉन्ग सोंग",
-    "music": "म्यूजिक म्यूज़िक",
+    "music": "म्यूजिक म्यूज़िक म्युजिक मयूजिक",
+    "apple": "एप्पल ऐप्पल एपल ऐपल",
     "video": "वीडियो विडियो",
     "new": "न्यू",
     "tab": "टैब",
@@ -675,6 +676,7 @@ def _english_word(token: str) -> str | None:
 
 
 _APP_WORDS = ("chrome", "edge", "firefox", "brave", "youtube", "spotify", "google")
+_TWO_WORD_APPS = {"apple music", "youtube music", "amazon music"}
 
 
 def split_hindi_app_tail(tokens: list[str]) -> tuple[list[str], str | None]:
@@ -682,8 +684,15 @@ def split_hindi_app_tail(tokens: list[str]) -> tuple[list[str], str | None]:
     tokens = list(tokens)
     if len(tokens) < 2:
         return tokens, None
-    last = (_english_word(tokens[-1]) or "").lower()
     known = {v.lower() for v in target_aliases().values()} | set(_APP_WORDS)
+    pair = " ".join((_english_word(t) or "").lower() for t in tokens[-2:])
+    if len(tokens) >= 3 and pair in _TWO_WORD_APPS:
+        # "... ऑन एप्पल म्यूजिक" -> "apple music"
+        del tokens[-2:]
+        while tokens and tokens[-1] in _HI_ON_WORDS:
+            tokens.pop()
+        return tokens, pair
+    last = (_english_word(tokens[-1]) or "").lower()
     if not last or last not in known:
         return tokens, None
     tokens.pop()
@@ -977,7 +986,7 @@ def devanagari_search_command(hindi: str) -> str | None:
 # into "Plena" and lost the verb. Only trusted with a media-app tail, since
 # "प्लेन" is also "plane".
 _HI_PLAY = "प्ले"
-_MEDIA_APPS = ("spotify", "youtube")
+_MEDIA_APPS = ("spotify", "youtube", "apple music", "youtube music")
 
 
 def devanagari_play_command(hindi: str, *, require_verb: bool = True) -> str | None:

@@ -305,6 +305,14 @@ class AIModule(Module):
         if self._handle_work_followup(text):
             return
 
+        if work_awareness.is_acknowledgement(text):
+            work = work_awareness.recent_work(getattr(self.kernel, "task_manager", None), max_age=180)
+            if work is not None:
+                # "Okay" right after "Playing Baithi Hai": the LLM used to answer
+                # "Okay, I'll play Baithi Hai" -- a promise of an action that never runs.
+                print(f"[AI] Acknowledgement after recent work ({work.goal}); staying quiet.", flush=True)
+                return
+
         if self._is_unknown_name_question(text):
             self._emit_assistant_text(
                 "I don't know your name yet. I don't have that information stored."
