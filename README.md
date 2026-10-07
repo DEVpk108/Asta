@@ -444,8 +444,63 @@ by a web page), are disconnected before they can send commands or read state.
 pytest
 ```
 
-## Status
+## Project direction
 
-Early and evolving. The current focus is the voice -> reason -> act -> speak
-loop and the HUD. `vision/face_recognition.py` is a standalone OpenCV
-experiment and is not wired into the kernel yet.
+A.S.T.A. is being built toward a local-first personal AI system that can take a
+goal, work out the steps, use the capabilities available to it, check what
+happened, and report back. The intended loop is:
+
+```text
+UNDERSTAND -> PLAN -> ACT -> OBSERVE -> EVALUATE -> ADJUST / CONTINUE -> REPORT
+```
+
+The LLM is the reasoning layer; registered capabilities do the work; the
+runtime owns execution state and permissions; observation checks outcomes; and
+the HUD presents status without becoming the core orchestration layer. This is
+the long-term direction, not a claim that every capability below is already
+complete.
+
+## Development roadmap
+
+This roadmap reflects the project direction in [Future Plan & Vision](docs/ASTA_Future_Plan_and_Vision.docx)
+and the [Step-by-Step Build Roadmap](docs/ASTA_Step_by_Step_Build_Roadmap.docx).
+The repository already contains parts of the tool, task-runtime, planning,
+workspace, memory, and approval architecture. The next goal is to make those
+parts work together reliably—not to rebuild them or add features for their own
+sake.
+
+| Stage | Focus | Completion signal |
+| --- | --- | --- |
+| Stabilize the foundation | Preserve the voice, AI, HUD, conversation-history, and tool flow; keep startup and shutdown predictable; document event contracts and add useful runtime traces. | A repeatable baseline works across a normal session, shutdown, and restart. |
+| Prove the general agent loop — next major milestone | Use generic, permission-aware tools to inspect a small project, create or modify a file, run a controlled command or test, inspect the result, and recover from a bounded, safe failure. | A.S.T.A. completes a small multi-step project task without a special hard-coded script for that exact request, then reports what it changed and what it verified. |
+| Build project/workspace continuity | Track project identity, root, repository and branch, current task, important files, and recent changes so a request can resume in the right environment. | A project follow-up is grounded in the registered workspace and its current state. |
+| Grow memory in deliberate layers | Keep chat history separate from useful episodic, project, semantic, user, and procedural memory. Preserve source and confidence where useful; support summarizing and forgetting instead of treating every old statement as permanently true. | A.S.T.A. retrieves relevant project knowledge without indiscriminately storing every conversation. |
+| Improve planning, reflection, and proactivity | Decompose larger goals, checkpoint progress, observe results, replan within explicit limits, and save only useful lessons. Make proactive suggestions only when supported by relevant context. | Failures are diagnosed and handled safely; the assistant knows when to stop or ask the user. |
+| Expand integrations and specialist capabilities | Add domain-focused agents, external APIs/services, broader desktop workflows, and eventually electronics or physical devices after the core loop is dependable. | New capabilities plug into stable contracts without rewriting the core or granting excessive authority. |
+
+**Safety applies at every stage.** New capabilities should declare their inputs,
+outputs, risk, permissions, and execution boundaries. Keep approvals,
+timeouts, resource limits, stop conditions, and an understandable action trail
+in the runtime as capabilities expand.
+
+## Development principles
+
+- Build one useful increment at a time; keep each version working.
+- Define the capability contract before writing a large implementation.
+- Test happy paths, failures, edge cases, and the real voice/HUD workflow.
+- Prefer modular, observable, reversible changes and local-first operation.
+- Add capabilities through tools instead of growing a large set of special-case
+  conversation branches.
+- Prove the single-agent tool loop and permission boundaries before investing
+  in a large multi-agent framework, complex long-term retrieval, or unrestricted
+autonomy.
+
+## Current status
+
+Early and evolving. The current focus remains the voice -> reason -> act ->
+speak loop and the HUD. The next practical proof point is a dependable
+small-project workflow: inspect a project, make a requested change, run it,
+read the result, recover safely if it fails, and report the outcome. The roadmap
+is staged; it does not imply that every planned capability is implemented or
+reliable today. `vision/face_recognition.py` remains a standalone OpenCV
+experiment and is not wired into the kernel.
