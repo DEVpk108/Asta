@@ -6,6 +6,8 @@ from .contracts.intent import (
     IntentType,
 )
 from .media import parse_media_request
+from .media.request import app_last, canonical_app_names
+from .transliteration import canonicalize_command, strip_wake_remnant
 
 
 class IntentRouter:
@@ -66,6 +68,13 @@ class IntentRouter:
         re.IGNORECASE,
     )
 
+    _DANGLING_CLAUSE_PATTERN = re.compile(
+        r"(?<=\S)\s*,?\s+(?:and then|and|then)\s+"
+        r"(?:search(?:\s+for)?|look\s+up|open|launch|start|close|play|type)"
+        r"(?:\s+(?:for|the|a|about))?$",
+        re.IGNORECASE,
+    )
+
     _COMMA_COMMAND_PATTERN = re.compile(
         r",\s*(?=(?:please\s+|can you\s+|could you\s+|would you\s+|will you\s+)?"
         r"(?:open|launch|start|close|run|stop|take|capture|screenshot|mute|unmute|search|look\s+up)\b)",
@@ -101,6 +110,15 @@ class IntentRouter:
 
         normalized = self._normalize(text)
         normalized = self._strip_wakeword_prefix(normalized)
+        # Voice transcripts can carry a merged wake word ("upyasta open
+        # chrome") or Hindi/Devanagari command grammar ("क्रोम खोलो").
+        normalized = self._normalize(
+            canonicalize_command(strip_wake_remnant(normalized))
+        )
+        # Drop a dangling clause the STT cut off ("open chrome and search
+        # for"), so the complete first command still runs.
+        normalized = self._DANGLING_CLAUSE_PATTERN.sub("", normalized).strip()
+        normalized = app_last(canonical_app_names(normalized))
 
         memory_phrases = (
             "remember that",
@@ -130,6 +148,28 @@ class IntentRouter:
                 confidence=0.98,
                 normalized_text=normalized,
                 entities=note_entities,
+                requires_tools=True,
+                classifier="rules",
+            )
+
+        transport = self._extract_transport_command(normalized)
+        if transport:
+            return IntentResult(
+                intent=IntentType.COMMAND,
+                confidence=0.97,
+                normalized_text=normalized,
+                entities=transport,
+                requires_tools=True,
+                classifier="rules",
+            )
+
+        screen_question = self._extract_screen_question(normalized)
+        if screen_question:
+            return IntentResult(
+                intent=IntentType.COMMAND,
+                confidence=0.96,
+                normalized_text=normalized,
+                entities=screen_question,
                 requires_tools=True,
                 classifier="rules",
             )
@@ -234,6 +274,8 @@ class IntentRouter:
     @staticmethod
     def _normalize(text: str) -> str:
         text = text.strip().lower()
+        # Spoken fillers ("can you uh open chrome") break command grammar.
+        text = re.sub(r"(?:^|(?<=[\s,]))(?:uh+|um+|uhm|erm?|hmm+|ah+)(?=[\s,.!?]|$)[,]?", " ", text)
         text = re.sub(r"\s+", " ", text)
         text = re.sub(r"[.!?,;:]+$", "", text)
         return text.strip()
@@ -329,6 +371,96 @@ class IntentRouter:
             return result
 
         return {}
+
+    _TRANSPORT_LEAD = re.compile(
+        r"^(?:(?:okay|ok|uk|hey|hi|please|so|and|now|asta|just|uh|um|"
+        r"can you|could you|would you|will you)[\s,]+)+"
+    )
+    _ITEM = r"(?:(?:the|this|that|my|current)\s+)?(?:song|track|music|gaana|gana|one|playback|audio|it)"
+    _APP_SUFFIX = re.compile(r"\s+(?:on|in)\s+(spotify|apple music|youtube music|youtube)$|\s+(spotify)$")
+    _TRANSPORT_PATTERNS = (
+        ("pause", re.compile(
+            rf"^(?:pause|paus|pauze|pose|paws)(?:\s+{_ITEM})?$|"
+            rf"^(?:stop|hold)\s+{_ITEM}$|"
+            r"^(?:gaana|gana|song|music)\s+(?:rok|roko|ruko|band|bandh)(?:\s+(?:do|karo|kar do|kardo))?$"
+        )),
+        ("play", re.compile(
+            rf"^(?:resume|unpause|continue)(?:\s+{_ITEM})?(?:\s+playing)?$|"
+            r"^(?:play|start)\s+(?:it\s+)?again$|^(?:gaana|gana)\s+(?:chalao|chala do|shuru karo)$"
+        )),
+        ("next", re.compile(
+            rf"^(?:next|skip|change|switch)(?:\s+{_ITEM})?(?:\s+please)?$|"
+            r"^(?:play|go to|put on)\s+(?:the\s+)?next(?:\s+(?:song|track|one))?$|"
+            r"^(?:play|put on)\s+(?:(?:a|an|some|any)\s+)?(?:different|another|other|new|else)\s+(?:song|track|one)$|"
+            r"^(?:agla|agla wala|next)\s+(?:gaana|gana|song)(?:\s+(?:chalao|lagao|bajao))?$|"
+            r"^(?:gaana|gana|song)\s+(?:badlo|badal do|change karo)$"
+        )),
+        ("previous", re.compile(
+            r"^(?:previous|prev)(?:\s+(?:song|track|one))?$|"
+            r"^(?:play|go to|go back to)\s+(?:the\s+)?previous(?:\s+(?:song|track|one))?$|"
+            r"^go\s+back(?:\s+(?:a|one)\s+(?:song|track))?$|"
+            r"^(?:go back to|back to)\s+(?:the\s+)?last\s+(?:song|track)$|"
+            r"^(?:pichla|pichhla|previous)\s+(?:gaana|gana|song)(?:\s+(?:chalao|lagao|bajao))?$"
+        )),
+        ("now_playing", re.compile(
+            r"^(?:what|which)(?:'s|\s+is)?\s+(?:song|track|music)\s+(?:is\s+)?(?:this|playing|that|on)(?:\s+(?:right\s+)?now)?$|"
+            r"^what(?:'s|\s+is)\s+(?:playing|this song|this track|the song|the current song)(?:\s+(?:right\s+)?now)?$|"
+            r"^(?:who\s+(?:sings|sang)\s+(?:this|that)(?:\s+song)?|what(?:'s|\s+is)\s+the\s+name\s+of\s+(?:this|the)\s+song)$|"
+            r"^(?:kaun\s+sa|konsa)\s+(?:gaana|gana)\s+(?:hai|chal raha hai)$"
+        )),
+    )
+
+    @classmethod
+    def _extract_transport_command(cls, text: str) -> dict[str, Any]:
+        """Pause / resume / next / previous / what's playing, no vision needed."""
+        value = cls._TRANSPORT_LEAD.sub("", str(text or "").strip().lower())
+        value = re.sub(r"[.!?,]+", " ", value)
+        value = re.sub(r"\b(?:uh+|um+|erm|hmm)\b", " ", value)
+        value = re.sub(r"\s+(?:please|now|right now|for me)$", "", " ".join(value.split()))
+        provider = None
+        suffix = cls._APP_SUFFIX.search(value)
+        if suffix:
+            provider = (suffix.group(1) or suffix.group(2)).replace(" ", "_")
+            value = value[: suffix.start()].strip()
+        if not value:
+            return {}
+        for operation, pattern in cls._TRANSPORT_PATTERNS:
+            if pattern.match(value):
+                entities = {"action": "media", "operation": operation}
+                if provider == "spotify":
+                    entities["provider"] = provider
+                return entities
+        return {}
+
+    _SCREEN_QUESTION = re.compile(
+        r"^(?:(?:hey|okay|ok|so|and|now|please)[\s,]+)*(?:"
+        r"(?:can|could)\s+you\s+(?:see|tell\s+(?:me\s+)?what(?:'s|\s+is)\s+on)\b|"
+        r"(?:(?:can|could)\s+you\s+)?(?:find|spot|read)\s+.*\bon\s+(?:my|the|this)\s+screen\b|"
+        r"do\s+you\s+see\b|what\s+do\s+you\s+see\b|"
+        r"what(?:'s|\s+is)\s+on\s+(?:my|the|this)\s+screen\b|"
+        r"(?:look|looking)\s+at\s+(?:my|the|this)\s+screen\b|"
+        r"(?:(?:can|could)\s+you\s+)?(?:describe|read|check)\s+(?:my|the|this)\s+screen\b|"
+        r"is\s+there\s+.+\s+on\s+(?:my|the)\s+screen\b)",
+        re.IGNORECASE,
+    )
+    SCREEN_QUESTION_PREFIX = "Answer the user's question about the current screenshot"
+
+    @classmethod
+    def _extract_screen_question(cls, text: str) -> dict[str, Any]:
+        """Questions about the screen ("can you see the search field?")."""
+        value = str(text or "").strip()
+        if not value or not cls._SCREEN_QUESTION.match(value):
+            return {}
+        return {
+            "action": "inspect",
+            "tool": "vision.inspect",
+            "prompt": (
+                f"{cls.SCREEN_QUESTION_PREFIX}: \"{value}\". Put a short, "
+                "direct spoken answer (one or two sentences) in summary. Set "
+                "visual_match=true when the answer is yes or the asked item "
+                "is visible."
+            ),
+        }
 
     @classmethod
     def _extract_compound_commands(
@@ -576,9 +708,29 @@ class IntentRouter:
         "the song", "the track", "the video", "the music", "the episode",
         "this song", "this track", "this video", "song please", "track please",
     }
+    _RESUME_QUERY = re.compile(
+        r"^(?:it|that|this|again|music|some\s+music|my\s+music|something|"
+        r"(?:that|this|the|my)\s+(?:song|track|music)(?:\s+again)?|"
+        r"(?:the\s+|my\s+)?(?:last|previous|recent)\s+(?:song|track|music|one)\b.*|"
+        r"what(?:ever)?\s+i\s+was\s+(?:listening|playing)\b.*)$",
+        re.IGNORECASE,
+    )
+
     _TRAILING_POLITENESS = re.compile(
         r"(?:\s*,?\s+(?:for me|for us|please|right now|now))+$"
     )
+
+    _VAGUE_LEAD = re.compile(
+        r"^(?:(?:something|anything|some|any|a|an)\s+)?(?:(?:like|kind of|type of|sort of|of)\s+)?"
+    )
+    _VAGUE_TAIL = re.compile(r"\s+(?:type|kind|style|vibes?|sort|types)$")
+
+    @classmethod
+    def _clean_vague_media_query(cls, query: str) -> str:
+        """"something egyptian music type" -> "egyptian music"."""
+        value = " ".join(str(query or "").split())
+        cleaned = cls._VAGUE_TAIL.sub("", cls._VAGUE_LEAD.sub("", value)).strip()
+        return cleaned if cleaned and len(cleaned) >= 3 else value
 
     @classmethod
     def _refine_command_entities(cls, entities: dict[str, Any]) -> dict[str, Any]:
@@ -588,9 +740,45 @@ class IntentRouter:
 
         action = str(entities.get("action") or "")
 
+        if action == "search":
+            query = cls._TRAILING_POLITENESS.sub("", str(entities.get("query") or "").strip()).strip(" ,.!?;:")
+            if not query:
+                return {}
+            refined = dict(entities)
+            refined["query"] = query
+            return refined
+
         if action == "media":
             operation = str(entities.get("operation") or "").lower()
             query = str(entities.get("query") or "").strip().lower()
+            provider = str(entities.get("provider") or "")
+            if " on " in f" {provider} ":
+                # "eppal on apple music": keep the last named app.
+                entities = {**entities, "provider": provider.rsplit(" on ", 1)[-1].strip()}
+            if operation == "play" and query and str(entities.get("provider") or "").startswith("youtube"):
+                # No YouTube player integration: show the YouTube results.
+                return {"action": "search", "query": query, "target": "youtube"}
+            if operation == "play" and query:
+                from core.media.artists import artist_request, snap_artist_names
+
+                # "some udit narayan songs" means the artist's songs, not a
+                # track literally called that; also repair glued names.
+                snapped = snap_artist_names(query)
+                artist = artist_request(snapped)
+                if artist:
+                    return {**entities, "query": artist, "artist": artist}
+                if snapped != query:
+                    entities = {**entities, "query": snapped}
+                    query = snapped
+                vague = cls._clean_vague_media_query(query)
+                if vague and vague != query:
+                    entities = {**entities, "query": vague}
+                    query = vague
+            if operation == "play" and cls._RESUME_QUERY.match(query):
+                # "play the last song I was listening to" / "play that song":
+                # resume the player instead of searching for those words.
+                refined = {k: v for k, v in entities.items() if k != "query"}
+                return refined
             # "next question" is conversation, not a media skip.
             if (
                 operation in {"next", "previous", "pause", "resume", "stop", "toggle"}
@@ -620,6 +808,10 @@ class IntentRouter:
 
         refined = dict(entities)
         refined["target"] = cleaned
+        if action == "launch":
+            # The launch tool only knows PATH executables; "open" uses full
+            # app discovery (Start menu, browser profiles, references).
+            refined["action"] = "open"
         return refined
 
     @classmethod
@@ -713,7 +905,8 @@ class IntentRouter:
 
         query = match.group("query").strip(" ,.!?;:")
         target = (match.group("target") or "").strip(" ,.!?;:")
-        if not query:
+        # "search for" with the query clipped off by STT must not type "for".
+        if not query or query.lower() in {"for", "about", "on", "the", "a", "it", "something"}:
             return {}
 
         return {

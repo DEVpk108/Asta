@@ -36,7 +36,10 @@ class ToolRuntimeModule(Module):
             print("[Tools] Ignoring invalid tool request.", flush=True)
             return
 
-        result = self.kernel.tool_dispatcher.dispatch(request)
+        result = self.kernel.tool_dispatcher.dispatch(
+            request,
+            confirmed=self._is_user_directed(request),
+        )
 
         if result.success or not result.metadata.get("requires_confirmation"):
             self._emit_result(result, request=request)
@@ -52,6 +55,32 @@ class ToolRuntimeModule(Module):
             request=pending.request,
             reason=pending.reason,
         )
+
+    _USER_DIRECTED_TOOLS = frozenset({"computer.type_text", "computer.keypress"})
+
+    @classmethod
+    def _is_user_directed(cls, request) -> bool:
+        """Typing the user's own spoken search query (and Enter) is consented.
+
+        Only deterministic plans set this marker, only for keyboard steps
+        whose content came verbatim from the utterance. Disable with
+        ASTA_TRUST_USER_DIRECTED=0 to confirm every keyboard action.
+        """
+        import os
+
+        if os.getenv("ASTA_TRUST_USER_DIRECTED", "1").strip().lower() in {"0", "false", "no", "off"}:
+            return False
+        metadata = getattr(request, "metadata", None) or {}
+        if metadata.get("user_directed") is not True:
+            return False
+        tool = getattr(request, "tool", "")
+        if tool == "computer.hotkey":
+            # Only the browser "focus address bar" shortcut is pre-approved.
+            keys = (getattr(request, "arguments", None) or {}).get("keys") or []
+            if isinstance(keys, str):
+                keys = keys.replace("+", " ").split()
+            return [str(k).strip().lower() for k in keys] == ["ctrl", "l"]
+        return tool in cls._USER_DIRECTED_TOOLS
 
     def on_confirmation_response(self, request_id, approved):
         if not isinstance(request_id, str):
@@ -121,7 +150,7 @@ class ToolRuntimeModule(Module):
     @staticmethod
     def _task_metadata(request):
         metadata = {}
-        for key in ("request_id", "task_id", "task_step", "plan_step_id", "planner"):
+        for key in ("request_id", "task_id", "task_step", "plan_step_id", "planner", "completion_message"):
             if key == "request_id":
                 metadata[key] = request.request_id
                 continue

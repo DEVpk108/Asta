@@ -150,6 +150,29 @@ def _is_intermediate_task_result(ai, result) -> bool:
     return False
 
 
+def _is_superseded_failure(ai, result) -> bool:
+    """A failed step that the task runtime already retried.
+
+    Recovery retries run synchronously inside the same tool_result dispatch,
+    so by the time this handler sees the original failure the retry may have
+    succeeded (and been announced). Only speak a failure whose step is still
+    marked failed.
+    """
+    if not isinstance(result, ToolResult) or result.success:
+        return False
+    task = _task_for_tool_result(ai, result)
+    plan = getattr(task, "plan", None)
+    step_id = result.metadata.get("plan_step_id") if isinstance(result.metadata, dict) else None
+    if plan is None or not step_id:
+        return False
+    try:
+        step = plan.get_step(step_id)
+    except Exception:
+        return False
+    status = str(getattr(getattr(step, "status", None), "value", getattr(step, "status", ""))).lower()
+    return status in {"ready", "running", "completed"}
+
+
 def _verified_visual_response(result: ToolResult) -> str | None:
     if not result.success or result.tool != "vision.inspect":
         return None
@@ -181,6 +204,12 @@ def apply_ai_runtime_patch():
     original_voice_can_listen = VoiceModule._can_listen
 
     def patched_on_tool_result(self, result):
+        if _is_superseded_failure(self, result):
+            print(
+                f"[AI] Suppressing failure superseded by a retry: {result.tool}",
+                flush=True,
+            )
+            return
         if _is_intermediate_task_result(self, result):
             print(
                 f"[AI] Suppressing intermediate task result: {result.tool}",

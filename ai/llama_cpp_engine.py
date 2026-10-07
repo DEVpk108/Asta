@@ -7,6 +7,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from core import gpu_share
+
 from .llama_server_manager import LlamaServerManager
 
 
@@ -143,6 +145,10 @@ The broader architecture may eventually include persistent memory, project aware
 These capabilities may not exist in the current version. Never claim that a future capability is already available.
 
 IMPORTANT: Chat history and future long-term memory are different concepts. Conversation history provides immediate continuity; a future Memory Layer may provide durable knowledge and user/project context.
+
+VOICE INPUT
+User messages usually come from speech recognition and can contain misheard words, a stray wake word, or Hindi written phonetically. Interpret obvious mishearings from context. If a message is garbled or makes no sense, briefly ask the user to repeat it instead of guessing; never invent products, projects, or facts from an unfamiliar word.
+You cannot run tools, search, or open apps from this chat: never write tool calls like "[Using ...]" or pretend you searched; if the user asked for an action you did not perform, say you did not catch the command and ask them to say it again. Replies are spoken aloud: never use emoji. If the user speaks Hindi or Hinglish, reply in short, simple, grammatical Hindi (or Hinglish); if you are unsure what they meant, ask them to repeat.
 
 RESPONSE PRINCIPLE
 Your goal is not merely to produce an answer. Help the user understand the problem, make better technical decisions, and build things effectively.
@@ -296,8 +302,12 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             return False
 
         punctuation = buffer[punctuation_index]
-        if punctuation not in ".!?":
+        if punctuation not in ".!?\u0964\u0965":
             return False
+        if punctuation in "\u0964\u0965":
+            # Hindi danda / double danda always ends a sentence.
+            next_index = punctuation_index + 1
+            return next_index >= len(buffer) or buffer[next_index].isspace()
 
         next_index = punctuation_index + 1
         if next_index < len(buffer) and not buffer[next_index].isspace():
@@ -314,11 +324,14 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             # Avoid splitting acronyms such as A.S.T.A. or U.S. when the
             # following word continues the same sentence. If the next word is
             # capitalized, treat the acronym period as a real sentence boundary.
-            if re.fullmatch(r"(?:[A-Za-z]\.){2,}[A-Za-z]?\.?", token):
+            if re.fullmatch(r"(?:[A-Za-z]\.)+[A-Za-z]?\.?", token):
                 remainder = buffer[punctuation_index + 1:]
                 next_nonspace = re.search(r"\S", remainder)
                 if next_nonspace is None:
-                    return True
+                    # Streaming: the next word has not arrived yet. Wait for
+                    # it instead of speaking "A.S.T.A." as its own sentence;
+                    # the end-of-stream flush still emits a trailing acronym.
+                    return False
                 return not next_nonspace.group(0).islower()
 
         return True
@@ -327,7 +340,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
     def _emit_sentence_chunks(cls, buffer):
         while True:
             sentence_end = None
-            for match in re.finditer(r"[.!?](?=\s|$)", buffer):
+            for match in re.finditer(r"[.!?\u0964\u0965](?=\s|$)", buffer):
                 if cls._is_sentence_boundary(buffer, match.start()):
                     sentence_end = match.start()
                     break
@@ -359,6 +372,13 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             "temperature": self.temperature,
             "cache_prompt": True,
         }
+
+        # Free VRAM held by an idle vision model before generating.
+        gpu_share.release_idle("the chat reply")
+        try:
+            max_reply_seconds = float(os.getenv("ASTA_LLM_MAX_REPLY_SECONDS", "45"))
+        except ValueError:
+            max_reply_seconds = 45.0
 
         request_start = time.perf_counter()
         response_open = None
@@ -409,6 +429,14 @@ Your goal is not merely to produce an answer. Help the user understand the probl
                 now = time.perf_counter()
                 if first_event_time is None:
                     first_event_time = now
+                if max_reply_seconds > 0 and now - request_start > max_reply_seconds:
+                    print(
+                        f"[AI] llama.cpp reply exceeded {max_reply_seconds:.0f}s; stopping. "
+                        "The GPU is probably out of VRAM (check nvidia-smi).",
+                        flush=True,
+                    )
+                    cancelled = True
+                    break
 
                 final_id = data.get("id") or final_id
                 choices = data.get("choices") or []
@@ -533,6 +561,38 @@ Your goal is not merely to produce an answer. Help the user understand the probl
         )
         self._trim_history()
         return result
+
+    def complete_json(self, system, user, max_tokens=96, timeout=None):
+        """One stateless JSON completion (no chat history, not spoken).
+
+        Used to understand commands; never touches the conversation, so
+        it can run before the chat reply without polluting it.
+        """
+        if self.model is None:
+            self._discover_model()
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+            "max_tokens": int(max_tokens),
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"},
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        gpu_share.release_idle("understanding the command")
+        try:
+            limit = float(timeout or os.getenv("ASTA_INTENT_LLM_TIMEOUT", "8"))
+        except ValueError:
+            limit = 8.0
+        response = self.session.post(self.chat_url, json=payload, timeout=limit)
+        response.raise_for_status()
+        data = response.json()
+        choice = (data.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
+        return str(message.get("content") or "")
 
     def generate_response(self, text, on_sentence=None, context=None):
         if not text:

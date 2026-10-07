@@ -4,12 +4,15 @@ import base64
 import json
 import mimetypes
 import os
+import threading
 import re
 import time
 from pathlib import Path
 from typing import Any
 
 import requests
+
+from core import gpu_share
 
 from .vision_server_manager import VisionServerManager
 
@@ -67,6 +70,13 @@ class LFM25VLEngine:
         host = self.base_url.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
         if host in {"localhost", "127.0.0.1", "::1"}:
             self.session.trust_env = False
+
+        release = getattr(self.server_manager, "release_orphan", None)
+        if callable(release) and os.getenv("ASTA_VISION_ADOPT_ORPHAN", "1").strip().lower() not in {"0", "false", "no", "off"}:
+            try:
+                release()
+            except Exception as exc:
+                print(f"[Vision] Orphan check failed: {type(exc).__name__}: {exc}", flush=True)
 
     def _ensure_server(self) -> None:
         if not self.server_manager.ensure_running():
@@ -188,9 +198,71 @@ class LFM25VLEngine:
             return False
 
     def shutdown(self) -> None:
+        timer = getattr(self, "_idle_timer", None)
+        if timer is not None:
+            timer.cancel()
         self.server_manager.stop()
 
-    def inspect(
+    def _cancel_idle_unload(self) -> None:
+        timer = getattr(self, "_idle_timer", None)
+        if timer is not None:
+            timer.cancel()
+            self._idle_timer = None
+
+    def _schedule_idle_unload(self) -> None:
+        """Stop the vision server after a quiet period to free VRAM.
+
+        The vision model shares an 8 GB GPU with the LLM and Kokoro; while it
+        stays loaded the LLM can spill into system memory and slow to a few
+        tokens per second. ASTA_VISION_IDLE_UNLOAD_SECONDS=0 keeps it loaded.
+        """
+        try:
+            seconds = float(os.getenv("ASTA_VISION_IDLE_UNLOAD_SECONDS", "30"))
+        except ValueError:
+            seconds = 30.0
+        if seconds <= 0:
+            return
+        self._cancel_idle_unload()
+
+        def unload():
+            self._idle_timer = None
+            if getattr(self.server_manager, "owned", False):
+                print(
+                    f"[Vision] Idle for {seconds:.0f}s; unloading the vision model to free VRAM.",
+                    flush=True,
+                )
+                self.server_manager.stop()
+
+        timer = threading.Timer(seconds, unload)
+        timer.daemon = True
+        self._idle_timer = timer
+        timer.start()
+
+    def _release_now(self) -> None:
+        self._cancel_idle_unload()
+        if getattr(self, "_busy", False):
+            return
+        if getattr(self.server_manager, "owned", False):
+            self.server_manager.stop()
+
+    def _idle_since(self) -> float | None:
+        """When the loaded model went idle; None when busy or not loaded."""
+        if getattr(self, "_busy", False) or not getattr(self.server_manager, "owned", False):
+            return None
+        return getattr(self, "_last_used", None)
+
+    def inspect(self, *args, **kwargs):
+        self._cancel_idle_unload()
+        self._busy = True
+        try:
+            return self._inspect(*args, **kwargs)
+        finally:
+            self._busy = False
+            self._last_used = time.monotonic()
+            gpu_share.register("vision model", self._release_now, self._idle_since)
+            self._schedule_idle_unload()
+
+    def _inspect(
         self,
         image_path: str | os.PathLike[str],
         prompt: str,

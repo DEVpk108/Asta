@@ -12,6 +12,7 @@ from core.module import Module
 
 from .microphone_engine import MicrophoneEngine
 from .wakeword_engine import WakeWordEngine
+from core.transliteration import ends_unfinished
 from .vad_engine import VADEngine
 from .recognition_engine import RecognitionEngine
 from .incremental_command_engine import IncrementalCommandDetector
@@ -559,6 +560,36 @@ class VoiceModule(Module):
         self._last_transcript_at = now
         return False
 
+    def _retry_quiet_utterance(self, audio):
+        """Re-decode a short, quiet utterance the streaming STT returned empty.
+
+        Short soft answers ("yes") sometimes decode to nothing. Normalising
+        the level and adding a little leading silence usually recovers them;
+        the extra decode only runs when the first result was empty.
+        """
+        if audio is None:
+            return ""
+        try:
+            import numpy as np
+
+            samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+            duration = samples.size / 16000.0
+            peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+            if duration > 3.0 or peak <= 0.0:
+                return ""
+            gain = min(6.0, 0.8 / peak)
+            boosted = np.concatenate(
+                (np.zeros(4800, dtype=np.float32), samples * gain)
+            ).astype(np.float32)
+            print(
+                f"[STT] Empty result; retrying quiet utterance (gain={gain:.1f}x).",
+                flush=True,
+            )
+            return self.recognition.transcribe(boosted)
+        except Exception as exc:
+            print(f"[STT] Quiet-utterance retry failed: {type(exc).__name__}: {exc}", flush=True)
+            return ""
+
     @staticmethod
     def _normalize_confirmation_transcript(text):
         """Canonicalize common short approval/rejection phrases.
@@ -736,12 +767,15 @@ class VoiceModule(Module):
     def _running_and_incremental_listenable(self):
         return self._running and not self._tts_active
 
-    def _collect_command_audio(self, initial_audio=None):
+    def _collect_command_audio(self, initial_audio=None, on_audio=None, hold=None):
         if not self._confirmation_listening_active():
+            kwargs = {"hold": hold} if hold is not None else {}
             return self.vad.collect_utterance(
                 self.microphone,
                 initial_audio=initial_audio,
                 speech_timeout=3,
+                on_audio=on_audio,
+                **kwargs,
             )
 
         original = {
@@ -757,11 +791,21 @@ class VoiceModule(Module):
 
         try:
             print("[VAD] Listening for short confirmation...", flush=True)
-            return self.vad.collect_utterance(
-                self.microphone,
-                initial_audio=initial_audio,
-                speech_timeout=2.0,
-            )
+            try:
+                return self.vad.collect_utterance(
+                    self.microphone,
+                    initial_audio=initial_audio,
+                    speech_timeout=2.0,
+                    on_audio=on_audio,
+                    short_turns=False,
+                )
+            except TypeError:
+                return self.vad.collect_utterance(
+                    self.microphone,
+                    initial_audio=initial_audio,
+                    speech_timeout=2.0,
+                    on_audio=on_audio,
+                )
         finally:
             self.vad.min_rms = original["min_rms"]
             self.vad.min_peak = original["min_peak"]
@@ -881,9 +925,41 @@ class VoiceModule(Module):
                     self._queue_incremental_session_finished(session_id)
                     continue
 
-                audio = self._collect_command_audio(
-                    initial_audio=interrupted_audio
-                )
+                # Streaming STT decodes while the user talks; the transcript
+                # is ready as soon as the VAD/Smart Turn ends the utterance.
+                stream = None
+                if getattr(self.recognition, "supports_streaming", False):
+                    try:
+                        stream = self.recognition.create_stream()
+                    except Exception as exc:
+                        print(
+                            f"[Voice] Streaming STT unavailable: {type(exc).__name__}: {exc}",
+                            flush=True,
+                        )
+                        stream = None
+
+                try:
+                    audio = self._collect_command_audio(
+                        initial_audio=interrupted_audio,
+                        on_audio=stream.accept if stream is not None else None,
+                        hold=(
+                            (lambda: ends_unfinished(stream.partial_text))
+                            if stream is not None
+                            else None
+                        ),
+                    )
+                except Exception:
+                    if stream is not None:
+                        stream.cancel()
+                    raise
+
+                if (
+                    audio is None
+                    or not self._running
+                    or not self._can_listen()
+                ) and stream is not None:
+                    stream.cancel()
+                    stream = None
 
                 if not self._running:
                     break
@@ -899,9 +975,16 @@ class VoiceModule(Module):
                     continue
 
                 if not self._can_listen():
+                    if stream is not None:
+                        stream.cancel()
                     continue
 
-                text = self.recognition.transcribe(audio)
+                if stream is not None:
+                    text = self.recognition.finish_stream(stream)
+                    if not text:
+                        text = self._retry_quiet_utterance(audio)
+                else:
+                    text = self.recognition.transcribe(audio)
                 if not text:
                     continue
 

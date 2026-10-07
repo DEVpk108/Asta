@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import unicodedata
 from collections import Counter
 
 from faster_whisper import WhisperModel
@@ -10,7 +11,7 @@ import torch
 class RecognitionEngine:
     """Pluggable local STT router with Whisper as the current default."""
 
-    SUPPORTED_BACKENDS = {"whisper", "indic", "hybrid"}
+    SUPPORTED_BACKENDS = {"whisper", "indic", "hybrid", "nemotron"}
 
     # Phrases Whisper may invent from silence/noise. Never pass them to the AI.
     HALLUCINATION_PHRASES = {
@@ -49,10 +50,25 @@ class RecognitionEngine:
         self.beam_size = max(1, min(10, configured_beam_size))
         self.language = language
         self.backend = (
-            (backend or os.getenv("ASTA_STT_BACKEND", "whisper"))
+            (backend or os.getenv("ASTA_STT_BACKEND", "auto"))
             .strip()
             .lower()
         )
+        if self.backend == "auto":
+            # Prefer streaming Nemotron once its model is downloaded.
+            try:
+                from .nemotron_streaming_engine import DEFAULT_MODEL_DIR
+
+                model_dir = os.getenv("ASTA_NEMOTRON_MODEL_DIR") or DEFAULT_MODEL_DIR
+                import importlib.util
+
+                available = (
+                    os.path.isdir(model_dir)
+                    and importlib.util.find_spec("sherpa_onnx") is not None
+                )
+            except Exception:
+                available = False
+            self.backend = "nemotron" if available else "whisper"
         if self.backend not in self.SUPPORTED_BACKENDS:
             raise ValueError(
                 f"Unsupported STT backend '{self.backend}'. "
@@ -71,6 +87,27 @@ class RecognitionEngine:
         self.last_language_probability = 0.0
 
         self.model = None
+        self.streaming = None
+        if self.backend == "nemotron":
+            try:
+                from .nemotron_streaming_engine import NemotronStreamingEngine
+
+                self.streaming = NemotronStreamingEngine()
+                self.last_language = self.streaming.language
+            except Exception as exc:
+                print(
+                    f"[STT/Nemotron] Unavailable: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+                print("[STT] Falling back to Whisper.", flush=True)
+                self.backend = "whisper"
+
+        if self.backend == "whisper":
+            # ASTA_STT_LANGUAGE=auto lets Whisper detect Hindi/English itself.
+            configured_language = os.getenv("ASTA_STT_LANGUAGE", "").strip().lower()
+            if configured_language:
+                self.language = None if configured_language == "auto" else configured_language
+
         if self.backend in {"whisper", "hybrid", "indic"}:
             start = time.perf_counter()
             self.model = WhisperModel(
@@ -118,7 +155,13 @@ class RecognitionEngine:
 
     @staticmethod
     def _normalize(text):
-        normalized = re.sub(r"[^a-z0-9]+", " ", str(text or "").strip().lower())
+        # Unicode-aware: Devanagari (Hindi) letters must survive, otherwise
+        # every Hindi transcript normalizes to "" and is rejected as noise.
+        # Letters (L*), combining vowel signs (M*) and digits (N*) are kept.
+        value = str(text or "").strip().lower()
+        normalized = "".join(
+            ch if unicodedata.category(ch)[0] in "LMN" else " " for ch in value
+        )
         return re.sub(r"\s+", " ", normalized).strip()
 
 
@@ -137,7 +180,7 @@ class RecognitionEngine:
         }:
             return True
 
-        alnum = re.sub(r"[^a-z0-9]+", "", normalized)
+        alnum = normalized.replace(" ", "")
         if not alnum:
             return True
 
@@ -341,6 +384,39 @@ class RecognitionEngine:
         self.last_backend = "whisper-fallback"
         return whisper_text
 
+    @property
+    def supports_streaming(self):
+        return getattr(self, "streaming", None) is not None
+
+    def create_stream(self):
+        """Start a streaming utterance (Nemotron backend only)."""
+        if not self.supports_streaming:
+            raise RuntimeError("The active STT backend does not stream.")
+        return self.streaming.create_stream()
+
+    def _accept_text(self, text, started_at):
+        if self._is_hallucination(text):
+            if text:
+                print(f"[STT] Rejected likely hallucination: {text!r}", flush=True)
+            return ""
+        print(
+            f"[STT] {self.last_backend} language={self.last_language} "
+            f"time={time.perf_counter() - started_at:.3f}s: {text}",
+            flush=True,
+        )
+        return text
+
+    def finish_stream(self, stream):
+        """Flush a stream from create_stream() and return the transcript."""
+        start = time.perf_counter()
+        try:
+            text = stream.finish()
+        except Exception as exc:
+            print(f"[Voice] Recognition error: {type(exc).__name__}: {exc}", flush=True)
+            return ""
+        self.last_backend = "nemotron-stream"
+        return self._accept_text(text, start)
+
     def transcribe(self, audio, *, strict=False, beam_size=None):
         """Transcribe audio.
 
@@ -353,6 +429,15 @@ class RecognitionEngine:
 
         backend = getattr(self, "backend", "whisper")
         start = time.perf_counter()
+
+        if backend == "nemotron" and self.supports_streaming:
+            try:
+                text = self.streaming.transcribe(audio)
+            except Exception as exc:
+                print(f"[Voice] Recognition error: {type(exc).__name__}: {exc}", flush=True)
+                return ""
+            self.last_backend = "nemotron"
+            return self._accept_text(text, start)
 
         try:
             if backend == "indic":

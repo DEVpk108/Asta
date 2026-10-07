@@ -35,7 +35,7 @@ class MediaControlTool(Tool):
             name="media.control",
             description=(
                 "Control local media playback. Supports play, pause, toggle, "
-                "next, previous, and stop, with an optional media query and provider."
+                "next, previous, stop and now_playing, with an optional media query and provider."
             ),
             input_schema={
                 "type": "object",
@@ -49,6 +49,7 @@ class MediaControlTool(Tool):
                             "next",
                             "previous",
                             "stop",
+                            "now_playing",
                         ],
                     },
                     "query": {

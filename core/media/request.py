@@ -133,12 +133,57 @@ def _clean_play_query(query: str) -> str:
     return cleaned
 
 
+# Music apps ASTA has no integration for; requests fall back to Spotify.
+UNSUPPORTED_MUSIC_APPS = frozenset(
+    {"amazon music", "jiosaavn", "saavn", "gaana", "wynk", "wynk music",
+     "soundcloud", "deezer", "tidal", "pandora"}
+)
+
+
+_APP_NAMES = r"apple\s+music|itunes|spotify|youtube\s+music|youtube|amazon\s+music|jiosaavn|saavn|gaana|wynk(?:\s+music)?|soundcloud|deezer|tidal|pandora"
+_APP_BEFORE_ARTIST = re.compile(
+    rf"^(?P<head>.+?)\s+(?P<prep>on|in)\s+(?P<app>{_APP_NAMES})\s+(?P<by>by\s+\S.*?)[\s.!?]*$",
+    re.IGNORECASE,
+)
+
+
+# Consistent speech-recognition spellings of music app names (English and
+# romanised-Hindi decodes): "eppal music", "Apple muzic", "spotifai".
+_APP_MISHEARINGS = (
+    (re.compile(
+        r"\b(?:apple|appal|apal|aple|appel|apel|eppal|epal|eppel|epple|aipal|aippal|ippal|appl)\s*"
+        r"(?:music|muzic|musik|muzik|mujik|myuzik|myusic|mewsic|musique|mujic)\b", re.IGNORECASE), "apple music"),
+    (re.compile(r"\bi\s+tunes\b", re.IGNORECASE), "itunes"),
+    (re.compile(r"\b(?:spotifi|spotefy|spotyfy|spotfy|spotifai|spotifye)\b", re.IGNORECASE), "spotify"),
+    (re.compile(r"\byou\s+tube\b", re.IGNORECASE), "youtube"),
+)
+
+
+def canonical_app_names(text: str) -> str:
+    value = str(text or "")
+    for pattern, name in _APP_MISHEARINGS:
+        value = pattern.sub(name, value)
+    return value
+
+
+def app_last(text: str) -> str:
+    """"play X on Apple Music by Amit" -> "play X by Amit on Apple Music".
+
+    The app is always parsed from the end of the sentence; an artist said
+    after it would otherwise glue onto the app name or the title.
+    """
+    match = _APP_BEFORE_ARTIST.match(str(text or "").strip())
+    if not match:
+        return text
+    return f"{match.group('head')} {match.group('by')} {match.group('prep')} {match.group('app')}"
+
+
 def parse_media_request(
     text: str,
     *,
     known_providers=None,
 ) -> MediaRequest | None:
-    normalized = _strip_polite_leads(_normalize(text))
+    normalized = _strip_polite_leads(_normalize(app_last(_normalize(canonical_app_names(text)))))
     if not normalized:
         return None
 
@@ -150,6 +195,18 @@ def parse_media_request(
         )
         if provider:
             normalized = remaining
+        else:
+            # A music app ASTA has no integration for ("on apple music") is
+            # still the app, not part of the song title; the planner falls
+            # back to the default app and says so.
+            other = re.search(
+                rf"\s+(?:on|in)\s+(?P<provider>youtube\s+music|youtube|{'|'.join(re.escape(n) for n in sorted(UNSUPPORTED_MUSIC_APPS, key=len, reverse=True))})$",
+                normalized,
+                re.IGNORECASE,
+            )
+            if other:
+                provider = other.group("provider").lower()
+                normalized = normalized[:other.start()].strip()
     else:
         provider_match = re.search(
             r"\s+on\s+(?P<provider>[a-z0-9][a-z0-9 ._-]*)$",

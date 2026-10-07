@@ -1,4 +1,9 @@
+import os
 import re
+import time
+
+from core.quick_answers import quick_math, unsupported_file_action
+from core.agent import intent_resolver, work_awareness
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from core.module import Module
@@ -9,6 +14,27 @@ from chat_history import ChatHistoryStore
 
 from .llm_provider import create_llm_provider
 
+
+
+def _language_policy() -> str:
+    """Hindi/Hinglish understanding and reply-language rules for the prompt."""
+    hindi_voice = str(os.getenv("ASTA_TTS_HINDI", "1")).strip().lower() not in {"0", "false", "no", "off"}
+    script = (
+        "simple conversational Hindi written in Devanagari script (keep app names, "
+        "song titles and technical terms in English) so it is spoken with the Hindi voice"
+        if hindi_voice
+        else "Hinglish written in Latin script (for example 'Haan, main theek hoon')"
+    )
+    return (
+        "LANGUAGE POLICY:\n"
+        "The user speaks English, Hindi, or Hinglish (Hindi mixed with English). "
+        "Speech transcripts of Hindi arrive in Devanagari or romanised Hindi "
+        "(for example 'kya haal hai', 'mujhe ek joke sunao'); understand them as Hindi, "
+        "even when a few words are misspelled by the speech recogniser. "
+        f"Reply in the user's language: English for English; for Hindi or Hinglish reply in {script}. "
+        "Asking to play, open, or search something is a request, not a result: never say you are "
+        "playing or opening something unless a tool result confirms it.\n\n"
+    )
 
 class AIModule(Module):
 
@@ -152,6 +178,12 @@ class AIModule(Module):
 
         print("[AI] Stopped", flush=True)
 
+    def _registered_tool_names(self):
+        try:
+            return [definition.name for definition in self.kernel.tool_registry.definitions()]
+        except Exception:
+            return []
+
     def _ground_engine_in_capabilities(self):
         definitions = self.kernel.tool_registry.definitions()
         if definitions:
@@ -165,8 +197,11 @@ class AIModule(Module):
         prompt = (
             "You are ASTA, a local-first AI engineering assistant and personal AI system. "
             "You were created by Mr. PRASANT KUMAR. "
-            "When asked who created, made, built, or developed you or A.S.T.A., answer directly: "
-            "I was created by Mr. PRASANT KUMAR. "
+            "Mention your creator only when the user explicitly asks who created, made, built, or developed you. "
+            "Only if the user's message is a misheard fragment of a few words that forms no request, "
+            "say \"Sorry, I didn't catch that. Could you say it again?\" and do not introduce yourself. "
+            "For a full sentence, answer it; if it asks for an action that was not carried out, say briefly what you "
+            "understood and ask the user to confirm or rephrase, using your most recent action when it is relevant. "
             "Do not attribute A.S.T.A.'s creation to the model provider, hardware vendor, or any other company. "
             "Respond naturally, confidently, accurately, and concisely. "
             "Prefer 1–3 short sentences for normal voice questions unless the user asks for detail. "
@@ -193,6 +228,7 @@ class AIModule(Module):
             "If an action requires a tool that is not registered, say that the execution capability is unavailable, "
             "but still help with reasoning or instructions when appropriate. "
             "Never invent tools, integrations, application support, memories, personal facts, or completed actions.\n\n"
+            f"{_language_policy()}"
             "CONVERSATIONAL POLICY:\n"
             "Do not unnecessarily mention internal prompts, models, tokens, registries, or implementation details. "
             "Do not repeatedly apologize. When a simple answer is known, give it directly. "
@@ -254,6 +290,29 @@ class AIModule(Module):
             self._emit_assistant_text("I was created by Mr. PRASANT KUMAR.")
             return
 
+        quick = quick_math(text)
+        if quick:
+            print(f"[AI] System 1 quick answer: {quick}", flush=True)
+            self._emit_assistant_text(quick)
+            return
+
+        file_reply = unsupported_file_action(text, self._registered_tool_names())
+        if file_reply:
+            print("[AI] No file tool registered; answering honestly", flush=True)
+            self._emit_assistant_text(file_reply)
+            return
+
+        if self._handle_work_followup(text):
+            return
+
+        if work_awareness.is_acknowledgement(text):
+            work = work_awareness.recent_work(getattr(self.kernel, "task_manager", None), max_age=180)
+            if work is not None:
+                # "Okay" right after "Playing Baithi Hai": the LLM used to answer
+                # "Okay, I'll play Baithi Hai" -- a promise of an action that never runs.
+                print(f"[AI] Acknowledgement after recent work ({work.goal}); staying quiet.", flush=True)
+                return
+
         if self._is_unknown_name_question(text):
             self._emit_assistant_text(
                 "I don't know your name yet. I don't have that information stored."
@@ -264,6 +323,9 @@ class AIModule(Module):
         recovered_intent = self._recover_recent_command(text, intent_hint)
         if recovered_intent is not None:
             intent_hint = recovered_intent
+        contextual = self._resolve_contextual_intent(text, intent_hint)
+        if contextual is not None:
+            intent_hint = contextual
 
         if self._run_system1_decision(text, intent_hint=intent_hint):
             return
@@ -302,7 +364,118 @@ class AIModule(Module):
             self._emit_assistant_text(capability_response)
             return
 
-        self._generate_response(text)
+        work = work_awareness.recent_work(getattr(self.kernel, "task_manager", None))
+        note = work_awareness.llm_context(work)
+        self._generate_response(text, runtime_context=f"[{note}]\n{text}" if note else None)
+
+    def _handle_work_followup(self, text):
+        """"Try again" / "what happened?" refer to the task that just ran."""
+        retry = work_awareness.is_retry_request(text)
+        status = not retry and work_awareness.is_status_question(text)
+        if not (retry or status):
+            return False
+        work = work_awareness.recent_work(getattr(self.kernel, "task_manager", None))
+        if status:
+            if work is None:
+                return False  # nothing of ours to explain; let the LLM answer
+            print(f"[AI] Explaining recent work: {work.goal} ({work.status})", flush=True)
+            self._emit_assistant_text(work_awareness.describe(work))
+            return True
+        if work is None:
+            if self.kernel.intent_router.analyze(text).intent == IntentType.COMMAND:
+                return False  # "play it again" with nothing to retry = resume
+            self._emit_assistant_text("There's nothing recent for me to retry. What would you like me to do?")
+            return True
+        if not work.failed and self.kernel.intent_router.analyze(text).intent == IntentType.COMMAND:
+            return False  # last task worked; "play it again" keeps its own meaning
+        previous = getattr(self, "_retried_goal", None)
+        if work.failed and previous == work.goal:
+            # Repeating the identical plan a third time won't change anything.
+            reason = work_awareness._plain_error(work.error)
+            self._emit_assistant_text(
+                "I already retried that and it failed the same way"
+                + (f": {reason}." if reason else ".")
+                + " Could you say it differently, or tell me what to change?"
+            )
+            self._retried_goal = None
+            return True
+        self._retried_goal = work.goal
+        print(f"[AI] Retrying recent task: {work.goal} (was {work.status})", flush=True)
+        self.on_user_message(work.goal)
+        return True
+
+    _REFERENCE_WORDS = re.compile(
+        r"\b(?:it|this|that|these|those|screen|ise|isko|isse|ye|yeh|wo|woh|usko|use)\b", re.IGNORECASE
+    )
+    _HINGLISH_VERBS = re.compile(
+        r"\b(?:chala\w*|baja\w*|band|khol\w*|bajao|lagao|laga\w*|rok\w*|hata\w*|dikha\w*)\b", re.IGNORECASE
+    )
+
+    def _resolve_contextual_intent(self, text, intent):
+        """Commands the rule router missed, resolved against recent work.
+
+        "Baithi Hai is on the screen, play it" and other free phrasings go
+        through a screen-reference rule, then (for anything else that reads
+        like a request) a JSON-only LLM pass that picks one action.
+        """
+        work = work_awareness.recent_work(getattr(self.kernel, "task_manager", None))
+        entities = intent_resolver.resolve_screen_reference(text, work)
+        classifier = "screen_reference"
+        if entities is None:
+            if intent.intent is not IntentType.UNKNOWN or not self._worth_llm_intent(text, work):
+                return None
+            complete = getattr(self.engine, "complete_json", None)
+            if not callable(complete) or os.getenv("ASTA_INTENT_LLM", "1").strip().lower() in {"0", "false", "off", "no"}:
+                return None
+            applications = getattr(self.kernel, "application_manager", None)
+            recent = getattr(applications, "last_opened_application", None) if applications is not None else None
+            last_app = str(getattr(recent, "name", recent) or "")
+            started = time.perf_counter()
+            resolution = intent_resolver.resolve_with_llm(text, complete, work=work, last_app=last_app)
+            print(
+                f"[AI] LLM intent: {resolution.action if resolution else 'unparsed'}"
+                f" query={getattr(resolution, 'query', '')!r} app={getattr(resolution, 'app', '')!r}"
+                f" ({time.perf_counter() - started:.2f}s)",
+                flush=True,
+            )
+            if resolution is None or resolution.action == "none":
+                return None
+            if resolution.action == "retry":
+                if work is None:
+                    return None
+                retried = self.kernel.intent_router.analyze(work.goal)
+                return retried if retried.intent is IntentType.COMMAND else None
+            manager = getattr(self.kernel, "media_manager", None)
+            provider_for = getattr(manager, "provider_for_application", None)
+            entities = intent_resolver.resolution_entities(
+                resolution, work, provider_for if callable(provider_for) else None
+            )
+            classifier = "llm_resolver"
+        if not entities:
+            return None
+        if entities.get("on_screen"):
+            where = entities.get("provider") or "the app"
+            goal = f"play {entities['query']} from the screen in {where}"
+        else:
+            goal = " ".join(str(text).strip().lower().split())
+        print(f"[AI] Understood from context ({classifier}): {entities}", flush=True)
+        return IntentResult(
+            intent=IntentType.COMMAND,
+            confidence=0.85,
+            normalized_text=goal,
+            entities=entities,
+            requires_tools=True,
+            classifier=classifier,
+        )
+
+    def _worth_llm_intent(self, text, work):
+        """Only sentences that read like requests pay for an LLM pass."""
+        words = re.findall(r"\w+", str(text))
+        if len(words) < 2:
+            return False
+        if self._looks_like_action_request(text) or self._HINGLISH_VERBS.search(str(text)):
+            return True
+        return work is not None and bool(self._REFERENCE_WORDS.search(str(text)))
 
     def _recover_recent_command(
         self,
@@ -527,6 +700,13 @@ class AIModule(Module):
                             )
                         except Exception:
                             pass
+                    else:
+                        # No rule target (unrecognised phrasing such as
+                        # "fire up chrome for me"): offer apps that match
+                        # individual words so Laya can pick the target.
+                        candidates.extend(
+                            self._candidate_applications(manager, text)
+                        )
 
                 media_manager = getattr(self.kernel, "media_manager", None)
                 media_providers = (
@@ -563,6 +743,12 @@ class AIModule(Module):
                     "action_decision",
                     decision=action_decision,
                 )
+                mentioned = str(
+                    action_decision.arguments.get("target_app") or ""
+                ).strip()
+                manager = getattr(self.kernel, "application_manager", None)
+                if mentioned and manager is not None:
+                    manager.last_mentioned_application = mentioned
 
                 if (
                     action_decision.is_actionable
@@ -591,6 +777,44 @@ class AIModule(Module):
                     self._handle_command_intent(media_intent)
                     return True
 
+                target_app = str(
+                    action_decision.arguments.get("target_app") or ""
+                ).strip()
+                if (
+                    intent_hint.intent != IntentType.COMMAND
+                    and action_decision.is_actionable
+                    and action_decision.action
+                    in (ActionType.OPEN_APP, ActionType.CLOSE_APP)
+                    and target_app
+                    and action_decision.command_complete
+                    and not action_decision.compound
+                    and action_decision.confidence >= 0.80
+                ):
+                    app_intent = IntentResult(
+                        intent=IntentType.COMMAND,
+                        confidence=action_decision.confidence,
+                        normalized_text=" ".join(
+                            str(text).strip().lower().split()
+                        ),
+                        entities={
+                            "action": (
+                                "open"
+                                if action_decision.action is ActionType.OPEN_APP
+                                else "close"
+                            ),
+                            "target": target_app,
+                        },
+                        requires_tools=True,
+                        classifier="laya_system1",
+                    )
+                    print(
+                        f"[AI] System 1 recovered an application command: "
+                        f"{app_intent.entities['action']} {target_app}",
+                        flush=True,
+                    )
+                    self._handle_command_intent(app_intent)
+                    return True
+
                 return False
 
         try:
@@ -615,13 +839,44 @@ class AIModule(Module):
         self.event_bus.emit("decision_result", decision=snapshot)
         return False
 
+    _CANDIDATE_STOPWORDS = frozenset(
+        """
+        a an the to for me my please can could would will you it this that up
+        open launch start close run stop quit exit fire bring show switch go
+        and then now app application program hey okay ok just
+        """.split()
+    )
+
+    @classmethod
+    def _candidate_applications(cls, manager, text, *, limit=12):
+        """Installed apps that closely match individual words of ``text``."""
+        found = []
+        seen = set()
+        for word in re.findall(r"[a-z0-9][a-z0-9.+#-]*", str(text).lower()):
+            if len(word) < 3 or word in cls._CANDIDATE_STOPWORDS:
+                continue
+            try:
+                matches = manager.discover(word, limit=3)
+            except Exception:
+                continue
+            for app in matches:
+                name = str(getattr(app, "name", app) or "").strip()
+                if not name or name.lower() in seen:
+                    continue
+                seen.add(name.lower())
+                found.append(app)
+                if len(found) >= limit:
+                    return found
+        return found
+
     @staticmethod
     def _looks_like_action_request(text):
         normalized = " ".join(str(text).strip().lower().split())
         return bool(
             re.search(
                 r"\b(?:open|launch|start|close|run|stop|play|pause|resume|skip|next|previous|"
-                r"back|screenshot|capture|mute|unmute|scroll|press|type)\b",
+                r"back|screenshot|capture|mute|unmute|scroll|press|type|fire|bring|switch|quit|exit|"
+                r"kill|load)\b",
                 normalized,
             )
         )
@@ -694,6 +949,34 @@ class AIModule(Module):
 
         return False
 
+    _AFFIRMATIVE_WORDS = frozenset(
+        {"yes", "yeah", "yep", "yup", "confirm", "confirmed", "approve",
+         "approved", "proceed", "haan", "han", "ha", "हाँ", "हां", "हा"}
+    )
+    _NEGATIVE_WORDS = frozenset(
+        {"no", "not", "dont", "don't", "cancel", "stop", "reject", "never",
+         "wait", "nahi", "nahin", "mat", "नहीं", "नही", "मत"}
+    )
+
+    @classmethod
+    def _classify_short_approval(cls, compact):
+        """Return (approved, rejected) for short free-form answers.
+
+        Accepts e.g. "I just said yes", "yes please do it", "हाँ" while
+        requiring an explicit yes/confirm word and no negation, so filler
+        such as "okay" still cannot authorise anything.
+        """
+        words = re.findall(r"[\w'\u0900-\u097F]+", str(compact).lower())
+        if not words or len(words) > 10:
+            return False, False
+        has_yes = any(word in cls._AFFIRMATIVE_WORDS for word in words)
+        has_no = any(word in cls._NEGATIVE_WORDS for word in words)
+        if has_yes and not has_no:
+            return True, False
+        if has_no and not has_yes and len(words) <= 4:
+            return False, True
+        return False, False
+
     def _handle_approval_response(self, text):
         manager = self.kernel.approval_manager
 
@@ -726,6 +1009,8 @@ class AIModule(Module):
             approved = True
         if compact in {"no thanks", "cancel it", "don't do it", "do not do it"}:
             rejected = True
+        if not (approved or rejected):
+            approved, rejected = self._classify_short_approval(compact)
 
         if not (approved or rejected):
             # The user moved on to something else. Cancel the pending request
@@ -1017,12 +1302,9 @@ class AIModule(Module):
         if error == self._REJECTED_ERROR:
             return
 
-        message = (
-            "I couldn't complete that task."
-            if not goal
-            else f"I couldn't complete that task: {goal}."
-        )
-        print(f"[AI] Task failed: {message}", flush=True)
+        # The failed step explains why; don't read the whole request back.
+        message = "Sorry, I couldn't finish that."
+        print(f"[AI] Task failed: {goal or message}", flush=True)
         self._emit_assistant_text(message)
 
     def on_tool_confirmation_required(self, request, reason):
@@ -1050,11 +1332,25 @@ class AIModule(Module):
     def _emit_assistant_text(self, text):
         if not text:
             return
+        # A retried step can fail twice in a row; say the same thing once.
+        now = time.monotonic()
+        last = getattr(self, "_last_assistant_emit", None)
+        if last is not None and last[0] == text and now - last[1] < 5.0:
+            print(f"[AI] Suppressed repeated message: {text}", flush=True)
+            return
+        self._last_assistant_emit = (text, now)
         self.event_bus.emit("assistant_sentence", text=text)
         self.event_bus.emit("assistant_response", text=text)
 
     @staticmethod
     def _format_tool_success(result: ToolResult) -> str:
+        completion = (
+            result.metadata.get("completion_message")
+            if isinstance(result.metadata, dict)
+            else None
+        )
+        if completion:
+            return str(completion)
         output = result.output
         if isinstance(output, dict):
             target = output.get("target")
@@ -1063,7 +1359,13 @@ class AIModule(Module):
             if result.tool == "system.launch_application" and target:
                 return f"Launched {target}."
             if result.tool == "system.close_application" and target:
+                # Say what was actually closed ("Close sport" closed Spotify.exe).
+                process = re.sub(r"\.exe$", "", str(output.get("process") or ""), flags=re.IGNORECASE)
+                if process and process.lower().replace(" ", "") != str(target).lower().replace(" ", ""):
+                    return f"Closed {process}."
                 return f"Closed {target}."
+            if result.tool == "media.ui_play":
+                return str(output.get("message") or "Playing it now.")
             if result.tool == "media.control":
                 message = output.get("message")
                 if message:
@@ -1079,6 +1381,9 @@ class AIModule(Module):
                     print(f"[AI] Screenshot saved: {path}", flush=True)
                 return "Screenshot captured."
             if result.tool == "vision.inspect":
+                summary = str(output.get("summary") or "").strip()
+                if output.get("question") and summary:
+                    return summary
                 if bool(output.get("verified")):
                     return "I checked the screen. The requested visual condition is confirmed."
                 if bool(output.get("visual_match")):
@@ -1129,6 +1434,15 @@ class AIModule(Module):
             "system.launch_application",
         }:
             target = output.get("target") or output.get("resolved_target")
+            missing = re.search(
+                r"No installed application matched '([^']+)'",
+                str(result.error or ""),
+            )
+            if missing:
+                return (
+                    f"I couldn't find an app called {missing.group(1)}. "
+                    "Could you say the name again?"
+                )
             if target:
                 return f"I couldn't open {target}."
             return "I couldn't open the application."
@@ -1137,12 +1451,19 @@ class AIModule(Module):
             target = output.get("target")
             return f"I couldn't start {target}." if target else "I couldn't start the process."
 
+        if result.tool == "media.ui_play":
+            query = output.get("query") or "that"
+            app = output.get("application") or "the app"
+            if output.get("method"):
+                return f"I pressed play on {query} in {app}, but it didn't start playing."
+            return f"I couldn't find {query} in {app}'s results."
+
         if result.tool == "media.control":
             error = str(result.error or "").lower()
             if "one-time setup" in error or "not configured" in error or "asta_spotify_client_id" in error:
                 return (
-                    "Spotify needs its initial developer setup. "
-                    "I’m setting that up now and will continue the original task."
+                    "Spotify's developer API isn't set up yet. "
+                    "I'll open the setup in your browser if I can."
                 )
             if "spotify authorization" in error or "authorize a.s.t.a" in error:
                 return (

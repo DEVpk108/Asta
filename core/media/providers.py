@@ -17,6 +17,7 @@ from typing import Protocol
 
 import requests
 
+from .catalog import note_play_success
 from .request import MediaRequest
 
 
@@ -67,8 +68,44 @@ class WindowsMediaProvider:
     def supports(self, request: MediaRequest) -> bool:
         return (
             platform.system() == "Windows"
-            and request.operation in self._VIRTUAL_KEYS
+            and (request.operation in self._VIRTUAL_KEYS or request.operation == "now_playing")
             and not request.query
+        )
+
+    @staticmethod
+    def _session_control(request: MediaRequest):
+        """Real play/pause/skip through the Windows media session."""
+        if os.getenv("ASTA_MEDIA_SESSION", "1").strip().lower() in {"0", "false", "no", "off"}:
+            return None
+        from .smtc import media_session, spoken_message
+
+        app = "" if request.provider in {None, "", "system", "windows"} else str(request.provider)
+        # "apple music" -> "applemusic" matches AppleInc.AppleMusicWin_...
+        app = app.replace(" ", "").replace("_", "")
+        op = "" if request.operation == "now_playing" else request.operation
+        info = media_session(op, app)
+        if info.get("error") or not info.get("ok"):
+            print(f"[Media] Session control unavailable: {info.get('error') or 'failed'}", flush=True)
+            return None
+        print(
+            f"[Media] Session {request.operation}: app={info.get('app')!r} "
+            f"title={info.get('title')!r} status={info.get('status')!r}",
+            flush=True,
+        )
+        return MediaResult(
+            success=True,
+            provider="system",
+            operation=request.operation,
+            query=request.query,
+            message=spoken_message(request.operation, info),
+            output={
+                "provider": "system",
+                "operation": request.operation,
+                "session_app": info.get("app"),
+                "title": info.get("title"),
+                "artist": info.get("artist"),
+                "status": info.get("status"),
+            },
         )
 
     def execute(self, request: MediaRequest) -> MediaResult:
@@ -80,6 +117,19 @@ class WindowsMediaProvider:
                 query=request.query,
                 message="",
                 error="Windows media-key control does not support that request.",
+            )
+
+        session = self._session_control(request)
+        if session is not None:
+            return session
+        if request.operation == "now_playing":
+            return MediaResult(
+                success=False,
+                provider=self.name,
+                operation=request.operation,
+                query=request.query,
+                message="",
+                error="No media session information is available.",
             )
 
         vk = self._VIRTUAL_KEYS[request.operation]
@@ -121,6 +171,9 @@ class SpotifyProvider:
     aliases = ("spoti",)
     application_name = "Spotify"
     priority = 20
+    # Desktop deep link that opens the search results page directly.
+    search_uri_template = "spotify:search:{query}"
+    process_name = "Spotify"
 
     def __init__(self):
         self._system = WindowsMediaProvider()
@@ -160,6 +213,7 @@ class SpotifyProvider:
             "next",
             "previous",
             "stop",
+            "now_playing",
         } and not request.query
 
     @staticmethod
@@ -511,11 +565,11 @@ class SpotifyProvider:
         return track
 
     def _api_control(self, operation):
-        if not self.configured:
-            # Basic transport controls can still work against the active
-            # Windows media session without requiring Spotify credentials.
+        if not self.configured or operation == "now_playing":
+            # Transport controls work against Spotify's Windows media session
+            # without Spotify credentials.
             return self._system.execute(
-                MediaRequest(operation=operation)
+                MediaRequest(operation=operation, provider="spotify")
             )
 
         token = self._get_access_token()
@@ -757,6 +811,7 @@ class SpotifyProvider:
                     error=str(exc),
                 )
 
+            note_play_success(request.query, track["name"], track["artists"])
             return MediaResult(
                 success=True,
                 provider=self.name,
@@ -785,6 +840,7 @@ class SpotifyProvider:
             "next",
             "previous",
             "stop",
+            "now_playing",
         }:
             operation = "play" if request.operation == "toggle" else request.operation
             try:
@@ -795,11 +851,7 @@ class SpotifyProvider:
                         provider=self.name,
                         operation=request.operation,
                         query=request.query,
-                        message=(
-                            "Toggled Spotify playback."
-                            if request.operation == "toggle"
-                            else result.message
-                        ),
+                        message=result.message,
                         output=result.output,
                         error=result.error,
                     )
@@ -824,11 +876,59 @@ class SpotifyProvider:
         )
 
 
+class AppleMusicProvider:
+    """Apple Music for Windows (Microsoft Store app).
+
+    No public desktop API or search deep link, so playback goes through the
+    app's own UI: ASTA types the query into its search box via UI Automation
+    and presses the result (media.ui_play with search=True). Transport and
+    now-playing go through the Windows media session.
+    """
+
+    name = "apple music"
+    aliases = ("apple_music", "applemusic", "itunes")
+    application_name = os.getenv("ASTA_APPLE_MUSIC_APP", "Apple Music")
+    process_name = os.getenv("ASTA_APPLE_MUSIC_PROCESS", "AppleMusic")
+    session_app = "applemusic"
+    ui_search = True
+    priority = 15
+    # No API: the UI path is the only path.
+    configured = False
+
+    def __init__(self):
+        self._system = WindowsMediaProvider()
+
+    def supports(self, request: MediaRequest) -> bool:
+        # Only when asked for by name; generic "pause" stays with the others.
+        named = str(request.provider or "").strip().lower() in {self.name, *self.aliases}
+        return named and request.operation in {
+            "play", "pause", "toggle", "next", "previous", "stop", "now_playing",
+        }
+
+    def execute(self, request: MediaRequest) -> MediaResult:
+        if request.query:
+            return MediaResult(
+                success=False,
+                provider=self.name,
+                operation=request.operation,
+                query=request.query,
+                message="",
+                error="Apple Music search runs through the app UI (media.ui_play).",
+            )
+        from dataclasses import replace
+
+        result = self._system.execute(
+            MediaRequest(operation=request.operation, provider=self.session_app)
+        )
+        return replace(result, provider=self.name)
+
+
 class MediaManager:
     def __init__(self, providers=None):
         self._providers: list[MediaProvider] = list(
             providers or (
                 SpotifyProvider(),
+                AppleMusicProvider(),
                 WindowsMediaProvider(),
             )
         )
@@ -859,6 +959,37 @@ class MediaManager:
                             client_id=client_id,
                             redirect_uri=redirect_uri,
                         )
+
+    def search_uri(self, provider_name: str, query: str) -> str | None:
+        """App deep link for a search, when the provider has one."""
+        from urllib.parse import quote
+
+        provider = self._by_name.get(str(provider_name or "").strip().lower())
+        template = getattr(provider, "search_uri_template", None)
+        text = str(query or "").strip()
+        if not template or not text:
+            return None
+        return str(template).format(query=quote(text))
+
+    def ui_search(self, provider_name: str) -> bool:
+        """Whether playback means typing into the app's own search box."""
+        provider = self._by_name.get(str(provider_name or "").strip().lower())
+        return bool(getattr(provider, "ui_search", False))
+
+    def session_app(self, provider_name: str) -> str:
+        provider = self._by_name.get(str(provider_name or "").strip().lower())
+        return str(getattr(provider, "session_app", "") or "")
+
+    def process_name(self, provider_name: str) -> str | None:
+        provider = self._by_name.get(str(provider_name or "").strip().lower())
+        return getattr(provider, "process_name", None)
+
+    def is_configured(self, provider_name: str) -> bool:
+        """Whether a provider's API path is usable without setup."""
+        provider = self._by_name.get(str(provider_name or "").strip().lower())
+        if provider is None:
+            return False
+        return bool(getattr(provider, "configured", True))
 
     def provider_for_application(self, application_name: str):
         normalized = _normalize_media_text(application_name)

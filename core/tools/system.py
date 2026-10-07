@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -48,14 +49,34 @@ class OpenApplicationTool(Tool):
             )
 
         target = target.strip()
+        resolve_reference = getattr(self.application_manager, "resolve_reference", None)
+        if callable(resolve_reference):
+            try:
+                # "open it" -> the app just opened or just mentioned.
+                target = str(resolve_reference(target) or target).strip()
+            except ApplicationResolutionError:
+                pass
         resolved_target = None
         try:
-            resolved_target = self.resolve_target(target)
-            self._open(resolved_target)
+            profile_launch = self._browser_profile_command(target)
+            if profile_launch:
+                # Chromium browsers opened without a profile show "Who's
+                # using Chrome?"; open the last used profile directly.
+                resolved_target = profile_launch[0]
+                subprocess.Popen(
+                    profile_launch,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                resolved_target = self.resolve_target(target)
+                self._open(resolved_target)
         except ApplicationResolutionError as exc:
             return ToolResult(
                 success=False,
                 tool=self.definition.name,
+                output=self._failure_output(target, None),
                 error=str(exc),
                 duration_seconds=time.perf_counter() - start,
                 metadata={"request_id": request.request_id},
@@ -92,6 +113,21 @@ class OpenApplicationTool(Tool):
         )
 
     @staticmethod
+    def _browser_profile_command(target: str):
+        if os.getenv("ASTA_BROWSER_PROFILE_LAUNCH", "1").strip().lower() in {"0", "false", "no", "off"}:
+            return None
+        from core.tools.browser import _find_executable, browser_key, chromium_profile
+
+        key = browser_key(target)
+        if key is None or key == "firefox":
+            return None
+        executable = _find_executable(key)
+        profile = chromium_profile(key) if executable else None
+        if not executable or not profile:
+            return None
+        return [executable, f"--profile-directory={profile}"]
+
+    @staticmethod
     def _failure_output(target, resolved_target):
         output = {"target": target}
         if resolved_target is not None:
@@ -122,7 +158,16 @@ class OpenApplicationTool(Tool):
     @staticmethod
     def _looks_like_uri(target: str) -> bool:
         parsed = urlparse(target)
-        return bool(parsed.scheme and (parsed.netloc or target.endswith(":")))
+        if not parsed.scheme:
+            return False
+        if parsed.netloc or target.endswith(":"):
+            return True
+        # App deep links such as "spotify:search:song" (but not "C:\\path").
+        return (
+            len(parsed.scheme) > 1
+            and " " not in target
+            and bool(re.fullmatch(r"[a-z][a-z0-9+.-]*", parsed.scheme))
+        )
 
     @staticmethod
     def _open(target: str) -> None:

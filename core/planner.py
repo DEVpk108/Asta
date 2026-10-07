@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
+from core.media.catalog import resolve_play_query
 from core.contracts import (
     IntentResult,
     IntentType,
@@ -14,6 +16,28 @@ from core.tools.selector import ToolSelector
 
 class PlanningError(ValueError):
     """Raised when a goal cannot be converted into a safe structured plan."""
+
+
+# Actions the deterministic planner/executor fully handles. A high-confidence
+# rules intent made only of these never needs the LLM planner.
+DIRECT_ACTIONS = frozenset(
+    {
+        "open", "launch", "start", "close", "stop",
+        "media", "mute", "unmute", "screenshot", "open_screenshot",
+        "list_notes", "search_notes", "read_note", "create_note",
+        "search", "scroll", "keypress", "type_text",
+    }
+)
+DETERMINISTIC_CLASSIFIERS = frozenset(
+    {"rules", "task_context", "laya_system1", "runtime_patch"}
+)
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 class Planner:
@@ -33,11 +57,69 @@ class Planner:
         media_manager=None,
         application_manager=None,
         agent_brain=None,
+        decision_engine=None,
     ):
         self.selector = ToolSelector(registry)
         self.media_manager = media_manager
         self.application_manager = application_manager
         self.agent_brain = agent_brain
+        self.decision_engine = decision_engine
+
+    def cognitive_planning_reason(
+        self,
+        goal: str,
+        intent: IntentResult,
+        commands: list[dict[str, Any]],
+    ) -> str | None:
+        """Return why the LLM planner is needed, or None to plan directly.
+
+        System 1 (rules, then Laya when enabled) handles commands whose
+        actions and targets are already known; the LLM planner (System 2) is
+        reserved for ambiguous or genuinely multi-step goals. Set
+        ASTA_AGENT_PLANNING=always to send every command to the LLM planner.
+        """
+        mode = os.getenv("ASTA_AGENT_PLANNING", "auto").strip().lower()
+        if mode in {"always", "llm", "on", "1", "true"}:
+            return "forced by ASTA_AGENT_PLANNING"
+        if mode in {"never", "off", "0", "false", "direct"}:
+            return None
+
+        actions = [
+            str(command.get("action") or "").strip().lower()
+            for command in commands
+        ]
+        threshold = _env_float("ASTA_AGENT_DIRECT_CONFIDENCE", 0.9)
+        if (
+            intent.classifier in DETERMINISTIC_CLASSIFIERS
+            and intent.confidence >= threshold
+            and actions
+            and all(action in DIRECT_ACTIONS for action in actions)
+        ):
+            return None
+
+        engine = self.decision_engine
+        decide = getattr(engine, "decide_action", None)
+        if (
+            engine is not None
+            and getattr(engine, "name", "disabled") != "disabled"
+            and callable(decide)
+        ):
+            try:
+                decision = decide(goal)
+            except Exception as exc:
+                return f"System 1 unavailable ({type(exc).__name__})"
+            action = getattr(getattr(decision, "action", None), "value", "none")
+            if (
+                action not in {"none", "task"}
+                and not getattr(decision, "compound", True)
+                and getattr(decision, "command_complete", False)
+                and float(getattr(decision, "confidence", 0.0))
+                >= _env_float("ASTA_LAYA_DIRECT_CONFIDENCE", 0.85)
+            ):
+                return None
+            return f"System 1 judged it complex (action={action})"
+
+        return "command needs open-ended planning"
 
     def plan(
         self,
@@ -66,7 +148,19 @@ class Planner:
         planner_name = "deterministic"
         agent_metadata: dict[str, Any] = {}
         brain = self.agent_brain
-        if brain is not None and getattr(brain, "enabled", False):
+        use_brain = brain is not None and getattr(brain, "enabled", False)
+        if use_brain:
+            reason = self.cognitive_planning_reason(value, intent, commands)
+            if reason is None:
+                use_brain = False
+                print(
+                    "[Agent] System 1 plan: deterministic command; "
+                    "skipping the LLM planner.",
+                    flush=True,
+                )
+            else:
+                print(f"[Agent] Cognitive planning: {reason}.", flush=True)
+        if use_brain:
             try:
                 proposal = brain.plan(value, intent=intent)
                 commands = [dict(step) for step in proposal.steps]
@@ -96,11 +190,17 @@ class Planner:
                     f"{type(exc).__name__}: {exc}",
                     flush=True,
                 )
-        elif brain is not None:
+        elif brain is not None and not getattr(brain, "enabled", False):
             print("[Agent] Cognitive planning disabled (ASTA_AGENT_MODE=0).", flush=True)
 
-        commands = self._expand_media_commands(commands)
-        commands = self._expand_search_commands(commands)
+        commands = self._expand_media_commands(
+            commands,
+            user_directed=planner_name == "deterministic",
+        )
+        commands = self._expand_search_commands(
+            commands,
+            user_directed=planner_name == "deterministic",
+        )
         commands = self._normalize_grounded_computer_commands(commands)
 
         if planner_name == "cognitive_v1":
@@ -203,12 +303,34 @@ class Planner:
         )
         return plan
 
+    _BROWSERS = (
+        "chrome", "google chrome", "chromium", "edge", "microsoft edge",
+        "msedge", "firefox", "mozilla firefox", "brave", "opera", "vivaldi",
+    )
+
+    def _has_tool(self, name: str) -> bool:
+        registry = getattr(getattr(self, "selector", None), "registry", None)
+        try:
+            return bool(registry is not None and registry.contains(name))
+        except Exception:
+            return False
+
+    @classmethod
+    def _is_browser(cls, application: str) -> bool:
+        name = " ".join(str(application or "").lower().replace(".exe", "").split())
+        return bool(name) and name in cls._BROWSERS
+
     def _expand_search_commands(
         self,
         commands: list[dict[str, Any]],
+        *,
+        user_directed: bool = False,
     ) -> list[dict[str, Any]]:
         """Expand a generic semantic search into provider-agnostic GUI steps."""
         expanded: list[dict[str, Any]] = []
+        verify_search = os.getenv("ASTA_VERIFY_SEARCH", "0").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
 
         for index, command in enumerate(commands):
             normalized = dict(command)
@@ -248,6 +370,11 @@ class Planner:
                 recent_name = getattr(recent, "name", recent)
                 application = str(recent_name or "").strip()
 
+            if not application and self._has_tool("browser.search"):
+                # "Search for X" with no app: a web search, not a screenshot
+                # hunt for a search box in whatever window is in front.
+                application = os.getenv("ASTA_DEFAULT_BROWSER", "chrome").strip() or "chrome"
+
             application_text = application or "the current application"
             search_target = (
                 f"the primary search input field in {application_text}; "
@@ -265,6 +392,30 @@ class Planner:
                 "that evidence is visible."
             )
 
+            if (
+                self._is_browser(application)
+                and self._has_tool("browser.search")
+                and os.getenv("ASTA_BROWSER_DIRECT_SEARCH", "1").strip().lower()
+                not in {"0", "false", "no", "off"}
+            ):
+                # Launch the browser straight onto the results page: no
+                # focus, no profile picker, no typing, no vision model.
+                if (
+                    previous_action in {"open", "launch", "start"}
+                    and previous_target.lower() == application.lower()
+                ):
+                    expanded.pop()
+                expanded.append(
+                    {
+                        "action": "web_search",
+                        "tool": "browser.search",
+                        "query": query,
+                        "browser": application,
+                        "completion_message": f"Searched for {query}.",
+                    }
+                )
+                continue
+
             if not (
                 previous_action in {"open", "launch", "start"}
                 and previous_target
@@ -279,8 +430,26 @@ class Planner:
                         }
                     )
 
-            expanded.extend(
-                (
+            if self._is_browser(application) and self._has_tool("computer.hotkey") and os.getenv(
+                "ASTA_BROWSER_ADDRESS_BAR", "1"
+            ).strip().lower() not in {"0", "false", "no", "off"}:
+                # Every desktop browser focuses its address/search bar with
+                # Ctrl+L: instant, exact, and no vision model on the GPU.
+                focus_steps = (
+                    {
+                        "action": "wait",
+                        "tool": "computer.wait",
+                        "seconds": 0.6,
+                    },
+                    {
+                        "action": "hotkey",
+                        "tool": "computer.hotkey",
+                        "keys": ["ctrl", "l"],
+                        **({"user_directed": True} if user_directed else {}),
+                    },
+                )
+            else:
+                focus_steps = (
                     {
                         "action": "locate",
                         "tool": "vision.locate",
@@ -291,28 +460,54 @@ class Planner:
                         "tool": "computer.click",
                         "target": search_target,
                     },
+                )
+            expanded.extend(focus_steps)
+            expanded.extend(
+                (
                     {
                         "action": "type_text",
                         "tool": "computer.type_text",
                         "text": query,
+                        # The user spoke this exact query; typing it and
+                        # pressing Enter is what they asked for, so it does not
+                        # need a second spoken confirmation (deterministic
+                        # plans only, never LLM-generated text).
+                        **({"user_directed": True} if user_directed else {}),
                     },
                     {
                         "action": "keypress",
                         "tool": "computer.keypress",
                         "key": "enter",
-                    },
-                    {
-                        "action": "wait",
-                        "tool": "computer.wait",
-                        "seconds": 1.0,
-                    },
-                    {
-                        "action": "inspect",
-                        "tool": "vision.inspect",
-                        "prompt": verification_prompt,
+                        **(
+                            {
+                                "user_directed": True,
+                                "completion_message": f"Searched for {query}.",
+                            }
+                            if user_directed and not verify_search
+                            else {"user_directed": True} if user_directed else {}
+                        ),
                     },
                 )
             )
+            if verify_search or not user_directed:
+                # Visual confirmation loads the vision model (~2 s plus VRAM
+                # pressure on the LLM) and often misses results that are
+                # still loading, so spoken searches skip it by default
+                # (ASTA_VERIFY_SEARCH=1 restores it).
+                expanded.extend(
+                    (
+                        {
+                            "action": "wait",
+                            "tool": "computer.wait",
+                            "seconds": 1.0,
+                        },
+                        {
+                            "action": "inspect",
+                            "tool": "vision.inspect",
+                            "prompt": verification_prompt,
+                        },
+                    )
+                )
 
         return expanded
 
@@ -626,6 +821,8 @@ class Planner:
     def _expand_media_commands(
         self,
         commands: list[dict[str, Any]],
+        *,
+        user_directed: bool = False,
     ) -> list[dict[str, Any]]:
         """Expand media intent according to whether the user chose a GUI flow."""
         expanded: list[dict[str, Any]] = []
@@ -640,6 +837,14 @@ class Planner:
             operation = str(normalized.get("operation") or "").strip().lower()
             query = str(normalized.get("query") or "").strip()
             provider = str(normalized.get("provider") or "").strip()
+
+            if operation == "play" and query and not provider.lower().startswith(("youtube", "system")):
+                # Speech mangles Hindi titles: play the catalog title that
+                # sounds like what was heard, when one clearly does.
+                resolved = resolve_play_query(query)
+                if resolved != query:
+                    normalized["heard_query"] = query
+                    normalized["query"] = query = resolved
 
             # An explicit preceding "open <app>" means the user asked A.S.T.A.
             # to operate the application through its visible UI. Keep that path
@@ -662,6 +867,7 @@ class Planner:
                     self._interactive_media_play_steps(
                         query=query,
                         application=previous_target,
+                        user_directed=user_directed,
                     )
                 )
                 continue
@@ -683,6 +889,31 @@ class Planner:
                         infer_provider(str(recent_name)) or ""
                     ).strip()
 
+            resolve_named = getattr(self.media_manager, "application_for_provider", None)
+            if (
+                provider
+                and operation == "play"
+                and query
+                and callable(resolve_named)
+                and not provider.lower().startswith(("youtube", "system"))
+                and not resolve_named(provider)
+            ):
+                # "on Apple Music": an app ASTA can't drive. Say so and use the
+                # default music app instead of failing silently.
+                normalized["requested_provider"] = provider
+                provider = ""
+                normalized.pop("provider", None)
+
+            if not provider and operation == "play" and query and self.media_manager is not None:
+                # "play some Udit Narayan songs" with no app named: use the
+                # default music app rather than a bare media key that has
+                # nothing to search with.
+                default = os.getenv("ASTA_DEFAULT_MUSIC_PROVIDER", "spotify").strip().lower()
+                resolve_default = getattr(self.media_manager, "application_for_provider", None)
+                if default and callable(resolve_default) and resolve_default(default):
+                    provider = default
+                    normalized["provider"] = default
+
             application = None
             if provider and self.media_manager is not None:
                 resolve_app = getattr(
@@ -692,6 +923,111 @@ class Planner:
                 )
                 if callable(resolve_app):
                     application = resolve_app(provider)
+
+            on_screen_process = self._provider_process(provider) if provider else ""
+            if (
+                operation == "play"
+                and normalized.get("on_screen")
+                and query
+                and application
+                and on_screen_process
+                and self._has_tool("media.ui_play")
+            ):
+                # "<title> is on the screen, play it": the user already has the
+                # result showing. Bring the app forward and press that row;
+                # no opening, no deep link, no typing.
+                expanded.append(
+                    {
+                        "action": "ui_play",
+                        "tool": "media.ui_play",
+                        "query": query,
+                        "application": str(application),
+                        "process": on_screen_process,
+                        "on_screen": True,
+                        "session_app": self._provider_session_app(provider),
+                        "fallback_target": f"the song {query} on the screen in {application}",
+                    }
+                )
+                continue
+
+            if (
+                operation == "play"
+                and query
+                and application
+                and provider
+                and not self._provider_api_ready(provider)
+            ):
+                # No API credentials (e.g. Spotify developer app): drive the
+                # app's own UI with vision like any other player instead of
+                # stopping for a developer-dashboard setup.
+                search_uri = self._provider_search_uri(provider, query)
+                process = self._provider_process(provider)
+                if search_uri and process and self._has_tool("media.ui_play"):
+                    # Deep link to the results page, then press the result's
+                    # own accessible "Play" button and confirm from the
+                    # window title. Vision is only the fallback.
+                    expanded.extend(
+                        (
+                            {"action": "open", "target": search_uri},
+                            {"action": "wait", "tool": "computer.wait", "seconds": 2.0},
+                            {
+                                "action": "ui_play",
+                                "tool": "media.ui_play",
+                                "query": query,
+                                "application": str(application),
+                                "process": process,
+                                "fallback_target": (
+                                    f"the Play button of the artist {query} in the top result in {application}"
+                                    if normalized.get("artist")
+                                    else f"the first song in the search results in {application}"
+                                ),
+                            },
+                        )
+                    )
+                elif process and self._has_tool("media.ui_play") and self._provider_ui_search(provider):
+                    # No deep link (Apple Music for Windows): open the app,
+                    # type into its own search box through UI Automation,
+                    # press the matching result, confirm via the media session.
+                    expanded.extend(
+                        (
+                            {"action": "open", "target": str(application)},
+                            {"action": "wait", "tool": "computer.wait", "seconds": 3.0},
+                            {
+                                "action": "ui_play",
+                                "tool": "media.ui_play",
+                                "query": query,
+                                "application": str(application),
+                                "process": process,
+                                "search": True,
+                                "session_app": self._provider_session_app(provider),
+                                "fallback_target": (
+                                    f"the first song in the search results in {application}"
+                                ),
+                            },
+                        )
+                    )
+                elif search_uri:
+                    # The app's own deep link lands straight on the results
+                    # page: no search box to find, nothing to type.
+                    expanded.append({"action": "open", "target": search_uri})
+                    expanded.extend(
+                        self._interactive_media_play_steps(
+                            query=query,
+                            application=str(application),
+                            user_directed=user_directed,
+                            search=False,
+                        )
+                    )
+                else:
+                    expanded.append({"action": "open", "target": str(application)})
+                    expanded.extend(
+                        self._interactive_media_play_steps(
+                            query=query,
+                            application=str(application),
+                            user_directed=user_directed,
+                        )
+                    )
+                continue
 
             if operation == "play" and query and application:
                 expanded.append(
@@ -708,11 +1044,58 @@ class Planner:
 
         return expanded
 
+    def _provider_api_ready(self, provider: str) -> bool:
+        if os.getenv("ASTA_MEDIA_API_SETUP", "0").strip().lower() in {
+            "1", "true", "yes", "on"
+        }:
+            return True  # opt in to the developer-API setup flow
+        checker = getattr(self.media_manager, "is_configured", None)
+        if not callable(checker):
+            return True
+        try:
+            return bool(checker(provider))
+        except Exception:
+            return True
+
+    def _provider_ui_search(self, provider: str) -> bool:
+        checker = getattr(self.media_manager, "ui_search", None)
+        try:
+            return bool(checker(provider)) if callable(checker) else False
+        except Exception:
+            return False
+
+    def _provider_session_app(self, provider: str) -> str:
+        resolver = getattr(self.media_manager, "session_app", None)
+        try:
+            return str(resolver(provider) or "") if callable(resolver) else ""
+        except Exception:
+            return ""
+
+    def _provider_process(self, provider: str) -> str:
+        resolver = getattr(self.media_manager, "process_name", None)
+        if not callable(resolver):
+            return ""
+        try:
+            return str(resolver(provider) or "").strip()
+        except Exception:
+            return ""
+
+    def _provider_search_uri(self, provider: str, query: str) -> str:
+        resolver = getattr(self.media_manager, "search_uri", None)
+        if not callable(resolver):
+            return ""
+        try:
+            return str(resolver(provider, query) or "").strip()
+        except Exception:
+            return ""
+
     def _interactive_media_play_steps(
         self,
         *,
         query: str,
         application: str = "",
+        user_directed: bool = False,
+        search: bool = True,
     ) -> list[dict[str, Any]]:
         """Build a provider-agnostic GUI search/play sequence."""
         application_text = application.strip() or "the target application"
@@ -720,9 +1103,9 @@ class Planner:
             f"the search input field used to enter a query in {application_text}"
         )
         result_target = (
-            f"the search result row containing the song title '{query}' "
-            f"in {application_text}; exclude the search input, navigation bar, "
-            "player controls, and unrelated icons"
+            f"the first song row in the search results whose title contains "
+            f"'{query}' in {application_text}; exclude the search input, "
+            "navigation bar, player controls, and unrelated icons"
         )
         verification_prompt = (
             f"Verify that '{query}' is actually playing in {application_text}. "
@@ -735,7 +1118,8 @@ class Planner:
             "when that evidence is visible. In your concise summary, include the exact "
             f"requested title '{query}' only when you can actually see it."
         )
-        return [
+        consent = {"user_directed": True} if user_directed else {}
+        search_steps = [
             {
                 "action": "locate",
                 "tool": "vision.locate",
@@ -750,16 +1134,23 @@ class Planner:
                 "action": "type_text",
                 "tool": "computer.type_text",
                 "text": query,
+                # The user spoke this query; typing it (and Enter) is what
+                # they asked for, so it needs no second confirmation.
+                **consent,
             },
             {
                 "action": "keypress",
                 "tool": "computer.keypress",
                 "key": "enter",
+                **consent,
             },
+        ]
+        return [
+            *(search_steps if search else []),
             {
                 "action": "wait",
                 "tool": "computer.wait",
-                "seconds": 1.0,
+                "seconds": 1.0 if search else 2.5,
             },
             {
                 "action": "locate",
@@ -767,9 +1158,17 @@ class Planner:
                 "target": result_target,
             },
             {
+                # Music apps select a row on a single click; a double click
+                # starts playback.
                 "action": "click",
                 "tool": "computer.click",
                 "target": result_target,
+                "clicks": 2,
+            },
+            {
+                "action": "wait",
+                "tool": "computer.wait",
+                "seconds": 1.5,
             },
             {
                 "action": "inspect",

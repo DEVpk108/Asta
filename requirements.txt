@@ -34,8 +34,12 @@ silero-vad
 torch
 
 # Speech to text
-# voice/recognition_engine.py
+# voice/recognition_engine.py. faster-whisper is the fallback backend;
+# sherpa-onnx runs the streaming Nemotron 3.5 model (English + Hindi) once
+# `python scripts/download_speech_models.py` has fetched it. Smart Turn
+# end-of-turn detection reuses onnxruntime from above.
 faster-whisper
+sherpa-onnx>=1.13
 
 # Local LLM HTTP client
 # ai/llama_cpp_engine.py

@@ -158,7 +158,9 @@ class FakeMediaTool(Tool):
         raise AssertionError("planner tests must not execute tools")
 
 
-def test_planner_expands_provider_media_play_into_open_and_play():
+def test_planner_expands_provider_media_play_into_open_and_play(monkeypatch):
+    # API path: the provider is configured.
+    monkeypatch.setenv("ASTA_SPOTIFY_CLIENT_ID", "test-client")
     kernel = Kernel()
     kernel.register_tool(FakeTool())
     kernel.register_tool(FakeMediaTool())
@@ -309,8 +311,10 @@ def test_planner_uses_generic_computer_control_for_explicit_app_media_flow():
         "computer.wait",
         "vision.locate",
         "computer.click",
+        "computer.wait",
         "vision.inspect",
     ]
+    assert plan.steps[7].metadata["clicks"] == 2
     assert plan.steps[1].metadata["target"] == (
         "the search input field used to enter a query in spotify"
     )
@@ -319,16 +323,17 @@ def test_planner_uses_generic_computer_control_for_explicit_app_media_flow():
     assert plan.steps[4].metadata["key"] == "enter"
     assert plan.steps[5].metadata["seconds"] == 1.0
     assert plan.steps[6].metadata["target"] == (
-        "the search result row containing the song title 'hanuman chalisa' in spotify; exclude the search input, navigation bar, player controls, and unrelated icons"
+        "the first song row in the search results whose title contains 'hanuman chalisa' in spotify; exclude the search input, navigation bar, player controls, and unrelated icons"
     )
-    verification_prompt = plan.steps[8].metadata["prompt"]
+    verification_prompt = plan.steps[9].metadata["prompt"]
     assert "Requested item: hanuman chalisa" not in verification_prompt
     assert "spotify" in verification_prompt
     assert "target application's own UI" in verification_prompt
     assert "A.S.T.A.'s HUD" in verification_prompt
     assert "merely repeats" in verification_prompt
 
-def test_planner_expands_generic_search_into_gui_workflow():
+def test_planner_expands_generic_search_into_gui_workflow(monkeypatch):
+    monkeypatch.setenv("ASTA_VERIFY_SEARCH", "1")
     kernel = Kernel()
     kernel.register_tool(FakeTool())
     kernel.register_tool(
@@ -418,7 +423,8 @@ def test_planner_expands_generic_search_into_gui_workflow():
     assert "A.S.T.A.'s HUD" in plan.steps[6].metadata["prompt"]
 
 
-def test_planner_does_not_reopen_same_application_for_compound_search():
+def test_planner_does_not_reopen_same_application_for_compound_search(monkeypatch):
+    monkeypatch.setenv("ASTA_VERIFY_SEARCH", "1")
     kernel = Kernel()
     kernel.register_tool(FakeTool())
     kernel.register_tool(
@@ -559,7 +565,9 @@ class FakeInspectTool(Tool):
         raise AssertionError("planner tests must not execute tools")
 
 
-def test_planner_adds_semantic_visual_verification_to_cognitive_plan():
+def test_planner_adds_semantic_visual_verification_to_cognitive_plan(monkeypatch):
+    # These cover the LLM planner itself; force it for a rules command.
+    monkeypatch.setenv("ASTA_AGENT_PLANNING", "always")
     kernel = Kernel()
     kernel.register_tool(FakeTool())
     kernel.register_tool(FakeInspectTool())
@@ -604,7 +612,9 @@ def test_planner_adds_semantic_visual_verification_to_cognitive_plan():
 
 
 
-def test_planner_uses_process_verification_for_simple_cognitive_app_open():
+def test_planner_uses_process_verification_for_simple_cognitive_app_open(monkeypatch):
+    # These cover the LLM planner itself; force it for a rules command.
+    monkeypatch.setenv("ASTA_AGENT_PLANNING", "always")
     kernel = Kernel()
     kernel.register_tool(FakeTool())
     kernel.register_tool(FakeInspectTool())
@@ -646,3 +656,68 @@ def test_planner_uses_process_verification_for_simple_cognitive_app_open():
 
     assert [step.metadata["tool"] for step in plan.steps] == ["test.open"]
     assert plan.steps[0].metadata["verification"] == "application.running"
+
+
+def test_planner_user_directed_search_skips_visual_verification_by_default(monkeypatch):
+    monkeypatch.delenv("ASTA_VERIFY_SEARCH", raising=False)
+    kernel = Kernel()
+    kernel.register_tool(FakeTool())
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "vision.locate",
+            "locate",
+            {"target": {"type": "string"}},
+            required=("target",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.click",
+            "click",
+            {"target": {"type": "string"}},
+            required=("target",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.type_text",
+            "type_text",
+            {"text": {"type": "string"}},
+            required=("text",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.keypress",
+            "keypress",
+            {"key": {"type": "string"}},
+            required=("key",),
+        )
+    )
+    kernel.register_tool(
+        FakeCapabilityTool(
+            "computer.wait",
+            "wait",
+            {"seconds": {"type": "number"}},
+            required=(),
+        )
+    )
+    kernel.register_tool(FakeInspectTool())
+
+    planner = Planner(
+        kernel.tool_registry,
+        application_manager=kernel.application_manager,
+    )
+    intent = IntentResult(
+        intent=IntentType.COMMAND,
+        confidence=0.98,
+        normalized_text="search for christopher nolan on chrome",
+        entities={"action": "search", "query": "christopher nolan", "target": "chrome"},
+        requires_tools=True,
+        classifier="rules",
+    )
+    plan = planner.plan("search for christopher nolan on chrome", intent=intent)
+    tools = [step.metadata["tool"] for step in plan.steps]
+    assert tools[-1] == "computer.keypress"
+    assert "vision.inspect" not in tools
+    assert plan.steps[-1].metadata.get("completion_message") == "Searched for christopher nolan."

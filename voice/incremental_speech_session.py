@@ -157,10 +157,31 @@ class IncrementalSpeechSession:
         if callable(reset_states):
             reset_states()
 
+        # Streaming backends (Nemotron) decode audio as it is captured, so
+        # partials are free and the final transcript is ready at end of speech.
+        stream = None
+        if getattr(self.recognition, "supports_streaming", False):
+            try:
+                stream = self.recognition.create_stream()
+            except Exception as exc:
+                print(
+                    f"[IncrementalSTT] Streaming unavailable: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+                stream = None
+        new_tracker = getattr(self.vad_engine, "new_turn_tracker", None)
+        tracker = new_tracker() if callable(new_tracker) else None
+
+        def capture(samples):
+            audio_parts.append(samples)
+            if stream is not None:
+                stream.accept(samples)
+
+        finished = False
         try:
             if initial_seed is not None and self._seed_contains_speech(initial_seed):
                 recording = True
-                audio_parts.append(initial_seed)
+                capture(initial_seed)
                 next_partial_audio_seconds = (
                     self.min_partial_seconds + self.partial_interval_seconds
                 )
@@ -196,18 +217,18 @@ class IncrementalSpeechSession:
                     torch.from_numpy(vad_chunk).float()
                 )
 
+                started_now = False
                 if not recording and self.vad_engine.is_speech_started(event):
                     recording = True
+                    started_now = True
                     if pre_roll:
-                        audio_parts.append(
-                            np.asarray(pre_roll, dtype=np.float32)
-                        )
+                        capture(np.asarray(pre_roll, dtype=np.float32))
                     # Schedule the first partial from captured audio
                     # duration. The current chunk is added immediately below.
                     next_partial_audio_seconds = self.min_partial_seconds
 
                 if recording:
-                    audio_parts.append(chunk)
+                    capture(chunk)
                 else:
                     pre_roll.extend(chunk)
 
@@ -245,7 +266,10 @@ class IncrementalSpeechSession:
                     ).astype(np.float32, copy=False)
 
                     try:
-                        partial_text = self._transcribe_partial(partial_audio)
+                        if stream is not None:
+                            partial_text = stream.partial_text
+                        else:
+                            partial_text = self._transcribe_partial(partial_audio)
                     except Exception as exc:
                         print(
                             "[IncrementalSTT] Partial decode failed: "
@@ -276,8 +300,18 @@ class IncrementalSpeechSession:
                         captured_seconds + self.partial_interval_seconds
                     )
 
+                if tracker is not None:
+                    turn_over = tracker.update(
+                        started=started_now
+                        or self.vad_engine.is_speech_started(event),
+                        ended=self.vad_engine.is_speech_ended(event),
+                        chunk_samples=len(chunk),
+                        get_audio=lambda: np.concatenate(audio_parts),
+                    )
+                else:
+                    turn_over = self.vad_engine.is_speech_ended(event)
                 if (
-                    self.vad_engine.is_speech_ended(event)
+                    turn_over
                     and captured_seconds >= max(
                         float(self.vad_engine.min_speech_duration),
                         0.30,
@@ -301,7 +335,11 @@ class IncrementalSpeechSession:
                 return None
 
             try:
-                final_text = self.recognition.transcribe(audio)
+                if stream is not None:
+                    finished = True
+                    final_text = self.recognition.finish_stream(stream)
+                else:
+                    final_text = self.recognition.transcribe(audio)
             except Exception as exc:
                 print(
                     "[IncrementalSTT] Final decode failed: "
@@ -319,6 +357,8 @@ class IncrementalSpeechSession:
                 duration_seconds=duration_seconds,
             )
         finally:
+            if stream is not None and not finished:
+                stream.cancel()
             reset_states = getattr(self.vad_engine.vad, "reset_states", None)
             if callable(reset_states):
                 reset_states()
