@@ -10,11 +10,14 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
 import socket
 import threading
 import time
 from dataclasses import asdict
+from pathlib import PureWindowsPath
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -25,6 +28,21 @@ TOKEN_ENV = "ASTA_HUD_TOKEN"
 _AUTH_TIMEOUT_SECONDS = 5.0
 # Reject clients that stream data without line breaks (memory exhaustion).
 _MAX_BUFFER_BYTES = 256 * 1024
+_SECRET_FILE_PART = re.compile(
+    r"(?:^|[._-])(?:secrets?|credentials?|tokens?)(?:[._-]|$)",
+    re.IGNORECASE,
+)
+_PRIVATE_PATH_PARTS = {
+    ".git",
+    ".ssh",
+    ".aws",
+    ".azure",
+    ".venv",
+    "venv",
+    "node_modules",
+    "credentials",
+    "secrets",
+}
 
 
 class HUDTransport:
@@ -50,6 +68,7 @@ class HUDTransport:
         self._clients_lock = threading.Lock()
         self._stop = threading.Event()
         self._last_state_message: dict[str, Any] | None = None
+        self._last_workspace_message: dict[str, Any] | None = None
         self._last_audio_message: dict[str, Any] | None = None
         self._last_lifecycle_message: dict[str, Any] | None = None
         self._last_chat_history_message: dict[str, Any] | None = None
@@ -76,6 +95,20 @@ class HUDTransport:
     def publish_state(self, state) -> None:
         message = {"type": "hud.state", "version": 1, "state": asdict(state)}
         self._last_state_message = message
+        self._broadcast(message)
+
+    def publish_workspace_context(self, workspace: dict[str, Any] | None) -> None:
+        """Publish only display-safe project identity, never the full workspace."""
+        value = workspace if isinstance(workspace, dict) else {}
+        recent_files = self._safe_recent_files(value.get("recent_files"))
+        display = {
+            "project_name": self._safe_text(value.get("project_name"), 96),
+            "repository": self._repository_label(value.get("repository")),
+            "branch": self._safe_text(value.get("branch"), 72),
+            "recent_files": recent_files,
+        }
+        message = {"type": "hud.workspace", "version": 1, "workspace": display}
+        self._last_workspace_message = message
         self._broadcast(message)
 
     def publish_audio_level(self, level: float) -> None:
@@ -202,6 +235,7 @@ class HUDTransport:
             self._clients.add(client)
         for cached in (
             self._last_state_message,
+            self._last_workspace_message,
             self._last_audio_message,
             self._last_lifecycle_message,
             self._last_chat_history_message,
@@ -209,6 +243,93 @@ class HUDTransport:
         ):
             if cached is not None:
                 self._send_to_client(client, cached)
+
+    @staticmethod
+    def _safe_text(value: object, limit: int) -> str:
+        if not isinstance(value, str):
+            return ""
+        text = "".join(
+            character for character in value
+            if character.isprintable()
+        )
+        return text.strip()[:limit]
+
+    @classmethod
+    def _repository_label(cls, value: object) -> str:
+        """Return a non-clickable host/path label with credentials removed."""
+        raw = cls._safe_text(value, 2048)
+        if not raw:
+            return ""
+        try:
+            parsed = urlsplit(raw)
+        except ValueError:
+            return ""
+
+        if parsed.scheme and parsed.netloc:
+            if parsed.scheme.lower() not in {"http", "https", "ssh", "git"}:
+                return ""
+            host = parsed.hostname or ""
+            path = parsed.path
+        elif ":" in raw:
+            host_part, path = raw.split(":", 1)
+            host = host_part.rsplit("@", 1)[-1]
+        else:
+            return ""
+
+        if not host or not re.fullmatch(r"[A-Za-z0-9.-]+", host):
+            return ""
+        path = path.split("?", 1)[0].split("#", 1)[0].strip("/")
+        parts = [part for part in path.split("/") if part]
+        if not parts or any(part == ".." for part in parts):
+            return ""
+        label = "/".join(parts)
+        if label.lower().endswith(".git"):
+            label = label[:-4]
+        return f"{host}/{label}"[:180]
+
+    @staticmethod
+    def _safe_recent_files(value: object) -> list[str]:
+        if not isinstance(value, (list, tuple)):
+            return []
+        files: list[str] = []
+        for raw in value:
+            if not isinstance(raw, str):
+                continue
+            normalized = raw.strip().replace("\\", "/")
+            windows = PureWindowsPath(raw.strip())
+            if (
+                not normalized
+                or "\x00" in normalized
+                or normalized.startswith("/")
+                or windows.is_absolute()
+                or windows.drive
+            ):
+                continue
+            parts = [part for part in normalized.split("/") if part not in {"", "."}]
+            if (
+                not parts
+                or any(part == ".." for part in parts)
+                or any(not part.isprintable() for part in parts)
+            ):
+                continue
+            lower_parts = [part.lower() for part in parts]
+            if any(part in _PRIVATE_PATH_PARTS for part in lower_parts):
+                continue
+            if any(
+                part == ".env"
+                or (part.startswith(".env.") and part != ".env.example")
+                or PureWindowsPath(part).suffix.lower() in {".key", ".pem", ".p12", ".pfx"}
+                or _SECRET_FILE_PART.search(part)
+                for part in lower_parts
+            ):
+                continue
+            path = "/".join(parts)
+            if len(path) > 160 or path in files:
+                continue
+            files.append(path)
+            if len(files) >= 4:
+                break
+        return files
 
     def _is_valid_hello(self, message: Any) -> bool:
         if not isinstance(message, dict) or message.get("type") != "hud.hello":

@@ -45,6 +45,42 @@
     }
   }
 
+  function renderWorkspaceContext (workspace) {
+    var card = document.getElementById('workspaceContext')
+    var nameNode = document.getElementById('workspaceProjectName')
+    var branchNode = document.getElementById('workspaceBranch')
+    var repositoryNode = document.getElementById('workspaceRepository')
+    var recentRow = document.getElementById('workspaceRecentRow')
+    var recentList = document.getElementById('workspaceRecentFiles')
+    if (!card || !nameNode || !branchNode || !repositoryNode || !recentRow || !recentList) return
+
+    workspace = workspace || {}
+    var projectName = String(workspace.project_name || '').trim().slice(0, 96)
+    var branch = String(workspace.branch || '').trim().slice(0, 72)
+    var repository = String(workspace.repository || '').trim().slice(0, 180)
+    var files = Array.isArray(workspace.recent_files) ? workspace.recent_files.slice(0, 4) : []
+
+    card.hidden = !projectName
+    if (!projectName) return
+
+    nameNode.textContent = projectName
+    branchNode.textContent = branch
+    branchNode.hidden = !branch
+    repositoryNode.textContent = repository
+    repositoryNode.hidden = !repository
+
+    while (recentList.firstChild) recentList.removeChild(recentList.firstChild)
+    files.forEach(function (file) {
+      if (typeof file !== 'string' || !file.trim()) return
+      var item = document.createElement('span')
+      item.className = 'workspace-file'
+      item.textContent = file.trim().slice(0, 160)
+      item.title = item.textContent
+      recentList.appendChild(item)
+    })
+    recentRow.hidden = recentList.childNodes.length === 0
+  }
+
   function renderTaskStatus (state) {
     var card = document.getElementById('taskStatus')
     var stageNode = document.getElementById('taskStatusStage')
@@ -140,6 +176,18 @@
       } catch (error) {
         if (window.console) {
           console.warn('[ASTA HUD] Invalid canonical state:', error)
+        }
+      }
+    })
+  }
+
+  if (bridge.onHudWorkspace) {
+    bridge.onHudWorkspace(function (workspace) {
+      try {
+        renderWorkspaceContext(workspace)
+      } catch (error) {
+        if (window.console) {
+          console.warn('[ASTA HUD] Invalid workspace context:', error)
         }
       }
     })

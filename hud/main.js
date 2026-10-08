@@ -22,6 +22,7 @@ let rendererReady = false
 let runtimeReady = false
 let latestHudLifecycle = null
 let latestHudState = null
+let latestHudWorkspace = null
 let latestHudAudio = null
 let latestHudChatHistory = null
 let latestHudChatSessions = null
@@ -42,6 +43,12 @@ function sendHudState (state) {
   latestHudState = state
   if (!rendererReady || !win || win.isDestroyed()) return
   win.webContents.send('asta:hud-state', state)
+}
+
+function sendHudWorkspace (workspace) {
+  latestHudWorkspace = workspace
+  if (!rendererReady || !win || win.isDestroyed()) return
+  win.webContents.send('asta:hud-workspace', workspace)
 }
 
 function sendHudAudio (audio) {
@@ -76,6 +83,7 @@ function flushRendererTelemetry () {
   if (!rendererReady || !win || win.isDestroyed()) return
   if (latestHudLifecycle) win.webContents.send('asta:hud-lifecycle', latestHudLifecycle)
   if (latestHudState) win.webContents.send('asta:hud-state', latestHudState)
+  if (latestHudWorkspace) win.webContents.send('asta:hud-workspace', latestHudWorkspace)
   if (latestHudAudio) win.webContents.send('asta:hud-audio', latestHudAudio)
   if (latestHudChatHistory) win.webContents.send('asta:hud-chat-history', latestHudChatHistory)
   if (latestHudChatSessions) win.webContents.send('asta:hud-chat-sessions', latestHudChatSessions)
@@ -135,6 +143,10 @@ function handleHudMessage (message) {
   }
   if (message.type === 'hud.state') {
     sendHudState(message.state || {})
+    return
+  }
+  if (message.type === 'hud.workspace') {
+    sendHudWorkspace(message.workspace || {})
     return
   }
   if (message.type === 'hud.audio') {

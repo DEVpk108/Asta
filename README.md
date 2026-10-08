@@ -493,6 +493,13 @@ send `{"type": "hud.hello", "token": "<ASTA_HUD_TOKEN>"}`; unauthenticated
 clients, and anything that is not a JSON line (for example an HTTP request sent
 by a web page), are disconnected before they can send commands or read state.
 
+The conversation panel also shows the current project, repository/branch, and
+up to four recent safe relative file names. The renderer receives a dedicated
+workspace-context message containing only those display fields; the local
+project root, file contents, environment, and hardware details are not sent to
+the HUD. Recent-file chips are informational only and do not open or modify
+files.
+
 ## Layout
 
 | Path | Contents |

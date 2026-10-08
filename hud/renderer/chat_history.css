@@ -16,6 +16,30 @@
   width: 0;
 }
 
+.workspace-context {
+  flex: 0 0 auto;
+  margin: 8px 10px 0;
+  padding: 8px 9px 7px;
+  border: 1px solid rgba(0, 229, 255, 0.13);
+  border-radius: 4px;
+  background: linear-gradient(105deg, rgba(0, 229, 255, 0.055), rgba(0, 8, 12, 0.30));
+}
+.workspace-context[hidden],
+.workspace-branch[hidden],
+.workspace-repository[hidden],
+.workspace-recent-row[hidden] { display: none !important; }
+.workspace-context-identity { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.workspace-context-mark { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 8px rgba(0, 229, 255, 0.65); }
+.workspace-context-title { display: flex; flex: 1 1 auto; flex-direction: column; gap: 3px; min-width: 0; }
+.workspace-context-kicker { color: rgba(190, 220, 235, 0.38); font-size: 7px; letter-spacing: 0.17em; }
+.workspace-context-title strong { overflow: hidden; color: rgba(235, 248, 255, 0.92); font-size: 10px; font-weight: 500; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-branch { flex: 0 1 auto; max-width: 45%; overflow: hidden; padding: 4px 6px; border: 1px solid rgba(0, 229, 255, 0.13); border-radius: 3px; color: rgba(115, 224, 239, 0.78); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-repository { margin: 5px 0 0 14px; overflow: hidden; color: rgba(190, 220, 235, 0.44); font-size: 8px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-recent-row { display: flex; align-items: center; gap: 7px; min-width: 0; margin: 7px 0 0 14px; }
+.workspace-recent-label { flex: 0 0 auto; color: rgba(190, 220, 235, 0.34); font-size: 7px; letter-spacing: 0.13em; }
+.workspace-file-list { display: flex; flex: 1 1 auto; gap: 4px; min-width: 0; overflow: hidden; }
+.workspace-file { max-width: 47%; overflow: hidden; padding: 3px 5px; border: 1px solid rgba(0, 229, 255, 0.10); border-radius: 3px; background: rgba(0, 229, 255, 0.035); color: rgba(213, 237, 247, 0.61); font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+
 .task-status {
   flex: 0 0 auto;
   margin: 10px 12px 0;

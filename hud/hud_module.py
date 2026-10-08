@@ -26,6 +26,7 @@ class HUDModule(Module):
         self._runtime_ready = False
 
     def initialize(self):
+        self.event_bus.subscribe("workspace_updated", self.on_workspace_updated)
         self.event_bus.subscribe("voice_ready", self.on_voice_ready)
         self.event_bus.subscribe("assistant_sentence", self.on_assistant_sentence)
         self.event_bus.subscribe("command_acknowledged", self.on_command_acknowledged)
@@ -63,6 +64,7 @@ class HUDModule(Module):
             self.chat_history.initialize()
             self.transport.start()
             self.transport.publish_lifecycle("starting")
+            self._publish_workspace_context()
             self._publish_chat_context()
             self._publish_state()
             self.transport.publish_audio_level(0.0)
@@ -81,6 +83,21 @@ class HUDModule(Module):
 
     def _publish_chat_index(self):
         self.transport.publish_chat_sessions(self.chat_history.sessions())
+
+    def _publish_workspace_context(self, workspace=None):
+        if not isinstance(workspace, dict):
+            manager = getattr(self.kernel, "workspace_manager", None)
+            workspace = manager.snapshot() if manager is not None else {}
+        try:
+            self.transport.publish_workspace_context(workspace)
+        except (OSError, TypeError, ValueError) as exc:
+            print(
+                f"[HUD] Workspace context publish failed: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
+    def on_workspace_updated(self, workspace=None, **kwargs):
+        self._publish_workspace_context(workspace)
 
     def get_state(self):
         return self.state
@@ -471,6 +488,7 @@ class HUDModule(Module):
 
     def shutdown(self):
         for event_name, callback in (
+            ("workspace_updated", self.on_workspace_updated),
             ("voice_ready", self.on_voice_ready),
             ("assistant_sentence", self.on_assistant_sentence),
             ("command_acknowledged", self.on_command_acknowledged),

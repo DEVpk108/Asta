@@ -1,11 +1,25 @@
 from types import SimpleNamespace
 
 from core.event_bus import EventBus
+from core.workspace_manager import WorkspaceManager
 from hud.hud_module import HUDModule
+from hud.transport import HUDTransport
 
 
 class DummyRequest:
     tool = "run_command"
+
+
+class RecordingHUDTransport(HUDTransport):
+    def __init__(self):
+        super().__init__(host="127.0.0.1", port=0, token="")
+        self.messages = []
+
+    def start(self):
+        return None
+
+    def _broadcast(self, message):
+        self.messages.append(message)
 
 
 def build_hud():
@@ -13,6 +27,85 @@ def build_hud():
     hud = HUDModule(kernel)
     hud.initialize()
     return kernel, hud
+
+
+def test_hud_shows_only_safe_project_context_and_tracks_updates():
+    event_bus = EventBus()
+    manager = WorkspaceManager(event_bus=event_bus)
+    manager.update_project(
+        name="<ASTA & Project>",
+        path=r"C:\Users\Private\Projects\ASTA",
+        repository=(
+            "https://bot:TOPSECRET@github.com/DEVpk108/Asta.git"
+            "?access_token=also-secret#fragment"
+        ),
+        branch="feat/hud-context",
+    )
+    manager.set_recent_files(
+        [
+            "README.md",
+            ".env",
+            "../outside.py",
+            r"C:\Users\Private\secret.py",
+            "src/token.json",
+            "docs/overview.md",
+        ]
+    )
+    hud = HUDModule(SimpleNamespace(event_bus=event_bus, workspace_manager=manager))
+    transport = RecordingHUDTransport()
+    hud.transport = transport
+
+    hud.initialize()
+    messages = [item for item in transport.messages if item["type"] == "hud.workspace"]
+    assert messages
+    initial = messages[-1]["workspace"]
+    assert initial == {
+        "project_name": "<ASTA & Project>",
+        "repository": "github.com/DEVpk108/Asta",
+        "branch": "feat/hud-context",
+        "recent_files": ["README.md", "docs/overview.md"],
+    }
+    assert "project_path" not in initial
+    assert "TOPSECRET" not in str(initial)
+    assert "also-secret" not in str(initial)
+
+    manager.add_recent_file("core/agent/brain.py")
+    updated = [
+        item for item in transport.messages if item["type"] == "hud.workspace"
+    ][-1]["workspace"]
+    assert updated["recent_files"][0] == "core/agent/brain.py"
+
+    hud.shutdown()
+    count_after_shutdown = len(transport.messages)
+    manager.add_recent_file("after/shutdown.py")
+    assert len(transport.messages) == count_after_shutdown
+
+
+def test_authenticated_hud_client_receives_cached_workspace_context():
+    transport = RecordingHUDTransport()
+    transport.publish_workspace_context(
+        {
+            "project_name": "ASTA",
+            "project_path": r"C:\Users\Private\ASTA",
+            "branch": "main",
+            "recent_files": ["README.md"],
+        }
+    )
+    sent = []
+    transport._send_to_client = lambda client, message: sent.append(message)
+    client = object()
+
+    transport._register_authenticated_client(client)
+
+    assert any(
+        message["type"] == "hud.workspace"
+        and message["workspace"]["project_name"] == "ASTA"
+        for message in sent
+    )
+    assert all("project_path" not in message for message in sent)
+    with transport._clients_lock:
+        transport._clients.discard(client)
+        transport._authenticated.discard(client)
 
 
 def test_speech_lifecycle_updates_hud_state():
