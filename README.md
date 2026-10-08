@@ -37,8 +37,9 @@ capture, speech output, and tool execution.
 3. `ai` handles deterministic cases first (tool approvals, conversation mode,
    presentation, screenshot phrasing), then optionally runs the System 1 decision
    provider (Laya) for structured routing signals. The existing `IntentRouter`
-   remains authoritative for executable command parsing in this first integration stage.
-4. A command becomes a `tool_request`. The tool layer checks the authority
+   remains authoritative for executable command parsing; opt-in project tasks
+   use the cognitive planner and the existing task runtime.
+4. A command or planned task step becomes a `tool_request`. The tool layer checks the authority
    policy and either runs it or emits `tool_confirmation_required` and waits
    for a spoken yes/no.
 5. Anything else goes to the LLM, which streams sentences back as
@@ -242,6 +243,8 @@ already set in the environment take precedence.
 | `ASTA_DISABLE_HUD` | `0` | Skip the Electron HUD auto-launch |
 | `ASTA_PRELAUNCHED_HUD` | `0` | A launcher already started the HUD |
 | `ASTA_ENABLE_TEXT_INPUT` | `0` | Enable the legacy terminal text adapter |
+| `ASTA_AGENT_MODE` | `0` | Enable the cognitive planner for scoped, open-ended project tasks |
+| `ASTA_WORKSPACE_PATH` | Git root, otherwise current directory | Active project root for workspace file tools and command working directories |
 | `ASTA_LLM_PROVIDER` | `llama_cpp` | Local LLM provider |
 | `ASTA_LLM_BASE_URL` | `http://127.0.0.1:8080/v1` | llama-server OpenAI-compatible base URL |
 | `ASTA_LLM_MODEL` | auto-discovered | llama-server model id/alias |
@@ -398,6 +401,8 @@ Development Mode also requires the app owner to have Premium.
 | `system.open_application`, `system.launch_application`, `computer.click` | medium |
 | `system.start_process`, `system.stop_process`, `computer.type_text`, `computer.keypress`, `computer.hotkey` | high |
 | `system.run_command` | critical |
+| `filesystem.list_files`, `filesystem.read_file` | low |
+| `filesystem.write_file` | medium |
 
 `AuthorityPolicy` runs tools up to **medium** risk automatically. Anything
 higher emits `tool_confirmation_required`, A.S.T.A. asks out loud, and the
@@ -415,6 +420,43 @@ Approvals are deliberately strict:
 Keyboard tools are `high` risk because a key sequence such as Win+R, typing a
 command and Enter amounts to arbitrary command execution. To trust them for
 your own setup, grant them explicitly through `AuthorityManager.grant(...)`.
+
+### Workspace-scoped project tasks (early preview)
+
+Project requests such as creating or testing a code file can use the existing
+task planner and runtime when `ASTA_AGENT_MODE=1`. Set
+`ASTA_WORKSPACE_PATH` to the project directory you want A.S.T.A. to work in;
+otherwise the workspace runtime attempts to use the current Git repository.
+The workspace path is an explicit boundary for file tools and the working
+directory for `system.run_command`.
+
+The initial project-file surface is intentionally small:
+
+- `filesystem.list_files` lists workspace entries while omitting common
+  credential and dependency directories.
+- `filesystem.read_file` reads UTF-8 text files up to 512 KiB.
+- `filesystem.write_file` creates or atomically updates a UTF-8 file up to
+  512 KiB. Existing files must first be read and updated with that read's
+  SHA-256 digest, so stale content is not silently overwritten.
+- `system.run_command` accepts an executable and argument list (no shell),
+  uses a workspace-relative `cwd`, and applies the tool request timeout.
+  It remains **critical risk** and requires confirmation under the default
+  policy.
+
+The project planner requires a verified read-back after a file write and
+checks the command's observed return code and stdout when a project plan runs
+a command. If that evidence is missing, A.S.T.A. must not report the task as
+verified. Tests use deterministic plans and temporary workspaces:
+
+```bash
+pytest -q tests/test_workspace_project_task.py
+```
+
+**Important:** Workspace-rooted paths and working directories are not an
+operating-system sandbox. An approved executable can still access other local
+files or the network. Do not treat `system.run_command` as safe for untrusted
+code; a true restricted runner/container remains future work. The first file
+tools also do not delete, move, or patch files.
 
 ### HUD transport security
 

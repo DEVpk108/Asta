@@ -345,6 +345,21 @@ class AIModule(Module):
         if result.intent == IntentType.COMMAND:
             self._handle_command_intent(result)
             return
+        if result.intent == IntentType.TASK:
+            task_runtime = getattr(self.kernel, "task_runtime", None)
+            starter = getattr(task_runtime, "start_goal", None)
+            if not callable(starter):
+                self._emit_assistant_text(
+                    "I can't start a project task because the task runtime is unavailable."
+                )
+                return
+            task = starter(text, result)
+            if task is None:
+                self._emit_assistant_text(
+                    "I couldn't create a safe executable plan for that project task. "
+                    "No project actions were started."
+                )
+            return
         if result.intent == IntentType.MEMORY:
             self.event_bus.emit("memory_request", intent=result)
             # Nothing used to answer memory requests, so "remember that..."
@@ -614,6 +629,14 @@ class AIModule(Module):
         return None
 
     def _run_system1_decision(self, text, *, intent_hint=None):
+        if (
+            intent_hint is not None
+            and intent_hint.intent is IntentType.TASK
+        ):
+            # Scoped project goals use the task planner, not the single-action
+            # System-1 command resolver.
+            return False
+
         engine = getattr(self.kernel, "decision_engine", None)
         if engine is None:
             return False
@@ -1321,6 +1344,23 @@ class AIModule(Module):
 
     def on_tool_result(self, result):
         if not isinstance(result, ToolResult):
+            return
+        result_metadata = (
+            result.metadata if isinstance(result.metadata, dict) else {}
+        )
+        task_id = result_metadata.get("task_id")
+        task = (
+            self.kernel.task_manager.get(task_id)
+            if isinstance(task_id, str) and task_id
+            else None
+        )
+        if (
+            task is not None
+            and (getattr(task, "metadata", {}) or {}).get("intent_type")
+            == IntentType.TASK.value
+        ):
+            # TaskRuntime owns the verified user-facing summary for project
+            # work. Do not race it with raw intermediate tool output.
             return
         text = (
             self._format_tool_success(result)

@@ -100,7 +100,14 @@ class RecoveryManager:
         for item in evidence:
             if not isinstance(item, dict):
                 continue
-            if item.get("type") != "tool_result" or item.get("success") is not False:
+            verification = item.get("verification")
+            verification_failed = (
+                isinstance(verification, dict)
+                and verification.get("status") == "failed"
+            )
+            if item.get("type") != "tool_result" or (
+                item.get("success") is not False and not verification_failed
+            ):
                 continue
             if item.get("tool") != result.tool:
                 continue

@@ -136,31 +136,16 @@ class Planner:
         if not isinstance(intent, IntentResult):
             raise PlanningError("planner requires an IntentResult")
 
-        if intent.intent is not IntentType.COMMAND:
-            raise PlanningError(
-                "deterministic planner only supports command intents"
-            )
-
-        commands = self._commands_from_intent(intent)
-        if not commands:
-            raise PlanningError("command intent contains no executable commands")
-
         planner_name = "deterministic"
         agent_metadata: dict[str, Any] = {}
         brain = self.agent_brain
-        use_brain = brain is not None and getattr(brain, "enabled", False)
-        if use_brain:
-            reason = self.cognitive_planning_reason(value, intent, commands)
-            if reason is None:
-                use_brain = False
-                print(
-                    "[Agent] System 1 plan: deterministic command; "
-                    "skipping the LLM planner.",
-                    flush=True,
+        proposal = None
+
+        if intent.intent is IntentType.TASK:
+            if brain is None or not getattr(brain, "enabled", False):
+                raise PlanningError(
+                    "Open-ended project tasks require ASTA_AGENT_MODE=1."
                 )
-            else:
-                print(f"[Agent] Cognitive planning: {reason}.", flush=True)
-        if use_brain:
             try:
                 proposal = brain.plan(value, intent=intent)
                 commands = [dict(step) for step in proposal.steps]
@@ -184,14 +169,65 @@ class Planner:
                     flush=True,
                 )
             except Exception as exc:
-                print(
-                    f"[Agent] Cognitive planning unavailable; "
-                    f"falling back to deterministic planning: "
-                    f"{type(exc).__name__}: {exc}",
-                    flush=True,
-                )
-        elif brain is not None and not getattr(brain, "enabled", False):
-            print("[Agent] Cognitive planning disabled (ASTA_AGENT_MODE=0).", flush=True)
+                raise PlanningError(
+                    f"Cognitive planning failed: {type(exc).__name__}: {exc}"
+                ) from exc
+        elif intent.intent is IntentType.COMMAND:
+            commands = self._commands_from_intent(intent)
+            if not commands:
+                raise PlanningError("command intent contains no executable commands")
+
+            use_brain = brain is not None and getattr(brain, "enabled", False)
+            if use_brain:
+                reason = self.cognitive_planning_reason(value, intent, commands)
+                if reason is None:
+                    use_brain = False
+                    print(
+                        "[Agent] System 1 plan: deterministic command; "
+                        "skipping the LLM planner.",
+                        flush=True,
+                    )
+                else:
+                    print(f"[Agent] Cognitive planning: {reason}.", flush=True)
+            if use_brain:
+                try:
+                    proposal = brain.plan(value, intent=intent)
+                    commands = [dict(step) for step in proposal.steps]
+                    planner_name = "cognitive_v1"
+                    agent_metadata = brain.task_metadata(proposal)
+                    print(
+                        f"[Agent] Goal: {proposal.goal_summary}",
+                        flush=True,
+                    )
+                    print(
+                        f"[Agent] Success conditions: "
+                        f"{'; '.join(proposal.success_conditions)}",
+                        flush=True,
+                    )
+                    print(
+                        f"[Agent] Rationale: {proposal.rationale}",
+                        flush=True,
+                    )
+                    print(
+                        f"[Agent] Uncertainty: {proposal.uncertainty:.2f}",
+                        flush=True,
+                    )
+                except Exception as exc:
+                    print(
+                        f"[Agent] Cognitive planning unavailable; "
+                        f"falling back to deterministic planning: "
+                        f"{type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
+            elif brain is not None and not getattr(brain, "enabled", False):
+                print("[Agent] Cognitive planning disabled (ASTA_AGENT_MODE=0).", flush=True)
+        else:
+            raise PlanningError(
+                "planner only supports command intents and scoped task intents"
+            )
+
+        if not commands:
+            raise PlanningError("planner produced no executable steps")
 
         commands = self._expand_media_commands(
             commands,
@@ -230,6 +266,25 @@ class Planner:
             except ValueError as exc:
                 raise PlanningError(str(exc)) from exc
 
+            declared_tool = str(command.get("tool") or "").strip()
+            if declared_tool and declared_tool != definition.name:
+                raise PlanningError(
+                    f"Planned tool '{declared_tool}' does not match the registered "
+                    f"tool selected for action "
+                    f"'{str(command.get('action') or 'unknown')}' "
+                    f"('{definition.name}')."
+                )
+
+            capability_scope = intent.entities.get("capability_scope")
+            if (
+                intent.intent is IntentType.TASK
+                and isinstance(capability_scope, (list, tuple, set, frozenset))
+                and definition.name not in {str(name) for name in capability_scope}
+            ):
+                raise PlanningError(
+                    f"Capability '{definition.name}' is outside this task's approved scope."
+                )
+
             action = str(command.get("action") or "").strip()
             target = str(command.get("target") or "").strip()
 
@@ -244,7 +299,15 @@ class Planner:
                 description_parts.extend(
                     part for part in (action, target) if part
                 )
-            description = " ".join(description_parts)
+            description = str(command.get("description") or "").strip()
+            if not description:
+                description = " ".join(description_parts)
+            if not description and command.get("path"):
+                description = f"{action} {command['path']}"
+
+            completion_conditions = command.get("completion_conditions")
+            if not isinstance(completion_conditions, (list, tuple)):
+                completion_conditions = [f"{definition.name} reports success"]
 
             step_id = f"step-{index}"
             steps.append(
@@ -254,7 +317,9 @@ class Planner:
                     depends_on=[previous_id] if previous_id else [],
                     required_capabilities=[definition.name],
                     completion_conditions=[
-                        f"{definition.name} reports success",
+                        str(condition).strip()
+                        for condition in completion_conditions
+                        if str(condition).strip()
                     ],
                     metadata={
                         "action": action,
@@ -274,7 +339,7 @@ class Planner:
                         **{
                             key: value
                             for key, value in command.items()
-                            if key not in {"action", "target"}
+                            if key not in {"action", "target", "tool"}
                             and value is not None
                             and value != ""
                         },
@@ -282,6 +347,9 @@ class Planner:
                 )
             )
             previous_id = step_id
+
+        if intent.intent is IntentType.TASK:
+            self._validate_project_task_verification(steps)
 
         plan = Plan(
             goal=value,
@@ -302,6 +370,86 @@ class Planner:
             flush=True,
         )
         return plan
+
+    @staticmethod
+    def _validate_project_task_verification(steps: list[PlanStep]) -> None:
+        """Require observable outcome checks for project writes and commands."""
+        for step in steps:
+            tool = str(step.metadata.get("tool") or "")
+            verification = str(step.metadata.get("verification") or "").strip().lower()
+            if tool == "system.run_command":
+                if verification != "command.output":
+                    raise PlanningError(
+                        "Project command steps must declare command.output verification."
+                    )
+                if not isinstance(step.metadata.get("expected_stdout"), str):
+                    raise PlanningError(
+                        "Project command verification must include expected_stdout."
+                    )
+                raw_expected_returncode = step.metadata.get(
+                    "expected_returncode",
+                    0,
+                )
+                if isinstance(raw_expected_returncode, bool):
+                    raise PlanningError(
+                        "Project command verification has an invalid expected_returncode."
+                    )
+                try:
+                    int(raw_expected_returncode)
+                except (TypeError, ValueError) as exc:
+                    raise PlanningError(
+                        "Project command verification has an invalid expected_returncode."
+                    ) from exc
+                if str(step.metadata.get("stdout_match") or "exact").lower() not in {
+                    "exact",
+                    "contains",
+                }:
+                    raise PlanningError(
+                        "Project command stdout verification must use exact or contains matching."
+                    )
+
+            if tool == "filesystem.write_file":
+                index = steps.index(step)
+                expected_path = str(step.metadata.get("path") or "").replace("\\", "/").strip("/")
+                expected_content = step.metadata.get("content")
+                readbacks = [
+                    candidate
+                    for candidate in steps[index + 1:]
+                    if (
+                        str(candidate.metadata.get("tool") or "") == "filesystem.read_file"
+                        and str(candidate.metadata.get("verification") or "").strip().lower()
+                        == "filesystem.file_content"
+                    )
+                ]
+                if not readbacks:
+                    raise PlanningError(
+                        "Project file writes must be followed by a verified file readback."
+                    )
+                if not any(
+                    str(candidate.metadata.get("expected_path") or "").replace("\\", "/").strip("/")
+                    == expected_path
+                    and candidate.metadata.get("expected_content") == expected_content
+                    and str(candidate.metadata.get("path") or "").replace("\\", "/").strip("/")
+                    == expected_path
+                    for candidate in readbacks
+                ):
+                    raise PlanningError(
+                        "The verified readback must match the written file path and content."
+                    )
+
+            if verification == "filesystem.file_content":
+                if str(step.metadata.get("tool") or "") != "filesystem.read_file":
+                    raise PlanningError(
+                        "File-content verification must be attached to filesystem.read_file."
+                    )
+                if (
+                    not isinstance(step.metadata.get("expected_path"), str)
+                    or not isinstance(step.metadata.get("expected_content"), str)
+                    or not step.metadata.get("expected_path").strip()
+                ):
+                    raise PlanningError(
+                        "File-content verification requires expected_path and expected_content."
+                    )
 
     _BROWSERS = (
         "chrome", "google chrome", "chromium", "edge", "microsoft edge",
@@ -716,11 +864,22 @@ class Planner:
         strategy_value = getattr(strategy, "value", str(strategy)).strip().lower()
         if strategy_value == "rebuild_plan":
             entities = dict(task.metadata.get("intent_entities") or {})
+            intent_type = (
+                IntentType.TASK
+                if task.metadata.get("intent_type") == IntentType.TASK.value
+                else IntentType.COMMAND
+            )
             intent = IntentResult(
-                intent=IntentType.COMMAND,
+                intent=intent_type,
                 confidence=float(task.metadata.get("confidence", 0.98)),
                 normalized_text=task.goal,
-                entities=entities,
+                entities={
+                    **entities,
+                    "recovery_context": self._compact_recovery_context(
+                        task,
+                        diagnosis,
+                    ),
+                },
                 requires_tools=True,
                 classifier=str(task.metadata.get("classifier", "replan")),
             )
@@ -817,6 +976,85 @@ class Planner:
                 ),
             },
         )
+
+    @staticmethod
+    def _compact_recovery_context(task, diagnosis) -> dict[str, Any]:
+        """Give the replanner bounded evidence from the failed attempt."""
+        evidence_items = []
+        for item in (getattr(task, "evidence", ()) or ())[-8:]:
+            if not isinstance(item, dict):
+                continue
+            compact = {
+                key: item.get(key)
+                for key in (
+                    "tool",
+                    "success",
+                    "error",
+                    "plan_step_id",
+                )
+                if item.get(key) is not None
+            }
+
+            verification = item.get("verification")
+            if isinstance(verification, dict):
+                compact["verification"] = {
+                    key: verification.get(key)
+                    for key in ("status", "summary", "source")
+                    if verification.get(key) is not None
+                }
+
+            output = item.get("output")
+            if isinstance(output, dict):
+                compact_output = {}
+                for key in (
+                    "returncode",
+                    "stdout",
+                    "stderr",
+                    "path",
+                    "sha256",
+                    "bytes_read",
+                ):
+                    value = output.get(key)
+                    if isinstance(value, str):
+                        compact_output[key] = value[:1200]
+                    elif value is not None:
+                        compact_output[key] = value
+                content = output.get("content")
+                if isinstance(content, str):
+                    compact_output["content"] = content[:2000]
+                    compact_output["content_truncated"] = len(content) > 2000
+                entries = output.get("items")
+                if isinstance(entries, list):
+                    compact_output["items"] = [
+                        {
+                            key: entry.get(key)
+                            for key in ("path", "kind")
+                            if entry.get(key) is not None
+                        }
+                        for entry in entries[:40]
+                        if isinstance(entry, dict)
+                    ]
+                    compact_output["items_truncated"] = len(entries) > 40
+                if compact_output:
+                    compact["output"] = compact_output
+            evidence_items.append(compact)
+
+        failed_step = None
+        step_id = getattr(diagnosis, "step_id", None)
+        if step_id and getattr(task, "plan", None) is not None:
+            try:
+                failed_step = task.plan.get_step(step_id).to_dict()
+            except (KeyError, ValueError):
+                failed_step = None
+
+        return {
+            "summary": str(getattr(diagnosis, "summary", "") or "")[:1200],
+            "category": str(
+                getattr(getattr(diagnosis, "category", None), "value", "unknown")
+            ),
+            "failed_step": failed_step,
+            "recent_evidence": evidence_items,
+        }
 
     def _expand_media_commands(
         self,

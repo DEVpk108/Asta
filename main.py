@@ -188,6 +188,9 @@ def main():
         ComputerHotkeyTool,
         ComputerScrollTool,
         ComputerWaitTool,
+        ListWorkspaceFilesTool,
+        ReadWorkspaceFileTool,
+        WriteWorkspaceFileTool,
         ToolRuntimeModule,
     )
     from speech.speech_module import SpeechModule
@@ -243,7 +246,10 @@ def main():
         BrowserSearchTool(),
         LaunchApplicationTool(),
         StartProcessTool(),
-        RunCommandTool(),
+        RunCommandTool(workspace_manager=kernel.workspace_manager),
+        ListWorkspaceFilesTool(kernel.workspace_manager),
+        ReadWorkspaceFileTool(kernel.workspace_manager),
+        WriteWorkspaceFileTool(kernel.workspace_manager),
         StopProcessTool(),
         CloseApplicationTool(kernel.application_manager),
         ScreenshotTool(capture=capture_screenshot),
