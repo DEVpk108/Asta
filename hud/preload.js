@@ -28,6 +28,11 @@ contextBridge.exposeInMainWorld('asta', {
       try { fn(state) } catch (e) { /* ignore */ }
     })
   },
+  onHudWorkspace: (fn) => {
+    ipcRenderer.on('asta:hud-workspace', (_event, workspace) => {
+      try { fn(workspace) } catch (e) { /* ignore */ }
+    })
+  },
   onHudAudio: (fn) => {
     ipcRenderer.on('asta:hud-audio', (_event, audio) => {
       try { fn(audio) } catch (e) { /* ignore */ }

@@ -52,6 +52,22 @@
           </button>
         </div>
 
+        <section class="workspace-context" id="workspaceContext" aria-label="Current project" hidden>
+          <div class="workspace-context-identity">
+            <span class="workspace-context-mark" aria-hidden="true"></span>
+            <div class="workspace-context-title">
+              <span class="workspace-context-kicker">CURRENT PROJECT</span>
+              <strong id="workspaceProjectName"></strong>
+            </div>
+            <span class="workspace-branch" id="workspaceBranch" hidden></span>
+          </div>
+          <div class="workspace-repository" id="workspaceRepository" hidden></div>
+          <div class="workspace-recent-row" id="workspaceRecentRow" hidden>
+            <span class="workspace-recent-label">RECENT</span>
+            <div class="workspace-file-list" id="workspaceRecentFiles"></div>
+          </div>
+        </section>
+
         <div class="chat-workspace">
           <aside class="chat-recent" id="chatRecent" aria-label="Recent conversations">
             <div class="chat-recent-header">

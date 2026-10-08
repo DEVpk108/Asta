@@ -32,11 +32,17 @@
 }
 
 .chat.chat-fullscreen .chat-header,
+.chat.chat-fullscreen .workspace-context,
 .chat.chat-fullscreen .chat-messages,
 .chat.chat-fullscreen .chat-input,
 .chat.chat-fullscreen .chat-recent {
   position: relative;
   z-index: 30;
+}
+
+.chat.chat-fullscreen .workspace-context {
+  margin-right: 22px;
+  margin-left: 22px;
 }
 
 .chat.chat-fullscreen .chat-recent {
