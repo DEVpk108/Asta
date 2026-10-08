@@ -1,4 +1,5 @@
 from core.contracts import ToolRequest
+from core import Kernel
 from core.tools import (
     AudioControlTool,
     CloseApplicationTool,
@@ -8,6 +9,7 @@ from core.tools import (
     StartProcessTool,
     StopProcessTool,
 )
+from core.tools.sandbox import SandboxProcessResult
 
 
 def request(tool, arguments=None, request_id="test"):
@@ -28,29 +30,42 @@ def test_start_process_rejects_non_string_arguments():
     assert "list of strings" in result.error
 
 
-def test_run_command_uses_argument_vector_without_shell(monkeypatch):
+def test_run_command_uses_argument_vector_inside_sandbox(tmp_path):
     calls = []
 
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
+    class FakeRuntime:
+        runtime_name = "docker"
 
-        class Result:
-            returncode = 0
-            stdout = "ok"
-            stderr = ""
+        def run(self, arguments, *, timeout, output_limit):
+            calls.append((list(arguments), timeout, output_limit))
+            if arguments[0] == "create":
+                return SandboxProcessResult(0)
+            if arguments[0] == "start":
+                return SandboxProcessResult(0, stdout="ok")
+            return SandboxProcessResult(0)
 
-        return Result()
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    kernel = Kernel()
+    kernel.workspace_manager.update_project(path=str(workspace))
 
-    monkeypatch.setattr("core.tools.builtin.shutil.which", lambda _: "tool")
-    monkeypatch.setattr("core.tools.builtin.subprocess.run", fake_run)
-
-    result = RunCommandTool().execute(
-        request("system.run_command", {"target": "echo", "arguments": ["hello"]})
+    result = RunCommandTool(
+        kernel.workspace_manager,
+        runtime=FakeRuntime(),
+    ).execute(
+        request("system.run_command", {"target": "python", "arguments": ["-c", "print('hello')"]})
     )
 
     assert result.success
-    assert calls[0][0] == ["tool", "hello"]
-    assert calls[0][1].get("shell", False) is False
+    create = calls[0][0]
+    assert create[0] == "create"
+    assert create[-3:] == [
+        "asta-python-sandbox:1",
+        "-c",
+        "print('hello')",
+    ]
+    assert "--network=none" in create
+    assert calls[1][0][:2] == ["start", "--attach"]
 
 
 def test_stop_process_rejects_invalid_pid():

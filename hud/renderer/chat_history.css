@@ -16,6 +16,27 @@
   width: 0;
 }
 
+.task-status {
+  flex: 0 0 auto;
+  margin: 10px 12px 0;
+  padding: 10px 12px 9px;
+  border: 1px solid rgba(0, 229, 255, 0.18);
+  border-radius: 4px;
+  background: linear-gradient(110deg, rgba(0, 229, 255, 0.075), rgba(0, 12, 18, 0.42));
+}
+.task-status[hidden] { display: none !important; }
+.task-status-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.task-status-kicker { color: rgba(190, 220, 235, 0.48); font-size: 8px; letter-spacing: 0.16em; }
+.task-status-stage { color: var(--cyan); font-size: 9px; letter-spacing: 0.14em; }
+.task-status-detail { margin-top: 6px; color: rgba(225, 245, 255, 0.76); font-size: 10px; line-height: 1.45; }
+.task-status-track { height: 2px; margin-top: 9px; overflow: hidden; background: rgba(0, 229, 255, 0.10); }
+.task-status-track span { display: block; width: 36%; height: 100%; background: var(--cyan); box-shadow: 0 0 8px rgba(0, 229, 255, 0.60); animation: task-status-sweep 1.8s ease-in-out infinite; }
+.task-status[data-stage="approval"] { border-color: rgba(255, 190, 90, 0.36); background: rgba(255, 155, 30, 0.07); }
+.task-status[data-stage="approval"] .task-status-stage { color: #ffc46b; }
+.task-status[data-stage="approval"] .task-status-track span { background: #ffc46b; box-shadow: 0 0 8px rgba(255, 190, 90, 0.5); }
+@keyframes task-status-sweep { 0% { transform: translateX(-110%); } 100% { transform: translateX(290%); } }
+@media (prefers-reduced-motion: reduce) { .task-status-track span { animation: none; width: 100%; opacity: 0.65; } }
+
 .chat-main .chat-messages {
   flex: 1 1 auto;
   min-height: 0;

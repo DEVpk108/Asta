@@ -9,11 +9,6 @@ from typing import Callable
 from core.applications import ApplicationManager, ApplicationResolutionError
 from core.contracts import ToolDefinition, ToolRequest, ToolResult
 from core.tools.base import Tool
-from core.tools.workspace import (
-    WorkspacePathError,
-    resolve_workspace_path,
-    resolve_workspace_root,
-)
 
 
 def _result(request: ToolRequest, success: bool, *, output=None, error=None, start: float) -> ToolResult:
@@ -83,85 +78,6 @@ class StartProcessTool(Tool):
         except Exception as exc:
             return _result(request, False, error=f"Failed to start '{target}': {type(exc).__name__}: {exc}", start=start)
         return _result(request, True, output={"target": target, "pid": process.pid}, start=start)
-
-
-class RunCommandTool(Tool):
-    def __init__(self, workspace_manager=None):
-        self.workspace_manager = workspace_manager
-
-    @property
-    def definition(self) -> ToolDefinition:
-        return ToolDefinition(
-            name="system.run_command", description="Run an explicitly supplied local executable without invoking a shell.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string", "minLength": 1},
-                    "arguments": {"type": "array", "items": {"type": "string"}},
-                    "cwd": {
-                        "type": "string",
-                        "description": "Optional directory relative to the active workspace.",
-                    },
-                },
-                "required": ["target"],
-                "additionalProperties": False,
-            },
-            risk_level="critical", metadata={"actions": ["run"], "category": "system"},
-        )
-
-    def execute(self, request: ToolRequest) -> ToolResult:
-        start = time.perf_counter()
-        target = _validated_target(request)
-        args = request.arguments.get("arguments", [])
-        if target is None:
-            return _result(request, False, error="Argument 'target' must be a non-empty string.", start=start)
-        if not isinstance(args, list) or not all(isinstance(item, str) for item in args):
-            return _result(request, False, error="Argument 'arguments' must be a list of strings.", start=start)
-        executable = shutil.which(target)
-        if not executable:
-            return _result(request, False, error=f"Command not found on PATH: {target}", start=start)
-        working_directory = None
-        requested_cwd = request.arguments.get("cwd")
-        if self.workspace_manager is not None:
-            try:
-                root = resolve_workspace_root(self.workspace_manager)
-                working_directory = (
-                    root
-                    if requested_cwd is None or requested_cwd == ""
-                    else resolve_workspace_path(root, requested_cwd, allow_root=True)
-                )
-                if not working_directory.is_dir():
-                    return _result(
-                        request,
-                        False,
-                        error="The requested workspace working directory is not a directory.",
-                        start=start,
-                    )
-            except (OSError, WorkspacePathError) as exc:
-                return _result(request, False, error=str(exc), start=start)
-        elif requested_cwd is not None:
-            return _result(
-                request,
-                False,
-                error="A workspace manager is required to set a working directory.",
-                start=start,
-            )
-        try:
-            completed = subprocess.run(
-                [executable, *args],
-                capture_output=True,
-                text=True,
-                timeout=request.timeout_seconds,
-                check=False,
-                cwd=str(working_directory) if working_directory is not None else None,
-            )
-        except subprocess.TimeoutExpired:
-            return _result(request, False, error=f"Command timed out after {request.timeout_seconds:.1f}s.", start=start)
-        except Exception as exc:
-            return _result(request, False, error=f"Failed to run '{target}': {type(exc).__name__}: {exc}", start=start)
-        return _result(request, completed.returncode == 0,
-                       output={"returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr},
-                       error=None if completed.returncode == 0 else f"Command exited with code {completed.returncode}.", start=start)
 
 
 class StopProcessTool(Tool):

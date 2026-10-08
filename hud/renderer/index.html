@@ -63,6 +63,16 @@
           </aside>
 
           <div class="chat-main">
+            <section class="task-status" id="taskStatus" hidden role="status" aria-live="polite">
+              <div class="task-status-heading">
+                <span class="task-status-kicker">TASK STATUS</span>
+                <span class="task-status-stage" id="taskStatusStage">WORKING</span>
+              </div>
+              <div class="task-status-detail" id="taskStatusDetail"></div>
+              <div class="task-status-track" role="progressbar" aria-label="Task is in progress">
+                <span></span>
+              </div>
+            </section>
             <div class="chat-messages" id="chatMessages" aria-live="polite">
               <div class="chat-empty" id="chatEmpty">TEXT CHANNEL READY</div>
             </div>

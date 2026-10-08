@@ -245,6 +245,8 @@ already set in the environment take precedence.
 | `ASTA_ENABLE_TEXT_INPUT` | `0` | Enable the legacy terminal text adapter |
 | `ASTA_AGENT_MODE` | `0` | Enable the cognitive planner for scoped, open-ended project tasks |
 | `ASTA_WORKSPACE_PATH` | Git root, otherwise current directory | Active project root for workspace file tools and command working directories |
+| `ASTA_SANDBOX_IMAGE` | `asta-python-sandbox:1` | Already-built local image for Python/pytest task execution; runtime pulls are disabled |
+| `ASTA_CONTAINER_RUNTIME` | `docker` | Local Docker or Podman CLI used for sandboxed project commands |
 | `ASTA_LLM_PROVIDER` | `llama_cpp` | Local LLM provider |
 | `ASTA_LLM_BASE_URL` | `http://127.0.0.1:8080/v1` | llama-server OpenAI-compatible base URL |
 | `ASTA_LLM_MODEL` | auto-discovered | llama-server model id/alias |
@@ -438,10 +440,12 @@ The initial project-file surface is intentionally small:
 - `filesystem.write_file` creates or atomically updates a UTF-8 file up to
   512 KiB. Existing files must first be read and updated with that read's
   SHA-256 digest, so stale content is not silently overwritten.
-- `system.run_command` accepts an executable and argument list (no shell),
-  uses a workspace-relative `cwd`, and applies the tool request timeout.
-  It remains **critical risk** and requires confirmation under the default
-  policy.
+- `system.run_command` runs Python or pytest in a local Docker/Podman
+  container against a sanitized, read-only workspace snapshot. Networking is
+  disabled, the container has resource limits, and it remains **critical risk**
+  and requires confirmation under the default policy. It never falls back to
+  host execution. See [Sandboxed project commands](docs/sandboxed-command-runner.md)
+  for image setup and the isolation contract.
 
 The project planner requires a verified read-back after a file write and
 checks the command's observed return code and stdout when a project plan runs
@@ -452,11 +456,10 @@ verified. Tests use deterministic plans and temporary workspaces:
 pytest -q tests/test_workspace_project_task.py
 ```
 
-**Important:** Workspace-rooted paths and working directories are not an
-operating-system sandbox. An approved executable can still access other local
-files or the network. Do not treat `system.run_command` as safe for untrusted
-code; a true restricted runner/container remains future work. The first file
-tools also do not delete, move, or patch files.
+**Important:** The initial sandbox supports Python and pytest only. It executes
+a sanitized snapshot rather than the live project, so command-side file changes
+are discarded; make intended source changes through workspace file tools.
+The first file tools also do not delete, move, or patch files.
 
 ### HUD transport security
 
@@ -514,7 +517,7 @@ sake.
 | Stage | Focus | Completion signal |
 | --- | --- | --- |
 | Stabilize the foundation | Preserve the voice, AI, HUD, conversation-history, and tool flow; keep startup and shutdown predictable; document event contracts and add useful runtime traces. | A repeatable baseline works across a normal session, shutdown, and restart. |
-| Prove the general agent loop — next major milestone | Use generic, permission-aware tools to inspect a small project, create or modify a file, run a controlled command or test, inspect the result, and recover from a bounded, safe failure. | A.S.T.A. completes a small multi-step project task without a special hard-coded script for that exact request, then reports what it changed and what it verified. |
+| Prove the general agent loop — next major milestone | Use generic, permission-aware tools to inspect a small project, create or modify a file, run Python/pytest in a constrained container, inspect the result, and recover from a bounded, safe failure. | A.S.T.A. completes a small multi-step project task without a special hard-coded script for that exact request, then reports what it changed and what it verified. |
 | Build project/workspace continuity | Track project identity, root, repository and branch, current task, important files, and recent changes so a request can resume in the right environment. | A project follow-up is grounded in the registered workspace and its current state. |
 | Grow memory in deliberate layers | Keep chat history separate from useful episodic, project, semantic, user, and procedural memory. Preserve source and confidence where useful; support summarizing and forgetting instead of treating every old statement as permanently true. | A.S.T.A. retrieves relevant project knowledge without indiscriminately storing every conversation. |
 | Improve planning, reflection, and proactivity | Decompose larger goals, checkpoint progress, observe results, replan within explicit limits, and save only useful lessons. Make proactive suggestions only when supported by relevant context. | Failures are diagnosed and handled safely; the assistant knows when to stop or ask the user. |

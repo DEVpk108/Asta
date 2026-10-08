@@ -2010,6 +2010,12 @@ class TaskRuntimeModule(Module):
                 f"Waiting {max(0.0, seconds):.1f} seconds "
                 "for the interface to settle."
             )
+        if tool == "system.run_command":
+            return (
+                "Running Python in an isolated container. "
+                "Only a sanitized, read-only workspace snapshot is mounted; "
+                "network access is disabled."
+            )
 
         return f"Working with {request.tool}."
 

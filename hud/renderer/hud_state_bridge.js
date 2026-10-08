@@ -45,6 +45,44 @@
     }
   }
 
+  function renderTaskStatus (state) {
+    var card = document.getElementById('taskStatus')
+    var stageNode = document.getElementById('taskStatusStage')
+    var detailNode = document.getElementById('taskStatusDetail')
+    if (!card || !stageNode || !detailNode) return
+
+    var mode = String((state && state.mode) || '').toLowerCase()
+    var status = String((state && state.status) || '').trim()
+    var active = mode === 'executing' || mode === 'approval' ||
+      (mode === 'thinking' && /^(planning|planned|replanning|recovery)$/i.test(status))
+    card.hidden = !active
+    if (!active) return
+
+    var activity = String((state && state.activity) || '').trim()
+    var sandboxRun = status.toUpperCase() === 'SANDBOX RUN'
+    if (mode === 'approval') {
+      stageNode.textContent = 'APPROVAL REQUIRED'
+      detailNode.textContent = activity || 'Review the requested action before it runs.'
+      card.dataset.stage = 'approval'
+      return
+    }
+
+    card.dataset.stage = 'active'
+    if (sandboxRun) {
+      stageNode.textContent = 'RUNNING IN SANDBOX'
+      detailNode.textContent = 'Python/pytest · read-only project snapshot · network disabled'
+    } else if (mode === 'thinking' && /^(planning|planned)$/i.test(status)) {
+      stageNode.textContent = 'PLANNING'
+      detailNode.textContent = 'Preparing a bounded sequence of actions and checks.'
+    } else if (mode === 'thinking') {
+      stageNode.textContent = status ? status.replace(/_/g, ' ').toUpperCase() : 'RECOVERING'
+      detailNode.textContent = activity || 'Choosing a safe next step.'
+    } else {
+      stageNode.textContent = status ? status.replace(/_/g, ' ').toUpperCase() : 'EXECUTING'
+      detailNode.textContent = activity || 'Working through the current step.'
+    }
+  }
+
   /* Start the visual runtime as soon as the HUD is loaded. Python/kernel
      readiness remains authoritative for canonical state, but the visual
      assembly should not wait for the AI stack to finish initializing. */
@@ -89,6 +127,7 @@
         if (window.AstaHUD && window.AstaHUD.applyCanonicalState) {
           window.AstaHUD.applyCanonicalState(state)
         }
+        renderTaskStatus(state)
 
         document.body.dataset.hudMode = String(state.mode || 'idle').toLowerCase()
         document.body.dataset.hudActivity = state.activity || ''
