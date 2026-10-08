@@ -400,6 +400,34 @@ class TaskRuntimeModule(Module):
         )
         return task
 
+    def start_goal(self, goal: str, intent: IntentResult):
+        """Start a scoped, open-ended task and dispatch its first planned step."""
+        if not isinstance(intent, IntentResult) or intent.intent is not IntentType.TASK:
+            raise ValueError("start_goal requires a task intent")
+
+        task = self.start_plan(goal, intent)
+        if task is None or task.plan is None:
+            return None
+
+        next_step = self._next_ready_plan_step(task)
+        if next_step is None:
+            self.kernel.task_manager.fail(
+                "The task plan has no executable first step.",
+                task.id,
+            )
+            return None
+
+        request = self.build_plan_request(task, next_step)
+        if request is None:
+            self.kernel.task_manager.fail(
+                f"Unable to build a tool request for plan step '{next_step.id}'.",
+                task.id,
+            )
+            return None
+
+        self.event_bus.emit("tool_request", request=request)
+        return task
+
     def on_task_completed(self, task=None, *args, **kwargs):
         self._advance_incremental_session_from_terminal(
             task,
@@ -557,6 +585,20 @@ class TaskRuntimeModule(Module):
         if plan_step_id:
             evidence["plan_step_id"] = plan_step_id
         if not result.success:
+            if result.error == "Tool execution rejected by user.":
+                if plan_step_id:
+                    self.kernel.task_manager.set_plan_step_status(
+                        plan_step_id,
+                        PlanStepStatus.FAILED,
+                        task.id,
+                    )
+                self.kernel.task_manager.add_evidence(evidence, task.id)
+                self.kernel.task_manager.fail(
+                    "The user denied the requested tool action.",
+                    task.id,
+                )
+                return
+
             self.event_bus.emit(
                 "task_progress",
                 task_id=task.id,
@@ -876,6 +918,31 @@ class TaskRuntimeModule(Module):
             else ""
         )
         verification_engine = getattr(self.kernel, "verification_engine", None)
+        if (
+            verification_key
+            and structured_step is not None
+            and verification_engine is None
+        ):
+            evidence["verification"] = {
+                "status": "unknown",
+                "summary": "The requested verifier is unavailable.",
+                "source": "guard",
+                "task_id": task.id,
+                "step_id": structured_step.id,
+            }
+            self.kernel.task_manager.set_plan_step_status(
+                structured_step.id,
+                PlanStepStatus.BLOCKED,
+                task.id,
+            )
+            self.kernel.task_manager.add_evidence(evidence, task.id)
+            self.event_bus.emit(
+                "task_verification_required",
+                task_id=task.id,
+                verification=evidence["verification"],
+            )
+            self.kernel.task_manager.pause(task.id)
+            return
         if verification_key and verification_engine is not None and structured_step is not None:
             verification = verification_engine.verify(
                 task,
@@ -990,11 +1057,25 @@ class TaskRuntimeModule(Module):
             return
 
         if not refreshed.pending_steps:
+            final_result = {
+                "tool": result.tool,
+                "output": result.output,
+            }
+            if refreshed.metadata.get("intent_type") == IntentType.TASK.value:
+                report = self._project_task_report(refreshed)
+                if not report["verified"]:
+                    self.kernel.task_manager.fail(
+                        "The project task lacks verified evidence for its planned outcome.",
+                        refreshed.id,
+                    )
+                    return
+                final_result.update(report)
+                self.event_bus.emit(
+                    "assistant_sentence",
+                    text=report["message"],
+                )
             self.kernel.task_manager.complete(
-                result={
-                    "tool": result.tool,
-                    "output": result.output,
-                },
+                result=final_result,
                 task_id=task.id,
             )
             return
@@ -1025,6 +1106,99 @@ class TaskRuntimeModule(Module):
             flush=True,
         )
         self.event_bus.emit("tool_request", request=next_request)
+
+    @staticmethod
+    def _project_task_report(task) -> dict[str, Any]:
+        plan = getattr(task, "plan", None)
+        steps = list(getattr(plan, "steps", ()) or ())
+        verification_steps = [
+            step for step in steps if step.metadata.get("verification")
+        ]
+        verification_evidence = {
+            item.get("plan_step_id"): item.get("verification", {})
+            for item in (getattr(task, "evidence", ()) or ())
+            if isinstance(item, dict) and item.get("plan_step_id")
+        }
+        if verification_steps:
+            verified = all(
+                isinstance(verification_evidence.get(step.id), dict)
+                and verification_evidence[step.id].get("status") == "verified"
+                for step in verification_steps
+            )
+        else:
+            verified = bool(steps) and all(
+                getattr(step.status, "value", "") == "completed"
+                for step in steps
+            )
+
+        write_output = None
+        command_evidence = None
+        for item in getattr(task, "evidence", ()) or ():
+            if not isinstance(item, dict) or item.get("success") is not True:
+                continue
+            if item.get("tool") == "filesystem.write_file":
+                output = item.get("output")
+                if isinstance(output, dict):
+                    write_output = output
+            elif item.get("tool") == "system.run_command":
+                output = item.get("output")
+                if isinstance(output, dict):
+                    command_evidence = (item, output)
+
+        artifacts = []
+        if isinstance(write_output, dict) and isinstance(write_output.get("path"), str):
+            artifacts.append({"path": write_output["path"]})
+
+        command = None
+        if command_evidence is not None:
+            evidence, output = command_evidence
+            try:
+                command_step = plan.get_step(evidence.get("plan_step_id"))
+            except (AttributeError, KeyError, TypeError):
+                command_step = None
+            command = {
+                "target": (
+                    command_step.metadata.get("target")
+                    if command_step is not None
+                    else None
+                ),
+                "returncode": output.get("returncode"),
+                "stdout": output.get("stdout"),
+                "stderr": output.get("stderr"),
+            }
+
+        if artifacts and command is not None:
+            observed = str(command.get("stdout") or "").strip()
+            path = artifacts[-1]["path"]
+            message = (
+                f"Done. Verified `{path}` and ran the project command "
+                f"(exit {command.get('returncode')}); output: {observed[:1200]}"
+            )
+        elif artifacts:
+            message = f"Done. Verified the project file `{artifacts[-1]['path']}`."
+        elif command is not None:
+            observed = str(command.get("stdout") or "").strip()
+            message = (
+                f"Done. Verified the project command (exit "
+                f"{command.get('returncode')}); output: {observed[:1200]}"
+            )
+        else:
+            message = (
+                "Done. The planned read-only project inspection completed successfully."
+                if not verification_steps
+                else "Done. The planned project outcome passed its verification."
+            )
+
+        return {
+            "verified": verified,
+            "artifacts": artifacts,
+            "command": command,
+            "verifications": [
+                verification_evidence.get(step.id)
+                for step in verification_steps
+            ],
+            "message": message,
+        }
 
     def _complete_from_verified_visual_result(
         self,
@@ -1895,35 +2069,133 @@ class TaskRuntimeModule(Module):
         if grounded is None:
             return None
 
-        intent_entities = {
+        raw_entities = {
             "action": action,
             **({"target": target} if target else {}),
             **grounded,
-            **{
+        }
+        request_only_metadata = {
+            "action",
+            "tool",
+            "description",
+            "verification",
+            "expected_returncode",
+            "expected_stdout",
+            "stdout_match",
+            "completion_conditions",
+            "sequence_index",
+            "depends_on",
+            "required_capabilities",
+            "agent_generated",
+            "user_directed",
+            "completion_message",
+        }
+        raw_entities.update(
+            {
                 key: value
                 for key, value in step.metadata.items()
-                if key in {"operation", "query", "provider", "prompt", "text", "key", "keys", "browser", "button", "clicks", "interval", "amount", "seconds", "application", "process", "fallback_target", "search", "session_app", "on_screen"}
+                if key not in request_only_metadata
                 and value is not None
                 and value != ""
-            },
-        }
+            }
+        )
+        expected_sha256_from_step = raw_entities.pop(
+            "expected_sha256_from_step",
+            None,
+        )
+        if expected_sha256_from_step is not None:
+            if action.lower() != "write_file":
+                print(
+                    "[Tasks] A read-result hash can only authorize a file update.",
+                    flush=True,
+                )
+                return None
+            digest = self._read_step_digest(
+                task,
+                source_step_id=expected_sha256_from_step,
+                expected_path=raw_entities.get("path"),
+            )
+            if digest is None:
+                print(
+                    "[Tasks] The requested prior file-read evidence is missing "
+                    "or does not match the update path.",
+                    flush=True,
+                )
+                return None
+            if raw_entities.get("expected_sha256") not in (None, "", digest):
+                print(
+                    "[Tasks] A planned file update supplied conflicting read hashes.",
+                    flush=True,
+                )
+                return None
+            raw_entities["expected_sha256"] = digest
 
-        intent = IntentResult(
+        selection_intent = IntentResult(
             intent=IntentType.COMMAND,
             confidence=float(
                 task.metadata.get("confidence", 0.98)
             ),
             normalized_text=task.goal,
-            entities=intent_entities,
+            entities=raw_entities,
             requires_tools=True,
             classifier=str(task.metadata.get("classifier", "rules")),
         )
 
         try:
-            request = self.tool_request_builder.build(intent)
+            definition = self.tool_request_builder.selector.select(selection_intent)
         except ValueError as exc:
             print(
                 f"[Tasks] Could not build next plan step: {exc}",
+                flush=True,
+            )
+            return None
+
+        schema = definition.input_schema if isinstance(definition.input_schema, dict) else {}
+        properties = schema.get("properties", {})
+        properties = properties if isinstance(properties, dict) else {}
+        request_entities = {
+            "action": action,
+            **{
+                key: value
+                for key, value in raw_entities.items()
+                if key != "action" and key in properties
+            },
+        }
+        required = schema.get("required", ())
+        if isinstance(required, (list, tuple, set, frozenset)):
+            missing = [
+                name
+                for name in required
+                if name != "action" and name not in request_entities
+            ]
+            if missing:
+                print(
+                    "[Tasks] Planned tool step omitted required input(s): "
+                    + ", ".join(str(name) for name in missing),
+                    flush=True,
+                )
+                return None
+
+        request_intent = IntentResult(
+            intent=IntentType.COMMAND,
+            confidence=selection_intent.confidence,
+            normalized_text=selection_intent.normalized_text,
+            entities=request_entities,
+            requires_tools=True,
+            classifier=selection_intent.classifier,
+        )
+        try:
+            request = self.tool_request_builder.build(request_intent)
+        except ValueError as exc:
+            print(
+                f"[Tasks] Could not build next plan step: {exc}",
+                flush=True,
+            )
+            return None
+        if request.tool != definition.name:
+            print(
+                f"[Tasks] Tool selection changed while building step "
+                f"('{definition.name}' -> '{request.tool}').",
                 flush=True,
             )
             return None
@@ -1952,6 +2224,49 @@ class TaskRuntimeModule(Module):
                 step.metadata["completion_message"]
             )
         return request
+
+    @staticmethod
+    def _read_step_digest(task, *, source_step_id, expected_path) -> str | None:
+        plan = getattr(task, "plan", None)
+        if plan is None or not isinstance(source_step_id, str):
+            return None
+        try:
+            source_step = plan.get_step(source_step_id)
+        except (KeyError, ValueError):
+            return None
+        if (
+            source_step.status is not PlanStepStatus.COMPLETED
+            or source_step.metadata.get("tool") != "filesystem.read_file"
+        ):
+            return None
+
+        def normalize_path(value):
+            return str(value or "").replace("\\", "/").strip("/")
+
+        expected = normalize_path(expected_path)
+        if not expected or normalize_path(source_step.metadata.get("path")) != expected:
+            return None
+
+        for evidence in reversed(getattr(task, "evidence", ()) or ()):
+            if not isinstance(evidence, dict):
+                continue
+            if (
+                evidence.get("plan_step_id") != source_step_id
+                or evidence.get("tool") != "filesystem.read_file"
+                or evidence.get("success") is not True
+            ):
+                continue
+            output = evidence.get("output")
+            if not isinstance(output, dict) or normalize_path(output.get("path")) != expected:
+                continue
+            digest = output.get("sha256")
+            if (
+                isinstance(digest, str)
+                and len(digest) == 64
+                and all(character in "0123456789abcdefABCDEF" for character in digest)
+            ):
+                return digest.lower()
+        return None
 
     @staticmethod
     def _ground_action_arguments(

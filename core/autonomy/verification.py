@@ -89,6 +89,20 @@ class VerificationEngine:
                 result,
             )
 
+        if verification == "command.output":
+            return self._verify_command_output(
+                task,
+                step,
+                result,
+            )
+
+        if verification == "filesystem.file_content":
+            return self._verify_file_content(
+                task,
+                step,
+                result,
+            )
+
         return VerificationResult(
             status=VerificationStatus.UNKNOWN,
             summary=f"No verifier is registered for '{verification}'.",
@@ -165,6 +179,149 @@ class VerificationEngine:
             task_id=task_id,
             step_id=step_id,
             metadata={"query": query},
+        )
+
+    @staticmethod
+    def _verify_command_output(task, step, result) -> VerificationResult:
+        """Compare an observed command result with explicit plan conditions."""
+        task_id = getattr(task, "id", None)
+        step_id = getattr(step, "id", None)
+        metadata = getattr(step, "metadata", {}) or {}
+        output = getattr(result, "output", None)
+        output = output if isinstance(output, dict) else {}
+
+        expected_stdout = metadata.get("expected_stdout")
+        if not isinstance(expected_stdout, str):
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                summary="Command-output verification has no expected_stdout condition.",
+                source="command_result",
+                task_id=task_id,
+                step_id=step_id,
+            )
+
+        try:
+            raw_expected_returncode = metadata.get("expected_returncode", 0)
+            if isinstance(raw_expected_returncode, bool):
+                raise ValueError("boolean return codes are not valid")
+            expected_returncode = int(raw_expected_returncode)
+            actual_returncode = int(output["returncode"])
+        except (KeyError, TypeError, ValueError):
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                summary="Command-output verification lacks a valid process return code.",
+                source="command_result",
+                task_id=task_id,
+                step_id=step_id,
+            )
+
+        actual_stdout = output.get("stdout")
+        if not isinstance(actual_stdout, str):
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                summary="Command-output verification lacks captured stdout.",
+                source="command_result",
+                task_id=task_id,
+                step_id=step_id,
+            )
+
+        match_mode = str(metadata.get("stdout_match") or "exact").strip().lower()
+        expected = expected_stdout.rstrip("\r\n")
+        actual = actual_stdout.rstrip("\r\n")
+        if match_mode == "exact":
+            output_matches = actual == expected
+        elif match_mode == "contains":
+            output_matches = expected in actual
+        else:
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                summary="Command-output verification supports only exact or contains matching.",
+                source="command_result",
+                task_id=task_id,
+                step_id=step_id,
+                metadata={"stdout_match": match_mode},
+            )
+
+        verified = actual_returncode == expected_returncode and output_matches
+        summary = (
+            "Observed the expected command exit code and stdout."
+            if verified
+            else "The command result did not match the expected exit code or stdout."
+        )
+        return VerificationResult(
+            status=(
+                VerificationStatus.VERIFIED
+                if verified
+                else VerificationStatus.FAILED
+            ),
+            summary=summary,
+            source="command_result",
+            task_id=task_id,
+            step_id=step_id,
+            metadata={
+                "expected_returncode": expected_returncode,
+                "actual_returncode": actual_returncode,
+                "expected_stdout": expected,
+                "actual_stdout": actual,
+                "stdout_match": match_mode,
+            },
+        )
+
+    @staticmethod
+    def _verify_file_content(task, step, result) -> VerificationResult:
+        """Verify a workspace readback against the plan's exact file condition."""
+        task_id = getattr(task, "id", None)
+        step_id = getattr(step, "id", None)
+        metadata = getattr(step, "metadata", {}) or {}
+        output = getattr(result, "output", None)
+        output = output if isinstance(output, dict) else {}
+
+        expected_path = metadata.get("expected_path")
+        expected_content = metadata.get("expected_content")
+        actual_path = output.get("path")
+        actual_content = output.get("content")
+        if not isinstance(expected_path, str) or not isinstance(expected_content, str):
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                summary="File-content verification lacks an expected path or content.",
+                source="filesystem.read_file",
+                task_id=task_id,
+                step_id=step_id,
+            )
+        if not isinstance(actual_path, str) or not isinstance(actual_content, str):
+            return VerificationResult(
+                status=VerificationStatus.UNKNOWN,
+                summary="File-content verification lacks readable file evidence.",
+                source="filesystem.read_file",
+                task_id=task_id,
+                step_id=step_id,
+            )
+
+        normalize_path = lambda value: value.replace("\\", "/").strip("/")
+        path_matches = normalize_path(actual_path) == normalize_path(expected_path)
+        content_matches = actual_content == expected_content
+        verified = path_matches and content_matches
+        return VerificationResult(
+            status=(
+                VerificationStatus.VERIFIED
+                if verified
+                else VerificationStatus.FAILED
+            ),
+            summary=(
+                "The read-back file path and contents match the planned condition."
+                if verified
+                else "The read-back file path or contents did not match the planned condition."
+            ),
+            source="filesystem.read_file",
+            task_id=task_id,
+            step_id=step_id,
+            metadata={
+                "expected_path": expected_path,
+                "actual_path": actual_path,
+                "path_matches": path_matches,
+                "content_matches": content_matches,
+                "sha256": output.get("sha256"),
+            },
         )
 
     def _verify_media_playback(self, task, step, result) -> VerificationResult:

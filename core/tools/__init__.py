@@ -40,6 +40,11 @@ from .computer import (
     ComputerWaitTool,
 )
 from .test_tool import EchoTool
+from .workspace import (
+    ListWorkspaceFilesTool,
+    ReadWorkspaceFileTool,
+    WriteWorkspaceFileTool,
+)
 
 __all__ = [
     "ApprovalManager", "PendingApproval",
@@ -54,4 +59,5 @@ __all__ = [
     "ComputerController", "ComputerWaitTool", "ComputerMoveMouseTool", "ComputerClickTool",
     "ComputerTypeTextTool", "ComputerKeypressTool", "ComputerHotkeyTool",
     "ComputerScrollTool",
+    "ListWorkspaceFilesTool", "ReadWorkspaceFileTool", "WriteWorkspaceFileTool",
 ]

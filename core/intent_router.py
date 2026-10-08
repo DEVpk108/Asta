@@ -95,6 +95,23 @@ class IntentRouter:
         r"(?:verify|check)\s+.+)$",
         re.IGNORECASE,
     )
+    _PROJECT_TASK_LEAD = re.compile(
+        r"^(?:(?:please|can you|could you|would you|will you|"
+        r"i want you to|i need you to|okay|ok|hey)\s+)+",
+        re.IGNORECASE,
+    )
+    _PROJECT_TASK_VERB = re.compile(
+        r"^(?:create|build|make|write|add|edit|modify|change|update|"
+        r"fix|debug|test|run|inspect|implement|work on)\b",
+        re.IGNORECASE,
+    )
+    _PROJECT_TASK_CONTEXT = re.compile(
+        r"\b(?:project|repository|repo|codebase|source code|code|python|"
+        r"script|program|file|tests?|bug|error|module|function|package)\b|"
+        r"\b[\w.-]+\.(?:py|pyw|js|jsx|ts|tsx|java|c|cc|cpp|h|hpp|go|rs|"
+        r"rb|php|cs|swift|kt)\b",
+        re.IGNORECASE,
+    )
 
     def route(self, text: str) -> IntentType:
         """Backward-compatible intent-only API."""
@@ -172,6 +189,18 @@ class IntentRouter:
                 entities=screen_question,
                 requires_tools=True,
                 classifier="rules",
+            )
+
+        project_task = self._extract_project_task(normalized)
+        if project_task:
+            return IntentResult(
+                intent=IntentType.TASK,
+                confidence=0.92,
+                normalized_text=normalized,
+                entities=project_task,
+                requires_tools=True,
+                requires_reasoning=True,
+                classifier="project_task_rules",
             )
 
         compound_commands = self._extract_compound_commands(
@@ -253,6 +282,27 @@ class IntentRouter:
             normalized_text=normalized,
             classifier="rules",
         )
+
+    @classmethod
+    def _extract_project_task(cls, text: str) -> dict[str, Any]:
+        """Route clear code/project work to the bounded cognitive planner."""
+        value = cls._PROJECT_TASK_LEAD.sub("", str(text or "").strip()).strip()
+        if not cls._PROJECT_TASK_VERB.match(value):
+            return {}
+        if not cls._PROJECT_TASK_CONTEXT.search(value):
+            return {}
+
+        # The first open-ended task path is intentionally restricted to
+        # project inspection/editing and an explicitly approved command run.
+        return {
+            "goal": str(text or "").strip(),
+            "capability_scope": [
+                "filesystem.list_files",
+                "filesystem.read_file",
+                "filesystem.write_file",
+                "system.run_command",
+            ],
+        }
 
     @staticmethod
     def _strip_wakeword_prefix(text: str) -> str:

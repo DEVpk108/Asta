@@ -728,7 +728,11 @@ class AgentBrain:
                 "screen coordinate, do not invent coordinates: plan vision.locate "
                 "first and let the next decision use its grounded result. Do not "
                 "add screenshots or open-screenshot steps. Keep success conditions "
-                "observable and concise."
+                "observable and concise. Respect capability_scope exactly when "
+                "one is supplied. For a command-output check, include "
+                "verification='command.output', expected_returncode=0, "
+                "expected_stdout, and stdout_match='exact' or 'contains' on the "
+                "run step. Never infer success from a launched process alone."
             ),
             "required_output": {
                 "goal_summary": "one sentence",
@@ -739,10 +743,22 @@ class AgentBrain:
                     {
                         "action": "semantic action",
                         "tool": "exact registered tool name",
-                        "target": "optional target",
+                        "target": "optional target or executable name for run",
                         "operation": "optional operation",
                         "query": "optional query",
-                        "provider": "optional provider"
+                        "provider": "optional provider",
+                        "path": "workspace-relative file or directory path",
+                        "content": "text content for a new or updated file",
+                        "expected_sha256": "digest returned by filesystem.read_file when updating",
+                        "expected_sha256_from_step": "earlier completed read_file step id, when updating",
+                        "arguments": "array of argument strings",
+                        "cwd": "optional workspace-relative working directory",
+                        "verification": "optional command.output verifier",
+                        "expected_returncode": "expected command return code",
+                        "expected_stdout": "expected command output",
+                        "stdout_match": "exact or contains",
+                        "expected_path": "path expected from filesystem.read_file verification",
+                        "expected_content": "exact file contents for filesystem.file_content verification",
                     }
                 ]
             }
@@ -757,11 +773,20 @@ class AgentBrain:
         from core.tools.selector import ToolSelector
 
         selected = []
-        try:
-            definition = ToolSelector(registry).select(intent)
-            selected.append(definition)
-        except (KeyError, ValueError):
-            pass
+        scope = (intent.entities or {}).get("capability_scope")
+        if isinstance(scope, (list, tuple, set, frozenset)):
+            for name in scope:
+                try:
+                    if registry.contains(str(name)):
+                        selected.append(registry.get(str(name)).definition)
+                except (KeyError, ValueError):
+                    continue
+        else:
+            try:
+                definition = ToolSelector(registry).select(intent)
+                selected.append(definition)
+            except (KeyError, ValueError):
+                pass
 
         goal_text = str(goal or "").lower()
         visual_goal = any(
@@ -786,16 +811,21 @@ class AgentBrain:
             ).strip().lower()
 
         if (
-            (visual_goal or selected_category == "computer")
+            not isinstance(scope, (list, tuple, set, frozenset))
+            and (visual_goal or selected_category == "computer")
             and registry.contains("vision.locate")
         ):
             selected.append(registry.get("vision.locate").definition)
 
-        if visual_goal and registry.contains("vision.inspect"):
+        if (
+            not isinstance(scope, (list, tuple, set, frozenset))
+            and visual_goal
+            and registry.contains("vision.inspect")
+        ):
             selected.append(registry.get("vision.inspect").definition)
 
         if not selected:
-            return AgentBrain._compact_capabilities(registry)
+            return []
 
         deduped = []
         seen = set()
@@ -809,9 +839,12 @@ class AgentBrain:
                 {
                     "name": definition.name,
                     "description": definition.description,
+                    "input_schema": dict(schema),
                     "actions": list(metadata.get("actions") or metadata.get("action_aliases") or ()),
                     "category": metadata.get("category"),
                     "required_inputs": list(schema.get("required") or ()),
+                    "risk_level": definition.risk_level,
+                    "requires_confirmation": definition.requires_confirmation,
                 }
             )
         return deduped
