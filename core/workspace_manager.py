@@ -47,16 +47,25 @@ class WorkspaceManager:
         path: str | None = None,
         repository: str | None = None,
         branch: str | None = None,
+        reset_file_history: bool = False,
     ) -> WorkspaceState:
         with self._lock:
+            path_changed = False
             if name is not None:
                 self._state.project_name = str(name).strip()
             if path is not None:
-                self._state.project_path = str(path).strip()
+                new_path = str(path).strip()
+                path_changed = bool(self._state.project_path) and (
+                    new_path != self._state.project_path
+                )
+                self._state.project_path = new_path
             if repository is not None:
                 self._state.repository = str(repository).strip()
             if branch is not None:
                 self._state.branch = str(branch).strip()
+            if reset_file_history or path_changed:
+                self._state.active_files = []
+                self._state.recent_files = []
             return self._commit_locked()
 
     def set_active_files(self, files: Iterable[str]) -> WorkspaceState:

@@ -2,9 +2,9 @@ from core import Kernel
 from core.workspace_runtime import WorkspaceRuntimeModule
 
 
-def test_workspace_runtime_populates_runtime_discoverable_state():
+def test_workspace_runtime_populates_runtime_discoverable_state(tmp_path):
     kernel = Kernel()
-    module = WorkspaceRuntimeModule(kernel)
+    module = WorkspaceRuntimeModule(kernel, state_path=tmp_path / "workspace.json")
 
     module.initialize()
     try:

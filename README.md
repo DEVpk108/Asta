@@ -244,7 +244,8 @@ already set in the environment take precedence.
 | `ASTA_PRELAUNCHED_HUD` | `0` | A launcher already started the HUD |
 | `ASTA_ENABLE_TEXT_INPUT` | `0` | Enable the legacy terminal text adapter |
 | `ASTA_AGENT_MODE` | `0` | Enable the cognitive planner for scoped, open-ended project tasks |
-| `ASTA_WORKSPACE_PATH` | Git root, otherwise current directory | Active project root for workspace file tools and command working directories |
+| `ASTA_WORKSPACE_PATH` | Saved workspace, then Git root/current directory | Explicit active project root for workspace file tools and command working directories |
+| `ASTA_WORKSPACE_STATE_PATH` | `~/.asta/workspace.json` | Local project identity and relative file-recency state; overrides the default state-file path |
 | `ASTA_SANDBOX_IMAGE` | `asta-python-sandbox:1` | Already-built local image for Python/pytest task execution; runtime pulls are disabled |
 | `ASTA_CONTAINER_RUNTIME` | `docker` | Local Docker or Podman CLI used for sandboxed project commands |
 | `ASTA_LLM_PROVIDER` | `llama_cpp` | Local LLM provider |
@@ -428,7 +429,8 @@ your own setup, grant them explicitly through `AuthorityManager.grant(...)`.
 Project requests such as creating or testing a code file can use the existing
 task planner and runtime when `ASTA_AGENT_MODE=1`. Set
 `ASTA_WORKSPACE_PATH` to the project directory you want A.S.T.A. to work in;
-otherwise the workspace runtime attempts to use the current Git repository.
+otherwise an existing saved project is restored, falling back to the current
+Git repository on first use.
 The workspace path is an explicit boundary for file tools and the working
 directory for `system.run_command`.
 
@@ -460,6 +462,29 @@ pytest -q tests/test_workspace_project_task.py
 a sanitized snapshot rather than the live project, so command-side file changes
 are discarded; make intended source changes through workspace file tools.
 The first file tools also do not delete, move, or patch files.
+
+### Project context continuity (early preview)
+
+`WorkspaceRuntimeModule` restores the last existing project workspace across
+restarts. `ASTA_WORKSPACE_PATH`, when set, takes precedence; otherwise A.S.T.A.
+uses the saved project path before falling back to the Git root or launch
+directory. Project name, path, sanitized repository URL, branch, and up to 20
+relative active/recent file paths are stored in `~/.asta/workspace.json`
+(override with `ASTA_WORKSPACE_STATE_PATH`). Successful workspace file reads
+and writes move that path to the front of the recent-file list.
+
+The local JSON stores file names only—never file contents, environment
+variables, hardware details, credentials, or VCS metadata. When the selected
+project changes, its old file history is cleared. This first slice does not
+persist in-progress task plans or resume a task after restart; that remains a
+separate milestone. See
+[Project/workspace continuity acceptance test](docs/project-workspace-continuity.md).
+
+Focused checks:
+
+```bash
+pytest -q tests/test_workspace_continuity.py tests/test_workspace_runtime.py tests/test_workspace_manager.py
+```
 
 ### HUD transport security
 
@@ -518,7 +543,7 @@ sake.
 | --- | --- | --- |
 | Stabilize the foundation | Preserve the voice, AI, HUD, conversation-history, and tool flow; keep startup and shutdown predictable; document event contracts and add useful runtime traces. | A repeatable baseline works across a normal session, shutdown, and restart. |
 | Prove the general agent loop — next major milestone | Use generic, permission-aware tools to inspect a small project, create or modify a file, run Python/pytest in a constrained container, inspect the result, and recover from a bounded, safe failure. | A.S.T.A. completes a small multi-step project task without a special hard-coded script for that exact request, then reports what it changed and what it verified. |
-| Build project/workspace continuity | Track project identity, root, repository and branch, current task, important files, and recent changes so a request can resume in the right environment. | A project follow-up is grounded in the registered workspace and its current state. |
+| Build project/workspace continuity — current increment | Persist project identity, root, repository and branch, and recently touched relative file paths; next add a safe task checkpoint and resume contract. | A project follow-up is grounded in the registered workspace; task continuation remains explicit and permission-aware. |
 | Grow memory in deliberate layers | Keep chat history separate from useful episodic, project, semantic, user, and procedural memory. Preserve source and confidence where useful; support summarizing and forgetting instead of treating every old statement as permanently true. | A.S.T.A. retrieves relevant project knowledge without indiscriminately storing every conversation. |
 | Improve planning, reflection, and proactivity | Decompose larger goals, checkpoint progress, observe results, replan within explicit limits, and save only useful lessons. Make proactive suggestions only when supported by relevant context. | Failures are diagnosed and handled safely; the assistant knows when to stop or ask the user. |
 | Expand integrations and specialist capabilities | Add domain-focused agents, external APIs/services, broader desktop workflows, and eventually electronics or physical devices after the core loop is dependable. | New capabilities plug into stable contracts without rewriting the core or granting excessive authority. |
@@ -542,10 +567,10 @@ autonomy.
 
 ## Current status
 
-Early and evolving. The current focus remains the voice -> reason -> act ->
-speak loop and the HUD. The next practical proof point is a dependable
-small-project workflow: inspect a project, make a requested change, run it,
-read the result, recover safely if it fails, and report the outcome. The roadmap
-is staged; it does not imply that every planned capability is implemented or
+Early and evolving. The workspace can now retain a project identity and recent
+file paths across restarts, and the early sandboxed project-task loop can read,
+write, execute, verify, and recover within its declared limits. Durable task
+checkpoints and automatic resume are not implemented yet. The roadmap is
+staged; it does not imply that every planned capability is implemented or
 reliable today. `vision/face_recognition.py` remains a standalone OpenCV
 experiment and is not wired into the kernel.
