@@ -4,52 +4,92 @@ import os
 import platform
 import subprocess
 import sys
+import logging
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from .module import Module
+from .workspace_store import WorkspaceStateStore
+
+
+logger = logging.getLogger(__name__)
 
 
 class WorkspaceRuntimeModule(Module):
     """Populate WorkspaceManager with runtime-discoverable workspace state."""
 
-    def __init__(self, kernel):
+    def __init__(self, kernel, *, state_path=None):
         super().__init__(
             name="WorkspaceRuntimeModule",
             event_bus=kernel.event_bus,
             kernel=kernel,
         )
+        self.state_store = WorkspaceStateStore(state_path)
 
     def initialize(self):
+        self._restore_workspace()
+        self.event_bus.subscribe("workspace_updated", self.on_workspace_updated)
         self.event_bus.subscribe("workspace_refresh", self.on_refresh)
         self.refresh()
         print("[Workspace] Ready", flush=True)
 
     def shutdown(self):
+        self.event_bus.unsubscribe("workspace_updated", self.on_workspace_updated)
         self.event_bus.unsubscribe("workspace_refresh", self.on_refresh)
         print("[Workspace] Stopped", flush=True)
+
+    def _restore_workspace(self):
+        state = self.state_store.load()
+        manager = self.kernel.workspace_manager
+        current = manager.snapshot()
+        if not state or current.get("project_path"):
+            return
+        manager.update_project(
+            name=state.get("project_name"),
+            path=state.get("project_path"),
+            repository=state.get("repository"),
+            branch=state.get("branch"),
+        )
+        manager.set_active_files(state.get("active_files", []))
+        manager.set_recent_files(state.get("recent_files", []))
+
+    def on_workspace_updated(self, workspace=None, **kwargs):
+        if not isinstance(workspace, dict):
+            return
+        try:
+            self.state_store.save(workspace)
+        except (OSError, ValueError, TypeError):
+            logger.exception("Could not persist the workspace context.")
 
     def on_refresh(self):
         self.refresh()
 
     def refresh(self):
         manager = self.kernel.workspace_manager
-        root = self._workspace_root()
-
+        previous = manager.snapshot()
+        root = self._workspace_root(previous.get("project_path", ""))
+        previous_path = str(previous.get("project_path") or "").strip()
+        try:
+            project_changed = bool(previous_path) and (
+                Path(previous_path).expanduser().resolve() != root
+            )
+        except (OSError, RuntimeError):
+            project_changed = bool(previous_path)
         repository = self._git_value(
             root,
             ["git", "config", "--get", "remote.origin.url"],
-        )
+        ) or ("" if project_changed else str(previous.get("repository") or ""))
         branch = self._git_value(
             root,
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        )
+        ) or ("" if project_changed else str(previous.get("branch") or ""))
 
         manager.update_project(
             name=root.name,
             path=str(root),
             repository=self._normalize_repository(repository),
             branch=branch,
+            reset_file_history=project_changed,
         )
         manager.set_environment(
             {
@@ -68,12 +108,20 @@ class WorkspaceRuntimeModule(Module):
         )
 
     @staticmethod
-    def _workspace_root() -> Path:
+    def _workspace_root(persisted_path: str = "") -> Path:
         configured = os.getenv("ASTA_WORKSPACE_PATH", "").strip()
         if configured:
             path = Path(configured).expanduser().resolve()
-            if path.exists():
+            if path.is_dir():
                 return path
+
+        if persisted_path:
+            try:
+                path = Path(persisted_path).expanduser().resolve()
+                if path.is_dir():
+                    return path
+            except (OSError, RuntimeError):
+                pass
 
         root = WorkspaceRuntimeModule._git_toplevel(Path.cwd())
         if root is not None:
@@ -127,9 +175,13 @@ class WorkspaceRuntimeModule(Module):
                 if parsed.port:
                     netloc = f"{hostname}:{parsed.port}"
             except ValueError:
-                return value
+                return ""
             return urlunsplit(
-                (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+                (parsed.scheme, netloc, parsed.path, "", "")
             )
 
+        if "@" in value:
+            host, separator, repository_path = value.partition(":")
+            if separator:
+                return f"{host.rsplit('@', 1)[-1]}:{repository_path}"
         return value

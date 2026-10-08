@@ -160,6 +160,19 @@ class _WorkspaceFileTool(Tool):
     def _root(self) -> Path:
         return resolve_workspace_root(self.workspace_manager)
 
+    def _record_recent_file(self, root: Path, path: Path) -> None:
+        recorder = getattr(self.workspace_manager, "add_recent_file", None)
+        if not callable(recorder):
+            return
+        try:
+            if resolve_workspace_root(self.workspace_manager) != root:
+                return
+            recorder(path.relative_to(root).as_posix())
+        except (OSError, RuntimeError, ValueError, WorkspacePathError):
+            # Recent-file bookkeeping must not turn a successful project read
+            # or write into a failed file operation.
+            return
+
 
 class ListWorkspaceFilesTool(_WorkspaceFileTool):
     @property
@@ -304,6 +317,7 @@ class ReadWorkspaceFileTool(_WorkspaceFileTool):
                     f"Files larger than {MAX_TEXT_FILE_BYTES} bytes cannot be read by this tool."
                 )
             content = raw.decode("utf-8")
+            self._record_recent_file(root, path)
             return _tool_result(
                 request,
                 success=True,
@@ -431,6 +445,7 @@ class WriteWorkspaceFileTool(_WorkspaceFileTool):
             os.replace(temp_path, path)
             temp_path = None
             digest = hashlib.sha256(payload).hexdigest()
+            self._record_recent_file(root, path)
             return _tool_result(
                 request,
                 success=True,
