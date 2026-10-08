@@ -6,11 +6,11 @@ from .builtin import (
     AudioControlTool,
     CloseApplicationTool,
     LaunchApplicationTool,
-    RunCommandTool,
     ScreenshotTool,
     StartProcessTool,
     StopProcessTool,
 )
+from .sandbox import RunCommandTool
 from .dispatcher import ToolDispatcher
 from .module import ToolRuntimeModule
 from .policy import (

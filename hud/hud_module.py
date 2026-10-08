@@ -290,6 +290,7 @@ class HUDModule(Module):
     def on_task_progress(self, task_id=None, phase="working", text="", *args, **kwargs):
         phase_value = str(phase or "working").strip().lower()
         activity = str(text or "working").strip() or "working"
+        sandbox_run = "isolated container" in activity.lower()
 
         if phase_value in {"planning", "replanning", "recovery"}:
             self.set_state(
@@ -303,9 +304,17 @@ class HUDModule(Module):
             self.set_state(
                 mode="executing",
                 intensity="high",
-                status="EXECUTING" if phase_value == "executing" else "READY",
+                status=(
+                    "SANDBOX RUN"
+                    if sandbox_run
+                    else ("EXECUTING" if phase_value == "executing" else "READY")
+                ),
                 progress=None,
-                activity=activity,
+                activity=(
+                    "Python/pytest · workspace snapshot is read-only · network off"
+                    if sandbox_run
+                    else activity
+                ),
             )
         else:
             self.set_state(
@@ -371,8 +380,19 @@ class HUDModule(Module):
     })
 
     def on_tool_request(self, request):
-        self.set_state(mode="executing", intensity="high", status="EXECUTING", progress=None, activity=getattr(request, "tool", None) or "tool")
         tool = str(getattr(request, "tool", "") or "")
+        sandbox_run = tool == "system.run_command"
+        self.set_state(
+            mode="executing",
+            intensity="high",
+            status="SANDBOX RUN" if sandbox_run else "EXECUTING",
+            progress=None,
+            activity=(
+                "Python/pytest · workspace snapshot is read-only · network off"
+                if sandbox_run
+                else (tool or "tool")
+            ),
+        )
         if tool in self._SCREEN_TOOLS:
             self._step_aside()
 

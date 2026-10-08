@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import sys
+from pathlib import Path
 
 from core import Kernel, Planner
 from core.agent import AgentPlanProposal
@@ -21,6 +22,7 @@ from core.tools import (
     ToolRuntimeModule,
     WriteWorkspaceFileTool,
 )
+from core.tools.sandbox import SandboxProcessResult
 
 
 GOAL = (
@@ -28,6 +30,35 @@ GOAL = (
     "Only work in this project."
 )
 FILE_CONTENT = 'print("ASTA_OK")\n'
+
+
+class FakeSandboxRuntime:
+    runtime_name = "test-container-runtime"
+
+    def __init__(self, *, timeout_on_start=False):
+        self.calls = []
+        self.timeout_on_start = timeout_on_start
+        self.snapshot_main = ""
+
+    def run(self, arguments, *, timeout, output_limit):
+        arguments = list(arguments)
+        self.calls.append(arguments)
+        if arguments[0] == "create":
+            mount = arguments[arguments.index("--mount") + 1]
+            source = mount.split("source=", 1)[1].split(",target=", 1)[0]
+            main_file = Path(source) / "main.py"
+            self.snapshot_main = (
+                main_file.read_text(encoding="utf-8")
+                if main_file.is_file()
+                else ""
+            )
+            return SandboxProcessResult(0, stdout="test-container\n")
+        if arguments[0] == "start":
+            if self.timeout_on_start:
+                return SandboxProcessResult(137, timed_out=True)
+            stdout = "ASTA_OK\n" if "ASTA_OK" in self.snapshot_main else "WRONG\n"
+            return SandboxProcessResult(0, stdout=stdout)
+        return SandboxProcessResult(0)
 
 
 class FixedPlanBrain:
@@ -200,7 +231,12 @@ def _build_runtime(
     kernel.register_tool(ListWorkspaceFilesTool(kernel.workspace_manager))
     kernel.register_tool(ReadWorkspaceFileTool(kernel.workspace_manager))
     kernel.register_tool(WriteWorkspaceFileTool(kernel.workspace_manager))
-    kernel.register_tool(RunCommandTool(kernel.workspace_manager))
+    kernel.register_tool(
+        RunCommandTool(
+            kernel.workspace_manager,
+            runtime=FakeSandboxRuntime(),
+        )
+    )
 
     brain = FixedPlanBrain(plan, replanned_steps=replanned_plan)
     kernel.agent_brain = brain
@@ -427,7 +463,8 @@ def test_run_command_is_workspace_rooted_and_times_out(tmp_path):
     workspace.mkdir()
     kernel = Kernel()
     kernel.workspace_manager.update_project(path=str(workspace))
-    tool = RunCommandTool(kernel.workspace_manager)
+    runtime = FakeSandboxRuntime(timeout_on_start=True)
+    tool = RunCommandTool(kernel.workspace_manager, runtime=runtime)
 
     escaped = tool.execute(
         ToolRequest(
@@ -457,6 +494,8 @@ def test_run_command_is_workspace_rooted_and_times_out(tmp_path):
     )
     assert not timed_out.success
     assert "timed out" in timed_out.error.lower()
+    assert any(call[0] == "kill" for call in runtime.calls)
+    assert runtime.calls[-1][:2] == ["rm", "--force"]
 
 
 def test_write_waits_for_explicit_authorization_before_touching_file(tmp_path):

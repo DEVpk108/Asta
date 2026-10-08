@@ -77,6 +77,35 @@ def test_tool_and_approval_events_update_hud_state():
     hud.shutdown()
 
 
+def test_workspace_command_is_labeled_as_sandbox_execution():
+    kernel, hud = build_hud()
+
+    kernel.event_bus.emit(
+        "tool_request",
+        request=SimpleNamespace(tool="system.run_command"),
+    )
+    assert hud.get_state().status == "SANDBOX RUN"
+    assert "read-only" in hud.get_state().activity
+    assert "network off" in hud.get_state().activity
+
+    kernel.event_bus.emit(
+        "task_progress",
+        task_id="task-1",
+        phase="executing",
+        text=(
+            "Running Python in an isolated container. "
+            "Only a sanitized, read-only workspace snapshot is mounted; "
+            "network access is disabled."
+        ),
+    )
+    assert hud.get_state().status == "SANDBOX RUN"
+    assert hud.get_state().activity == (
+        "Python/pytest · workspace snapshot is read-only · network off"
+    )
+
+    hud.shutdown()
+
+
 def test_user_message_enters_thinking_without_overwriting_speech():
     kernel, hud = build_hud()
 
