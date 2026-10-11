@@ -1,0 +1,2517 @@
+diff --git a/README.md b/README.md
+index e61002f..cd4cbef 100644
+--- a/README.md
++++ b/README.md
+@@ -37,8 +37,9 @@ capture, speech output, and tool execution.
+ 3. `ai` handles deterministic cases first (tool approvals, conversation mode,
+    presentation, screenshot phrasing), then optionally runs the System 1 decision
+    provider (Laya) for structured routing signals. The existing `IntentRouter`
+-   remains authoritative for executable command parsing in this first integration stage.
+-4. A command becomes a `tool_request`. The tool layer checks the authority
++   remains authoritative for executable command parsing; opt-in project tasks
++   use the cognitive planner and the existing task runtime.
++4. A command or planned task step becomes a `tool_request`. The tool layer checks the authority
+    policy and either runs it or emits `tool_confirmation_required` and waits
+    for a spoken yes/no.
+ 5. Anything else goes to the LLM, which streams sentences back as
+@@ -242,6 +243,8 @@ already set in the environment take precedence.
+ | `ASTA_DISABLE_HUD` | `0` | Skip the Electron HUD auto-launch |
+ | `ASTA_PRELAUNCHED_HUD` | `0` | A launcher already started the HUD |
+ | `ASTA_ENABLE_TEXT_INPUT` | `0` | Enable the legacy terminal text adapter |
++| `ASTA_AGENT_MODE` | `0` | Enable the cognitive planner for scoped, open-ended project tasks |
++| `ASTA_WORKSPACE_PATH` | Git root, otherwise current directory | Active project root for workspace file tools and command working directories |
+ | `ASTA_LLM_PROVIDER` | `llama_cpp` | Local LLM provider |
+ | `ASTA_LLM_BASE_URL` | `http://127.0.0.1:8080/v1` | llama-server OpenAI-compatible base URL |
+ | `ASTA_LLM_MODEL` | auto-discovered | llama-server model id/alias |
+@@ -398,6 +401,8 @@ Development Mode also requires the app owner to have Premium.
+ | `system.open_application`, `system.launch_application`, `computer.click` | medium |
+ | `system.start_process`, `system.stop_process`, `computer.type_text`, `computer.keypress`, `computer.hotkey` | high |
+ | `system.run_command` | critical |
++| `filesystem.list_files`, `filesystem.read_file` | low |
++| `filesystem.write_file` | medium |
+ 
+ `AuthorityPolicy` runs tools up to **medium** risk automatically. Anything
+ higher emits `tool_confirmation_required`, A.S.T.A. asks out loud, and the
+@@ -416,6 +421,43 @@ Keyboard tools are `high` risk because a key sequence such as Win+R, typing a
+ command and Enter amounts to arbitrary command execution. To trust them for
+ your own setup, grant them explicitly through `AuthorityManager.grant(...)`.
+ 
++### Workspace-scoped project tasks (early preview)
++
++Project requests such as creating or testing a code file can use the existing
++task planner and runtime when `ASTA_AGENT_MODE=1`. Set
++`ASTA_WORKSPACE_PATH` to the project directory you want A.S.T.A. to work in;
++otherwise the workspace runtime attempts to use the current Git repository.
++The workspace path is an explicit boundary for file tools and the working
++directory for `system.run_command`.
++
++The initial project-file surface is intentionally small:
++
++- `filesystem.list_files` lists workspace entries while omitting common
++  credential and dependency directories.
++- `filesystem.read_file` reads UTF-8 text files up to 512 KiB.
++- `filesystem.write_file` creates or atomically updates a UTF-8 file up to
++  512 KiB. Existing files must first be read and updated with that read's
++  SHA-256 digest, so stale content is not silently overwritten.
++- `system.run_command` accepts an executable and argument list (no shell),
++  uses a workspace-relative `cwd`, and applies the tool request timeout.
++  It remains **critical risk** and requires confirmation under the default
++  policy.
++
++The project planner requires a verified read-back after a file write and
++checks the command's observed return code and stdout when a project plan runs
++a command. If that evidence is missing, A.S.T.A. must not report the task as
++verified. Tests use deterministic plans and temporary workspaces:
++
++```bash
++pytest -q tests/test_workspace_project_task.py
++```
++
++**Important:** Workspace-rooted paths and working directories are not an
++operating-system sandbox. An approved executable can still access other local
++files or the network. Do not treat `system.run_command` as safe for untrusted
++code; a true restricted runner/container remains future work. The first file
++tools also do not delete, move, or patch files.
++
+ ### HUD transport security
+ 
+ The HUD talks to the runtime over `127.0.0.1:18765`. Every client must first
+diff --git a/ai/ai_module.py b/ai/ai_module.py
+index 1d17186..0477af7 100644
+--- a/ai/ai_module.py
++++ b/ai/ai_module.py
+@@ -345,6 +345,21 @@ class AIModule(Module):
+         if result.intent == IntentType.COMMAND:
+             self._handle_command_intent(result)
+             return
++        if result.intent == IntentType.TASK:
++            task_runtime = getattr(self.kernel, "task_runtime", None)
++            starter = getattr(task_runtime, "start_goal", None)
++            if not callable(starter):
++                self._emit_assistant_text(
++                    "I can't start a project task because the task runtime is unavailable."
++                )
++                return
++            task = starter(text, result)
++            if task is None:
++                self._emit_assistant_text(
++                    "I couldn't create a safe executable plan for that project task. "
++                    "No project actions were started."
++                )
++            return
+         if result.intent == IntentType.MEMORY:
+             self.event_bus.emit("memory_request", intent=result)
+             # Nothing used to answer memory requests, so "remember that..."
+@@ -614,6 +629,14 @@ class AIModule(Module):
+         return None
+ 
+     def _run_system1_decision(self, text, *, intent_hint=None):
++        if (
++            intent_hint is not None
++            and intent_hint.intent is IntentType.TASK
++        ):
++            # Scoped project goals use the task planner, not the single-action
++            # System-1 command resolver.
++            return False
++
+         engine = getattr(self.kernel, "decision_engine", None)
+         if engine is None:
+             return False
+@@ -1322,6 +1345,23 @@ class AIModule(Module):
+     def on_tool_result(self, result):
+         if not isinstance(result, ToolResult):
+             return
++        result_metadata = (
++            result.metadata if isinstance(result.metadata, dict) else {}
++        )
++        task_id = result_metadata.get("task_id")
++        task = (
++            self.kernel.task_manager.get(task_id)
++            if isinstance(task_id, str) and task_id
++            else None
++        )
++        if (
++            task is not None
++            and (getattr(task, "metadata", {}) or {}).get("intent_type")
++            == IntentType.TASK.value
++        ):
++            # TaskRuntime owns the verified user-facing summary for project
++            # work. Do not race it with raw intermediate tool output.
++            return
+         text = (
+             self._format_tool_success(result)
+             if result.success
+diff --git a/core/agent/brain.py b/core/agent/brain.py
+index 6cba450..b34c67b 100644
+--- a/core/agent/brain.py
++++ b/core/agent/brain.py
+@@ -728,7 +728,11 @@ class AgentBrain:
+                 "screen coordinate, do not invent coordinates: plan vision.locate "
+                 "first and let the next decision use its grounded result. Do not "
+                 "add screenshots or open-screenshot steps. Keep success conditions "
+-                "observable and concise."
++                "observable and concise. Respect capability_scope exactly when "
++                "one is supplied. For a command-output check, include "
++                "verification='command.output', expected_returncode=0, "
++                "expected_stdout, and stdout_match='exact' or 'contains' on the "
++                "run step. Never infer success from a launched process alone."
+             ),
+             "required_output": {
+                 "goal_summary": "one sentence",
+@@ -739,10 +743,22 @@ class AgentBrain:
+                     {
+                         "action": "semantic action",
+                         "tool": "exact registered tool name",
+-                        "target": "optional target",
++                        "target": "optional target or executable name for run",
+                         "operation": "optional operation",
+                         "query": "optional query",
+-                        "provider": "optional provider"
++                        "provider": "optional provider",
++                        "path": "workspace-relative file or directory path",
++                        "content": "text content for a new or updated file",
++                        "expected_sha256": "digest returned by filesystem.read_file when updating",
++                        "expected_sha256_from_step": "earlier completed read_file step id, when updating",
++                        "arguments": "array of argument strings",
++                        "cwd": "optional workspace-relative working directory",
++                        "verification": "optional command.output verifier",
++                        "expected_returncode": "expected command return code",
++                        "expected_stdout": "expected command output",
++                        "stdout_match": "exact or contains",
++                        "expected_path": "path expected from filesystem.read_file verification",
++                        "expected_content": "exact file contents for filesystem.file_content verification",
+                     }
+                 ]
+             }
+@@ -757,11 +773,20 @@ class AgentBrain:
+         from core.tools.selector import ToolSelector
+ 
+         selected = []
+-        try:
+-            definition = ToolSelector(registry).select(intent)
+-            selected.append(definition)
+-        except (KeyError, ValueError):
+-            pass
++        scope = (intent.entities or {}).get("capability_scope")
++        if isinstance(scope, (list, tuple, set, frozenset)):
++            for name in scope:
++                try:
++                    if registry.contains(str(name)):
++                        selected.append(registry.get(str(name)).definition)
++                except (KeyError, ValueError):
++                    continue
++        else:
++            try:
++                definition = ToolSelector(registry).select(intent)
++                selected.append(definition)
++            except (KeyError, ValueError):
++                pass
+ 
+         goal_text = str(goal or "").lower()
+         visual_goal = any(
+@@ -786,16 +811,21 @@ class AgentBrain:
+             ).strip().lower()
+ 
+         if (
+-            (visual_goal or selected_category == "computer")
++            not isinstance(scope, (list, tuple, set, frozenset))
++            and (visual_goal or selected_category == "computer")
+             and registry.contains("vision.locate")
+         ):
+             selected.append(registry.get("vision.locate").definition)
+ 
+-        if visual_goal and registry.contains("vision.inspect"):
++        if (
++            not isinstance(scope, (list, tuple, set, frozenset))
++            and visual_goal
++            and registry.contains("vision.inspect")
++        ):
+             selected.append(registry.get("vision.inspect").definition)
+ 
+         if not selected:
+-            return AgentBrain._compact_capabilities(registry)
++            return []
+ 
+         deduped = []
+         seen = set()
+@@ -809,9 +839,12 @@ class AgentBrain:
+                 {
+                     "name": definition.name,
+                     "description": definition.description,
++                    "input_schema": dict(schema),
+                     "actions": list(metadata.get("actions") or metadata.get("action_aliases") or ()),
+                     "category": metadata.get("category"),
+                     "required_inputs": list(schema.get("required") or ()),
++                    "risk_level": definition.risk_level,
++                    "requires_confirmation": definition.requires_confirmation,
+                 }
+             )
+         return deduped
+diff --git a/core/autonomy/recovery.py b/core/autonomy/recovery.py
+index d6e1ec6..e4e67db 100644
+--- a/core/autonomy/recovery.py
++++ b/core/autonomy/recovery.py
+@@ -100,7 +100,14 @@ class RecoveryManager:
+         for item in evidence:
+             if not isinstance(item, dict):
+                 continue
+-            if item.get("type") != "tool_result" or item.get("success") is not False:
++            verification = item.get("verification")
++            verification_failed = (
++                isinstance(verification, dict)
++                and verification.get("status") == "failed"
++            )
++            if item.get("type") != "tool_result" or (
++                item.get("success") is not False and not verification_failed
++            ):
+                 continue
+             if item.get("tool") != result.tool:
+                 continue
+diff --git a/core/autonomy/verification.py b/core/autonomy/verification.py
+index 7cd674a..fca6cbf 100644
+--- a/core/autonomy/verification.py
++++ b/core/autonomy/verification.py
+@@ -89,6 +89,20 @@ class VerificationEngine:
+                 result,
+             )
+ 
++        if verification == "command.output":
++            return self._verify_command_output(
++                task,
++                step,
++                result,
++            )
++
++        if verification == "filesystem.file_content":
++            return self._verify_file_content(
++                task,
++                step,
++                result,
++            )
++
+         return VerificationResult(
+             status=VerificationStatus.UNKNOWN,
+             summary=f"No verifier is registered for '{verification}'.",
+@@ -167,6 +181,149 @@ class VerificationEngine:
+             metadata={"query": query},
+         )
+ 
++    @staticmethod
++    def _verify_command_output(task, step, result) -> VerificationResult:
++        """Compare an observed command result with explicit plan conditions."""
++        task_id = getattr(task, "id", None)
++        step_id = getattr(step, "id", None)
++        metadata = getattr(step, "metadata", {}) or {}
++        output = getattr(result, "output", None)
++        output = output if isinstance(output, dict) else {}
++
++        expected_stdout = metadata.get("expected_stdout")
++        if not isinstance(expected_stdout, str):
++            return VerificationResult(
++                status=VerificationStatus.UNKNOWN,
++                summary="Command-output verification has no expected_stdout condition.",
++                source="command_result",
++                task_id=task_id,
++                step_id=step_id,
++            )
++
++        try:
++            raw_expected_returncode = metadata.get("expected_returncode", 0)
++            if isinstance(raw_expected_returncode, bool):
++                raise ValueError("boolean return codes are not valid")
++            expected_returncode = int(raw_expected_returncode)
++            actual_returncode = int(output["returncode"])
++        except (KeyError, TypeError, ValueError):
++            return VerificationResult(
++                status=VerificationStatus.UNKNOWN,
++                summary="Command-output verification lacks a valid process return code.",
++                source="command_result",
++                task_id=task_id,
++                step_id=step_id,
++            )
++
++        actual_stdout = output.get("stdout")
++        if not isinstance(actual_stdout, str):
++            return VerificationResult(
++                status=VerificationStatus.UNKNOWN,
++                summary="Command-output verification lacks captured stdout.",
++                source="command_result",
++                task_id=task_id,
++                step_id=step_id,
++            )
++
++        match_mode = str(metadata.get("stdout_match") or "exact").strip().lower()
++        expected = expected_stdout.rstrip("\r\n")
++        actual = actual_stdout.rstrip("\r\n")
++        if match_mode == "exact":
++            output_matches = actual == expected
++        elif match_mode == "contains":
++            output_matches = expected in actual
++        else:
++            return VerificationResult(
++                status=VerificationStatus.UNKNOWN,
++                summary="Command-output verification supports only exact or contains matching.",
++                source="command_result",
++                task_id=task_id,
++                step_id=step_id,
++                metadata={"stdout_match": match_mode},
++            )
++
++        verified = actual_returncode == expected_returncode and output_matches
++        summary = (
++            "Observed the expected command exit code and stdout."
++            if verified
++            else "The command result did not match the expected exit code or stdout."
++        )
++        return VerificationResult(
++            status=(
++                VerificationStatus.VERIFIED
++                if verified
++                else VerificationStatus.FAILED
++            ),
++            summary=summary,
++            source="command_result",
++            task_id=task_id,
++            step_id=step_id,
++            metadata={
++                "expected_returncode": expected_returncode,
++                "actual_returncode": actual_returncode,
++                "expected_stdout": expected,
++                "actual_stdout": actual,
++                "stdout_match": match_mode,
++            },
++        )
++
++    @staticmethod
++    def _verify_file_content(task, step, result) -> VerificationResult:
++        """Verify a workspace readback against the plan's exact file condition."""
++        task_id = getattr(task, "id", None)
++        step_id = getattr(step, "id", None)
++        metadata = getattr(step, "metadata", {}) or {}
++        output = getattr(result, "output", None)
++        output = output if isinstance(output, dict) else {}
++
++        expected_path = metadata.get("expected_path")
++        expected_content = metadata.get("expected_content")
++        actual_path = output.get("path")
++        actual_content = output.get("content")
++        if not isinstance(expected_path, str) or not isinstance(expected_content, str):
++            return VerificationResult(
++                status=VerificationStatus.UNKNOWN,
++                summary="File-content verification lacks an expected path or content.",
++                source="filesystem.read_file",
++                task_id=task_id,
++                step_id=step_id,
++            )
++        if not isinstance(actual_path, str) or not isinstance(actual_content, str):
++            return VerificationResult(
++                status=VerificationStatus.UNKNOWN,
++                summary="File-content verification lacks readable file evidence.",
++                source="filesystem.read_file",
++                task_id=task_id,
++                step_id=step_id,
++            )
++
++        normalize_path = lambda value: value.replace("\\", "/").strip("/")
++        path_matches = normalize_path(actual_path) == normalize_path(expected_path)
++        content_matches = actual_content == expected_content
++        verified = path_matches and content_matches
++        return VerificationResult(
++            status=(
++                VerificationStatus.VERIFIED
++                if verified
++                else VerificationStatus.FAILED
++            ),
++            summary=(
++                "The read-back file path and contents match the planned condition."
++                if verified
++                else "The read-back file path or contents did not match the planned condition."
++            ),
++            source="filesystem.read_file",
++            task_id=task_id,
++            step_id=step_id,
++            metadata={
++                "expected_path": expected_path,
++                "actual_path": actual_path,
++                "path_matches": path_matches,
++                "content_matches": content_matches,
++                "sha256": output.get("sha256"),
++            },
++        )
++
+     def _verify_media_playback(self, task, step, result) -> VerificationResult:
+         task_id = getattr(task, "id", None)
+         step_id = getattr(step, "id", None)
+diff --git a/core/intent_router.py b/core/intent_router.py
+index b88ddbe..3a0a7fb 100644
+--- a/core/intent_router.py
++++ b/core/intent_router.py
+@@ -95,6 +95,23 @@ class IntentRouter:
+         r"(?:verify|check)\s+.+)$",
+         re.IGNORECASE,
+     )
++    _PROJECT_TASK_LEAD = re.compile(
++        r"^(?:(?:please|can you|could you|would you|will you|"
++        r"i want you to|i need you to|okay|ok|hey)\s+)+",
++        re.IGNORECASE,
++    )
++    _PROJECT_TASK_VERB = re.compile(
++        r"^(?:create|build|make|write|add|edit|modify|change|update|"
++        r"fix|debug|test|run|inspect|implement|work on)\b",
++        re.IGNORECASE,
++    )
++    _PROJECT_TASK_CONTEXT = re.compile(
++        r"\b(?:project|repository|repo|codebase|source code|code|python|"
++        r"script|program|file|tests?|bug|error|module|function|package)\b|"
++        r"\b[\w.-]+\.(?:py|pyw|js|jsx|ts|tsx|java|c|cc|cpp|h|hpp|go|rs|"
++        r"rb|php|cs|swift|kt)\b",
++        re.IGNORECASE,
++    )
+ 
+     def route(self, text: str) -> IntentType:
+         """Backward-compatible intent-only API."""
+@@ -174,6 +191,18 @@ class IntentRouter:
+                 classifier="rules",
+             )
+ 
++        project_task = self._extract_project_task(normalized)
++        if project_task:
++            return IntentResult(
++                intent=IntentType.TASK,
++                confidence=0.92,
++                normalized_text=normalized,
++                entities=project_task,
++                requires_tools=True,
++                requires_reasoning=True,
++                classifier="project_task_rules",
++            )
++
+         compound_commands = self._extract_compound_commands(
+             normalized,
+             known_providers=self._media_providers,
+@@ -254,6 +283,27 @@ class IntentRouter:
+             classifier="rules",
+         )
+ 
++    @classmethod
++    def _extract_project_task(cls, text: str) -> dict[str, Any]:
++        """Route clear code/project work to the bounded cognitive planner."""
++        value = cls._PROJECT_TASK_LEAD.sub("", str(text or "").strip()).strip()
++        if not cls._PROJECT_TASK_VERB.match(value):
++            return {}
++        if not cls._PROJECT_TASK_CONTEXT.search(value):
++            return {}
++
++        # The first open-ended task path is intentionally restricted to
++        # project inspection/editing and an explicitly approved command run.
++        return {
++            "goal": str(text or "").strip(),
++            "capability_scope": [
++                "filesystem.list_files",
++                "filesystem.read_file",
++                "filesystem.write_file",
++                "system.run_command",
++            ],
++        }
++
+     @staticmethod
+     def _strip_wakeword_prefix(text: str) -> str:
+         """Remove a wake phrase already consumed by the voice runtime."""
+diff --git a/core/planner.py b/core/planner.py
+index 1e8e1bc..24d42f0 100644
+--- a/core/planner.py
++++ b/core/planner.py
+@@ -136,31 +136,16 @@ class Planner:
+         if not isinstance(intent, IntentResult):
+             raise PlanningError("planner requires an IntentResult")
+ 
+-        if intent.intent is not IntentType.COMMAND:
+-            raise PlanningError(
+-                "deterministic planner only supports command intents"
+-            )
+-
+-        commands = self._commands_from_intent(intent)
+-        if not commands:
+-            raise PlanningError("command intent contains no executable commands")
+-
+         planner_name = "deterministic"
+         agent_metadata: dict[str, Any] = {}
+         brain = self.agent_brain
+-        use_brain = brain is not None and getattr(brain, "enabled", False)
+-        if use_brain:
+-            reason = self.cognitive_planning_reason(value, intent, commands)
+-            if reason is None:
+-                use_brain = False
+-                print(
+-                    "[Agent] System 1 plan: deterministic command; "
+-                    "skipping the LLM planner.",
+-                    flush=True,
++        proposal = None
++
++        if intent.intent is IntentType.TASK:
++            if brain is None or not getattr(brain, "enabled", False):
++                raise PlanningError(
++                    "Open-ended project tasks require ASTA_AGENT_MODE=1."
+                 )
+-            else:
+-                print(f"[Agent] Cognitive planning: {reason}.", flush=True)
+-        if use_brain:
+             try:
+                 proposal = brain.plan(value, intent=intent)
+                 commands = [dict(step) for step in proposal.steps]
+@@ -184,14 +169,65 @@ class Planner:
+                     flush=True,
+                 )
+             except Exception as exc:
+-                print(
+-                    f"[Agent] Cognitive planning unavailable; "
+-                    f"falling back to deterministic planning: "
+-                    f"{type(exc).__name__}: {exc}",
+-                    flush=True,
+-                )
+-        elif brain is not None and not getattr(brain, "enabled", False):
+-            print("[Agent] Cognitive planning disabled (ASTA_AGENT_MODE=0).", flush=True)
++                raise PlanningError(
++                    f"Cognitive planning failed: {type(exc).__name__}: {exc}"
++                ) from exc
++        elif intent.intent is IntentType.COMMAND:
++            commands = self._commands_from_intent(intent)
++            if not commands:
++                raise PlanningError("command intent contains no executable commands")
++
++            use_brain = brain is not None and getattr(brain, "enabled", False)
++            if use_brain:
++                reason = self.cognitive_planning_reason(value, intent, commands)
++                if reason is None:
++                    use_brain = False
++                    print(
++                        "[Agent] System 1 plan: deterministic command; "
++                        "skipping the LLM planner.",
++                        flush=True,
++                    )
++                else:
++                    print(f"[Agent] Cognitive planning: {reason}.", flush=True)
++            if use_brain:
++                try:
++                    proposal = brain.plan(value, intent=intent)
++                    commands = [dict(step) for step in proposal.steps]
++                    planner_name = "cognitive_v1"
++                    agent_metadata = brain.task_metadata(proposal)
++                    print(
++                        f"[Agent] Goal: {proposal.goal_summary}",
++                        flush=True,
++                    )
++                    print(
++                        f"[Agent] Success conditions: "
++                        f"{'; '.join(proposal.success_conditions)}",
++                        flush=True,
++                    )
++                    print(
++                        f"[Agent] Rationale: {proposal.rationale}",
++                        flush=True,
++                    )
++                    print(
++                        f"[Agent] Uncertainty: {proposal.uncertainty:.2f}",
++                        flush=True,
++                    )
++                except Exception as exc:
++                    print(
++                        f"[Agent] Cognitive planning unavailable; "
++                        f"falling back to deterministic planning: "
++                        f"{type(exc).__name__}: {exc}",
++                        flush=True,
++                    )
++            elif brain is not None and not getattr(brain, "enabled", False):
++                print("[Agent] Cognitive planning disabled (ASTA_AGENT_MODE=0).", flush=True)
++        else:
++            raise PlanningError(
++                "planner only supports command intents and scoped task intents"
++            )
++
++        if not commands:
++            raise PlanningError("planner produced no executable steps")
+ 
+         commands = self._expand_media_commands(
+             commands,
+@@ -230,6 +266,25 @@ class Planner:
+             except ValueError as exc:
+                 raise PlanningError(str(exc)) from exc
+ 
++            declared_tool = str(command.get("tool") or "").strip()
++            if declared_tool and declared_tool != definition.name:
++                raise PlanningError(
++                    f"Planned tool '{declared_tool}' does not match the registered "
++                    f"tool selected for action "
++                    f"'{str(command.get('action') or 'unknown')}' "
++                    f"('{definition.name}')."
++                )
++
++            capability_scope = intent.entities.get("capability_scope")
++            if (
++                intent.intent is IntentType.TASK
++                and isinstance(capability_scope, (list, tuple, set, frozenset))
++                and definition.name not in {str(name) for name in capability_scope}
++            ):
++                raise PlanningError(
++                    f"Capability '{definition.name}' is outside this task's approved scope."
++                )
++
+             action = str(command.get("action") or "").strip()
+             target = str(command.get("target") or "").strip()
+ 
+@@ -244,7 +299,15 @@ class Planner:
+                 description_parts.extend(
+                     part for part in (action, target) if part
+                 )
+-            description = " ".join(description_parts)
++            description = str(command.get("description") or "").strip()
++            if not description:
++                description = " ".join(description_parts)
++            if not description and command.get("path"):
++                description = f"{action} {command['path']}"
++
++            completion_conditions = command.get("completion_conditions")
++            if not isinstance(completion_conditions, (list, tuple)):
++                completion_conditions = [f"{definition.name} reports success"]
+ 
+             step_id = f"step-{index}"
+             steps.append(
+@@ -254,7 +317,9 @@ class Planner:
+                     depends_on=[previous_id] if previous_id else [],
+                     required_capabilities=[definition.name],
+                     completion_conditions=[
+-                        f"{definition.name} reports success",
++                        str(condition).strip()
++                        for condition in completion_conditions
++                        if str(condition).strip()
+                     ],
+                     metadata={
+                         "action": action,
+@@ -274,7 +339,7 @@ class Planner:
+                         **{
+                             key: value
+                             for key, value in command.items()
+-                            if key not in {"action", "target"}
++                            if key not in {"action", "target", "tool"}
+                             and value is not None
+                             and value != ""
+                         },
+@@ -283,6 +348,9 @@ class Planner:
+             )
+             previous_id = step_id
+ 
++        if intent.intent is IntentType.TASK:
++            self._validate_project_task_verification(steps)
++
+         plan = Plan(
+             goal=value,
+             steps=steps,
+@@ -303,6 +371,86 @@ class Planner:
+         )
+         return plan
+ 
++    @staticmethod
++    def _validate_project_task_verification(steps: list[PlanStep]) -> None:
++        """Require observable outcome checks for project writes and commands."""
++        for step in steps:
++            tool = str(step.metadata.get("tool") or "")
++            verification = str(step.metadata.get("verification") or "").strip().lower()
++            if tool == "system.run_command":
++                if verification != "command.output":
++                    raise PlanningError(
++                        "Project command steps must declare command.output verification."
++                    )
++                if not isinstance(step.metadata.get("expected_stdout"), str):
++                    raise PlanningError(
++                        "Project command verification must include expected_stdout."
++                    )
++                raw_expected_returncode = step.metadata.get(
++                    "expected_returncode",
++                    0,
++                )
++                if isinstance(raw_expected_returncode, bool):
++                    raise PlanningError(
++                        "Project command verification has an invalid expected_returncode."
++                    )
++                try:
++                    int(raw_expected_returncode)
++                except (TypeError, ValueError) as exc:
++                    raise PlanningError(
++                        "Project command verification has an invalid expected_returncode."
++                    ) from exc
++                if str(step.metadata.get("stdout_match") or "exact").lower() not in {
++                    "exact",
++                    "contains",
++                }:
++                    raise PlanningError(
++                        "Project command stdout verification must use exact or contains matching."
++                    )
++
++            if tool == "filesystem.write_file":
++                index = steps.index(step)
++                expected_path = str(step.metadata.get("path") or "").replace("\\", "/").strip("/")
++                expected_content = step.metadata.get("content")
++                readbacks = [
++                    candidate
++                    for candidate in steps[index + 1:]
++                    if (
++                        str(candidate.metadata.get("tool") or "") == "filesystem.read_file"
++                        and str(candidate.metadata.get("verification") or "").strip().lower()
++                        == "filesystem.file_content"
++                    )
++                ]
++                if not readbacks:
++                    raise PlanningError(
++                        "Project file writes must be followed by a verified file readback."
++                    )
++                if not any(
++                    str(candidate.metadata.get("expected_path") or "").replace("\\", "/").strip("/")
++                    == expected_path
++                    and candidate.metadata.get("expected_content") == expected_content
++                    and str(candidate.metadata.get("path") or "").replace("\\", "/").strip("/")
++                    == expected_path
++                    for candidate in readbacks
++                ):
++                    raise PlanningError(
++                        "The verified readback must match the written file path and content."
++                    )
++
++            if verification == "filesystem.file_content":
++                if str(step.metadata.get("tool") or "") != "filesystem.read_file":
++                    raise PlanningError(
++                        "File-content verification must be attached to filesystem.read_file."
++                    )
++                if (
++                    not isinstance(step.metadata.get("expected_path"), str)
++                    or not isinstance(step.metadata.get("expected_content"), str)
++                    or not step.metadata.get("expected_path").strip()
++                ):
++                    raise PlanningError(
++                        "File-content verification requires expected_path and expected_content."
++                    )
++
+     _BROWSERS = (
+         "chrome", "google chrome", "chromium", "edge", "microsoft edge",
+         "msedge", "firefox", "mozilla firefox", "brave", "opera", "vivaldi",
+@@ -716,11 +864,22 @@ class Planner:
+         strategy_value = getattr(strategy, "value", str(strategy)).strip().lower()
+         if strategy_value == "rebuild_plan":
+             entities = dict(task.metadata.get("intent_entities") or {})
++            intent_type = (
++                IntentType.TASK
++                if task.metadata.get("intent_type") == IntentType.TASK.value
++                else IntentType.COMMAND
++            )
+             intent = IntentResult(
+-                intent=IntentType.COMMAND,
++                intent=intent_type,
+                 confidence=float(task.metadata.get("confidence", 0.98)),
+                 normalized_text=task.goal,
+-                entities=entities,
++                entities={
++                    **entities,
++                    "recovery_context": self._compact_recovery_context(
++                        task,
++                        diagnosis,
++                    ),
++                },
+                 requires_tools=True,
+                 classifier=str(task.metadata.get("classifier", "replan")),
+             )
+@@ -818,6 +977,85 @@ class Planner:
+             },
+         )
+ 
++    @staticmethod
++    def _compact_recovery_context(task, diagnosis) -> dict[str, Any]:
++        """Give the replanner bounded evidence from the failed attempt."""
++        evidence_items = []
++        for item in (getattr(task, "evidence", ()) or ())[-8:]:
++            if not isinstance(item, dict):
++                continue
++            compact = {
++                key: item.get(key)
++                for key in (
++                    "tool",
++                    "success",
++                    "error",
++                    "plan_step_id",
++                )
++                if item.get(key) is not None
++            }
++
++            verification = item.get("verification")
++            if isinstance(verification, dict):
++                compact["verification"] = {
++                    key: verification.get(key)
++                    for key in ("status", "summary", "source")
++                    if verification.get(key) is not None
++                }
++
++            output = item.get("output")
++            if isinstance(output, dict):
++                compact_output = {}
++                for key in (
++                    "returncode",
++                    "stdout",
++                    "stderr",
++                    "path",
++                    "sha256",
++                    "bytes_read",
++                ):
++                    value = output.get(key)
++                    if isinstance(value, str):
++                        compact_output[key] = value[:1200]
++                    elif value is not None:
++                        compact_output[key] = value
++                content = output.get("content")
++                if isinstance(content, str):
++                    compact_output["content"] = content[:2000]
++                    compact_output["content_truncated"] = len(content) > 2000
++                entries = output.get("items")
++                if isinstance(entries, list):
++                    compact_output["items"] = [
++                        {
++                            key: entry.get(key)
++                            for key in ("path", "kind")
++                            if entry.get(key) is not None
++                        }
++                        for entry in entries[:40]
++                        if isinstance(entry, dict)
++                    ]
++                    compact_output["items_truncated"] = len(entries) > 40
++                if compact_output:
++                    compact["output"] = compact_output
++            evidence_items.append(compact)
++
++        failed_step = None
++        step_id = getattr(diagnosis, "step_id", None)
++        if step_id and getattr(task, "plan", None) is not None:
++            try:
++                failed_step = task.plan.get_step(step_id).to_dict()
++            except (KeyError, ValueError):
++                failed_step = None
++
++        return {
++            "summary": str(getattr(diagnosis, "summary", "") or "")[:1200],
++            "category": str(
++                getattr(getattr(diagnosis, "category", None), "value", "unknown")
++            ),
++            "failed_step": failed_step,
++            "recent_evidence": evidence_items,
++        }
++
+     def _expand_media_commands(
+         self,
+         commands: list[dict[str, Any]],
+diff --git a/core/task_runtime.py b/core/task_runtime.py
+index 1f63547..3159322 100644
+--- a/core/task_runtime.py
++++ b/core/task_runtime.py
+@@ -400,6 +400,34 @@ class TaskRuntimeModule(Module):
+         )
+         return task
+ 
++    def start_goal(self, goal: str, intent: IntentResult):
++        """Start a scoped, open-ended task and dispatch its first planned step."""
++        if not isinstance(intent, IntentResult) or intent.intent is not IntentType.TASK:
++            raise ValueError("start_goal requires a task intent")
++
++        task = self.start_plan(goal, intent)
++        if task is None or task.plan is None:
++            return None
++
++        next_step = self._next_ready_plan_step(task)
++        if next_step is None:
++            self.kernel.task_manager.fail(
++                "The task plan has no executable first step.",
++                task.id,
++            )
++            return None
++
++        request = self.build_plan_request(task, next_step)
++        if request is None:
++            self.kernel.task_manager.fail(
++                f"Unable to build a tool request for plan step '{next_step.id}'.",
++                task.id,
++            )
++            return None
++
++        self.event_bus.emit("tool_request", request=request)
++        return task
++
+     def on_task_completed(self, task=None, *args, **kwargs):
+         self._advance_incremental_session_from_terminal(
+             task,
+@@ -557,6 +585,20 @@ class TaskRuntimeModule(Module):
+         if plan_step_id:
+             evidence["plan_step_id"] = plan_step_id
+         if not result.success:
++            if result.error == "Tool execution rejected by user.":
++                if plan_step_id:
++                    self.kernel.task_manager.set_plan_step_status(
++                        plan_step_id,
++                        PlanStepStatus.FAILED,
++                        task.id,
++                    )
++                self.kernel.task_manager.add_evidence(evidence, task.id)
++                self.kernel.task_manager.fail(
++                    "The user denied the requested tool action.",
++                    task.id,
++                )
++                return
++
+             self.event_bus.emit(
+                 "task_progress",
+                 task_id=task.id,
+@@ -876,6 +918,31 @@ class TaskRuntimeModule(Module):
+             else ""
+         )
+         verification_engine = getattr(self.kernel, "verification_engine", None)
++        if (
++            verification_key
++            and structured_step is not None
++            and verification_engine is None
++        ):
++            evidence["verification"] = {
++                "status": "unknown",
++                "summary": "The requested verifier is unavailable.",
++                "source": "guard",
++                "task_id": task.id,
++                "step_id": structured_step.id,
++            }
++            self.kernel.task_manager.set_plan_step_status(
++                structured_step.id,
++                PlanStepStatus.BLOCKED,
++                task.id,
++            )
++            self.kernel.task_manager.add_evidence(evidence, task.id)
++            self.event_bus.emit(
++                "task_verification_required",
++                task_id=task.id,
++                verification=evidence["verification"],
++            )
++            self.kernel.task_manager.pause(task.id)
++            return
+         if verification_key and verification_engine is not None and structured_step is not None:
+             verification = verification_engine.verify(
+                 task,
+@@ -990,11 +1057,25 @@ class TaskRuntimeModule(Module):
+             return
+ 
+         if not refreshed.pending_steps:
++            final_result = {
++                "tool": result.tool,
++                "output": result.output,
++            }
++            if refreshed.metadata.get("intent_type") == IntentType.TASK.value:
++                report = self._project_task_report(refreshed)
++                if not report["verified"]:
++                    self.kernel.task_manager.fail(
++                        "The project task lacks verified evidence for its planned outcome.",
++                        refreshed.id,
++                    )
++                    return
++                final_result.update(report)
++                self.event_bus.emit(
++                    "assistant_sentence",
++                    text=report["message"],
++                )
+             self.kernel.task_manager.complete(
+-                result={
+-                    "tool": result.tool,
+-                    "output": result.output,
+-                },
++                result=final_result,
+                 task_id=task.id,
+             )
+             return
+@@ -1026,6 +1107,99 @@ class TaskRuntimeModule(Module):
+         )
+         self.event_bus.emit("tool_request", request=next_request)
+ 
++    @staticmethod
++    def _project_task_report(task) -> dict[str, Any]:
++        plan = getattr(task, "plan", None)
++        steps = list(getattr(plan, "steps", ()) or ())
++        verification_steps = [
++            step for step in steps if step.metadata.get("verification")
++        ]
++        verification_evidence = {
++            item.get("plan_step_id"): item.get("verification", {})
++            for item in (getattr(task, "evidence", ()) or ())
++            if isinstance(item, dict) and item.get("plan_step_id")
++        }
++        if verification_steps:
++            verified = all(
++                isinstance(verification_evidence.get(step.id), dict)
++                and verification_evidence[step.id].get("status") == "verified"
++                for step in verification_steps
++            )
++        else:
++            verified = bool(steps) and all(
++                getattr(step.status, "value", "") == "completed"
++                for step in steps
++            )
++
++        write_output = None
++        command_evidence = None
++        for item in getattr(task, "evidence", ()) or ():
++            if not isinstance(item, dict) or item.get("success") is not True:
++                continue
++            if item.get("tool") == "filesystem.write_file":
++                output = item.get("output")
++                if isinstance(output, dict):
++                    write_output = output
++            elif item.get("tool") == "system.run_command":
++                output = item.get("output")
++                if isinstance(output, dict):
++                    command_evidence = (item, output)
++
++        artifacts = []
++        if isinstance(write_output, dict) and isinstance(write_output.get("path"), str):
++            artifacts.append({"path": write_output["path"]})
++
++        command = None
++        if command_evidence is not None:
++            evidence, output = command_evidence
++            try:
++                command_step = plan.get_step(evidence.get("plan_step_id"))
++            except (AttributeError, KeyError, TypeError):
++                command_step = None
++            command = {
++                "target": (
++                    command_step.metadata.get("target")
++                    if command_step is not None
++                    else None
++                ),
++                "returncode": output.get("returncode"),
++                "stdout": output.get("stdout"),
++                "stderr": output.get("stderr"),
++            }
++
++        if artifacts and command is not None:
++            observed = str(command.get("stdout") or "").strip()
++            path = artifacts[-1]["path"]
++            message = (
++                f"Done. Verified `{path}` and ran the project command "
++                f"(exit {command.get('returncode')}); output: {observed[:1200]}"
++            )
++        elif artifacts:
++            message = f"Done. Verified the project file `{artifacts[-1]['path']}`."
++        elif command is not None:
++            observed = str(command.get("stdout") or "").strip()
++            message = (
++                f"Done. Verified the project command (exit "
++                f"{command.get('returncode')}); output: {observed[:1200]}"
++            )
++        else:
++            message = (
++                "Done. The planned read-only project inspection completed successfully."
++                if not verification_steps
++                else "Done. The planned project outcome passed its verification."
++            )
++
++        return {
++            "verified": verified,
++            "artifacts": artifacts,
++            "command": command,
++            "verifications": [
++                verification_evidence.get(step.id)
++                for step in verification_steps
++            ],
++            "message": message,
++        }
++
+     def _complete_from_verified_visual_result(
+         self,
+         task,
+@@ -1895,38 +2069,136 @@ class TaskRuntimeModule(Module):
+         if grounded is None:
+             return None
+ 
+-        intent_entities = {
++        raw_entities = {
+             "action": action,
+             **({"target": target} if target else {}),
+             **grounded,
+-            **{
++        }
++        request_only_metadata = {
++            "action",
++            "tool",
++            "description",
++            "verification",
++            "expected_returncode",
++            "expected_stdout",
++            "stdout_match",
++            "completion_conditions",
++            "sequence_index",
++            "depends_on",
++            "required_capabilities",
++            "agent_generated",
++            "user_directed",
++            "completion_message",
++        }
++        raw_entities.update(
++            {
+                 key: value
+                 for key, value in step.metadata.items()
+-                if key in {"operation", "query", "provider", "prompt", "text", "key", "keys", "browser", "button", "clicks", "interval", "amount", "seconds", "application", "process", "fallback_target", "search", "session_app", "on_screen"}
++                if key not in request_only_metadata
+                 and value is not None
+                 and value != ""
+-            },
+-        }
++            }
++        )
++        expected_sha256_from_step = raw_entities.pop(
++            "expected_sha256_from_step",
++            None,
++        )
++        if expected_sha256_from_step is not None:
++            if action.lower() != "write_file":
++                print(
++                    "[Tasks] A read-result hash can only authorize a file update.",
++                    flush=True,
++                )
++                return None
++            digest = self._read_step_digest(
++                task,
++                source_step_id=expected_sha256_from_step,
++                expected_path=raw_entities.get("path"),
++            )
++            if digest is None:
++                print(
++                    "[Tasks] The requested prior file-read evidence is missing "
++                    "or does not match the update path.",
++                    flush=True,
++                )
++                return None
++            if raw_entities.get("expected_sha256") not in (None, "", digest):
++                print(
++                    "[Tasks] A planned file update supplied conflicting read hashes.",
++                    flush=True,
++                )
++                return None
++            raw_entities["expected_sha256"] = digest
+ 
+-        intent = IntentResult(
++        selection_intent = IntentResult(
+             intent=IntentType.COMMAND,
+             confidence=float(
+                 task.metadata.get("confidence", 0.98)
+             ),
+             normalized_text=task.goal,
+-            entities=intent_entities,
++            entities=raw_entities,
+             requires_tools=True,
+             classifier=str(task.metadata.get("classifier", "rules")),
+         )
+ 
+         try:
+-            request = self.tool_request_builder.build(intent)
++            definition = self.tool_request_builder.selector.select(selection_intent)
++        except ValueError as exc:
++            print(
++                f"[Tasks] Could not build next plan step: {exc}",
++                flush=True,
++            )
++            return None
++
++        schema = definition.input_schema if isinstance(definition.input_schema, dict) else {}
++        properties = schema.get("properties", {})
++        properties = properties if isinstance(properties, dict) else {}
++        request_entities = {
++            "action": action,
++            **{
++                key: value
++                for key, value in raw_entities.items()
++                if key != "action" and key in properties
++            },
++        }
++        required = schema.get("required", ())
++        if isinstance(required, (list, tuple, set, frozenset)):
++            missing = [
++                name
++                for name in required
++                if name != "action" and name not in request_entities
++            ]
++            if missing:
++                print(
++                    "[Tasks] Planned tool step omitted required input(s): "
++                    + ", ".join(str(name) for name in missing),
++                    flush=True,
++                )
++                return None
++
++        request_intent = IntentResult(
++            intent=IntentType.COMMAND,
++            confidence=selection_intent.confidence,
++            normalized_text=selection_intent.normalized_text,
++            entities=request_entities,
++            requires_tools=True,
++            classifier=selection_intent.classifier,
++        )
++        try:
++            request = self.tool_request_builder.build(request_intent)
+         except ValueError as exc:
+             print(
+                 f"[Tasks] Could not build next plan step: {exc}",
+                 flush=True,
+             )
+             return None
++        if request.tool != definition.name:
++            print(
++                f"[Tasks] Tool selection changed while building step "
++                f"('{definition.name}' -> '{request.tool}').",
++                flush=True,
++            )
++            return None
+ 
+         request.metadata["task_id"] = task.id
+         request.metadata["task_step"] = step.description
+@@ -1953,6 +2225,49 @@ class TaskRuntimeModule(Module):
+             )
+         return request
+ 
++    @staticmethod
++    def _read_step_digest(task, *, source_step_id, expected_path) -> str | None:
++        plan = getattr(task, "plan", None)
++        if plan is None or not isinstance(source_step_id, str):
++            return None
++        try:
++            source_step = plan.get_step(source_step_id)
++        except (KeyError, ValueError):
++            return None
++        if (
++            source_step.status is not PlanStepStatus.COMPLETED
++            or source_step.metadata.get("tool") != "filesystem.read_file"
++        ):
++            return None
++
++        def normalize_path(value):
++            return str(value or "").replace("\\", "/").strip("/")
++
++        expected = normalize_path(expected_path)
++        if not expected or normalize_path(source_step.metadata.get("path")) != expected:
++            return None
++
++        for evidence in reversed(getattr(task, "evidence", ()) or ()):
++            if not isinstance(evidence, dict):
++                continue
++            if (
++                evidence.get("plan_step_id") != source_step_id
++                or evidence.get("tool") != "filesystem.read_file"
++                or evidence.get("success") is not True
++            ):
++                continue
++            output = evidence.get("output")
++            if not isinstance(output, dict) or normalize_path(output.get("path")) != expected:
++                continue
++            digest = output.get("sha256")
++            if (
++                isinstance(digest, str)
++                and len(digest) == 64
++                and all(character in "0123456789abcdefABCDEF" for character in digest)
++            ):
++                return digest.lower()
++        return None
++
+     @staticmethod
+     def _ground_action_arguments(
+         task,
+diff --git a/core/tools/__init__.py b/core/tools/__init__.py
+index 5966958..1c60c9f 100644
+--- a/core/tools/__init__.py
++++ b/core/tools/__init__.py
+@@ -40,6 +40,11 @@ from .computer import (
+     ComputerWaitTool,
+ )
+ from .test_tool import EchoTool
++from .workspace import (
++    ListWorkspaceFilesTool,
++    ReadWorkspaceFileTool,
++    WriteWorkspaceFileTool,
++)
+ 
+ __all__ = [
+     "ApprovalManager", "PendingApproval",
+@@ -54,4 +59,5 @@ __all__ = [
+     "ComputerController", "ComputerWaitTool", "ComputerMoveMouseTool", "ComputerClickTool",
+     "ComputerTypeTextTool", "ComputerKeypressTool", "ComputerHotkeyTool",
+     "ComputerScrollTool",
++    "ListWorkspaceFilesTool", "ReadWorkspaceFileTool", "WriteWorkspaceFileTool",
+ ]
+diff --git a/core/tools/builtin.py b/core/tools/builtin.py
+index 2b6f2cd..af18509 100644
+--- a/core/tools/builtin.py
++++ b/core/tools/builtin.py
+@@ -9,6 +9,11 @@ from typing import Callable
+ from core.applications import ApplicationManager, ApplicationResolutionError
+ from core.contracts import ToolDefinition, ToolRequest, ToolResult
+ from core.tools.base import Tool
++from core.tools.workspace import (
++    WorkspacePathError,
++    resolve_workspace_path,
++    resolve_workspace_root,
++)
+ 
+ 
+ def _result(request: ToolRequest, success: bool, *, output=None, error=None, start: float) -> ToolResult:
+@@ -81,11 +86,26 @@ class StartProcessTool(Tool):
+ 
+ 
+ class RunCommandTool(Tool):
++    def __init__(self, workspace_manager=None):
++        self.workspace_manager = workspace_manager
++
+     @property
+     def definition(self) -> ToolDefinition:
+         return ToolDefinition(
+             name="system.run_command", description="Run an explicitly supplied local executable without invoking a shell.",
+-            input_schema={"type": "object", "properties": {"target": {"type": "string", "minLength": 1}, "arguments": {"type": "array", "items": {"type": "string"}}}, "required": ["target"]},
++            input_schema={
++                "type": "object",
++                "properties": {
++                    "target": {"type": "string", "minLength": 1},
++                    "arguments": {"type": "array", "items": {"type": "string"}},
++                    "cwd": {
++                        "type": "string",
++                        "description": "Optional directory relative to the active workspace.",
++                    },
++                },
++                "required": ["target"],
++                "additionalProperties": False,
++            },
+             risk_level="critical", metadata={"actions": ["run"], "category": "system"},
+         )
+ 
+@@ -100,8 +120,41 @@ class RunCommandTool(Tool):
+         executable = shutil.which(target)
+         if not executable:
+             return _result(request, False, error=f"Command not found on PATH: {target}", start=start)
++        working_directory = None
++        requested_cwd = request.arguments.get("cwd")
++        if self.workspace_manager is not None:
++            try:
++                root = resolve_workspace_root(self.workspace_manager)
++                working_directory = (
++                    root
++                    if requested_cwd is None or requested_cwd == ""
++                    else resolve_workspace_path(root, requested_cwd, allow_root=True)
++                )
++                if not working_directory.is_dir():
++                    return _result(
++                        request,
++                        False,
++                        error="The requested workspace working directory is not a directory.",
++                        start=start,
++                    )
++            except (OSError, WorkspacePathError) as exc:
++                return _result(request, False, error=str(exc), start=start)
++        elif requested_cwd is not None:
++            return _result(
++                request,
++                False,
++                error="A workspace manager is required to set a working directory.",
++                start=start,
++            )
+         try:
+-            completed = subprocess.run([executable, *args], capture_output=True, text=True, timeout=request.timeout_seconds, check=False)
++            completed = subprocess.run(
++                [executable, *args],
++                capture_output=True,
++                text=True,
++                timeout=request.timeout_seconds,
++                check=False,
++                cwd=str(working_directory) if working_directory is not None else None,
++            )
+         except subprocess.TimeoutExpired:
+             return _result(request, False, error=f"Command timed out after {request.timeout_seconds:.1f}s.", start=start)
+         except Exception as exc:
+diff --git a/core/tools/workspace.py b/core/tools/workspace.py
+new file mode 100644
+index 0000000..5ce548a
+--- /dev/null
++++ b/core/tools/workspace.py
+@@ -0,0 +1,452 @@
++"""Workspace-scoped text file capabilities.
++
++All paths are relative to the active workspace. These tools intentionally
++provide a small, auditable surface for project work: list, read, and
++create/update text files. They do not delete or move files.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import hmac
++import os
++import re
++import tempfile
++from pathlib import Path, PureWindowsPath
++from typing import Any
++
++from core.contracts import ToolDefinition, ToolRequest, ToolResult
++from core.tools.base import Tool
++
++
++MAX_TEXT_FILE_BYTES = 512 * 1024
++DEFAULT_LIST_LIMIT = 200
++MAX_LIST_LIMIT = 500
++_IGNORED_DIRECTORY_NAMES = {
++    ".git",
++    ".ssh",
++    ".aws",
++    ".azure",
++    "credentials",
++    "secrets",
++    ".venv",
++    "venv",
++    "node_modules",
++    "__pycache__",
++}
++_SECRET_NAME = re.compile(
++    r"(?:^|[._-])(?:secrets?|credentials?|tokens?)(?:[._-]|$)",
++    re.I,
++)
++_SECRET_SUFFIXES = {".key", ".pem", ".p12", ".pfx"}
++
++
++class WorkspacePathError(ValueError):
++    """A requested path is missing, unsafe, or outside the active workspace."""
++
++
++def resolve_workspace_root(workspace_manager) -> Path:
++    """Return the canonical active workspace root or raise a safe error."""
++    if workspace_manager is None:
++        raise WorkspacePathError("No workspace manager is configured.")
++
++    state = None
++    state_getter = getattr(workspace_manager, "state", None)
++    if callable(state_getter):
++        state = state_getter()
++    elif callable(getattr(workspace_manager, "snapshot", None)):
++        state = workspace_manager.snapshot()
++
++    if isinstance(state, dict):
++        value = state.get("project_path")
++    else:
++        value = getattr(state, "project_path", None)
++
++    if not isinstance(value, str) or not value.strip():
++        raise WorkspacePathError("No active project workspace is selected.")
++
++    try:
++        root = Path(value).expanduser().resolve(strict=True)
++    except (OSError, RuntimeError) as exc:
++        raise WorkspacePathError("The active workspace path is unavailable.") from exc
++
++    if not root.is_dir():
++        raise WorkspacePathError("The active workspace is not a directory.")
++    return root
++
++
++def resolve_workspace_path(
++    root: Path,
++    value: Any,
++    *,
++    allow_root: bool = False,
++) -> Path:
++    """Resolve a relative path and reject absolute paths and root escapes."""
++    if not isinstance(value, str) or not value.strip():
++        raise WorkspacePathError("A non-empty workspace-relative path is required.")
++    if "\x00" in value:
++        raise WorkspacePathError("The path contains an invalid character.")
++
++    normalized = value.strip().replace("\\", "/")
++    windows = PureWindowsPath(normalized)
++    if normalized.startswith("/") or windows.is_absolute() or windows.drive:
++        raise WorkspacePathError("Absolute paths are not allowed; use a workspace-relative path.")
++
++    parts = [part for part in normalized.split("/") if part not in {"", "."}]
++    if any(part == ".." for part in parts):
++        raise WorkspacePathError("Parent-directory traversal is not allowed.")
++    if not parts and not allow_root:
++        raise WorkspacePathError("The workspace root is not a file path.")
++
++    candidate = root.joinpath(*parts).resolve(strict=False)
++    try:
++        candidate.relative_to(root)
++    except ValueError as exc:
++        raise WorkspacePathError("The requested path resolves outside the active workspace.") from exc
++    return candidate
++
++
++def _is_sensitive_path(root: Path, path: Path) -> bool:
++    relative = path.relative_to(root)
++    return _is_sensitive_parts(relative.parts)
++
++
++def _is_sensitive_parts(parts) -> bool:
++    normalized_parts = tuple(str(part).lower() for part in parts)
++    if any(part in _IGNORED_DIRECTORY_NAMES for part in normalized_parts):
++        return True
++    if any(
++        part == ".env"
++        or part.endswith(".env")
++        or (part.startswith(".env.") and part != ".env.example")
++        for part in normalized_parts
++    ):
++        return True
++
++    if not normalized_parts:
++        return False
++    name = normalized_parts[-1]
++    if name == ".env" or (name.startswith(".env.") and name != ".env.example"):
++        return True
++    if Path(name).suffix.lower() in _SECRET_SUFFIXES or _SECRET_NAME.search(name):
++        return True
++    return False
++
++
++def _tool_result(
++    request: ToolRequest,
++    *,
++    success: bool,
++    output=None,
++    error: str | None = None,
++    start: float,
++) -> ToolResult:
++    import time
++
++    return ToolResult(
++        success=success,
++        tool=request.tool,
++        output=output,
++        error=error,
++        duration_seconds=time.perf_counter() - start,
++        metadata={"request_id": request.request_id},
++    )
++
++
++class _WorkspaceFileTool(Tool):
++    def __init__(self, workspace_manager):
++        self.workspace_manager = workspace_manager
++
++    def _root(self) -> Path:
++        return resolve_workspace_root(self.workspace_manager)
++
++
++class ListWorkspaceFilesTool(_WorkspaceFileTool):
++    @property
++    def definition(self) -> ToolDefinition:
++        return ToolDefinition(
++            name="filesystem.list_files",
++            description=(
++                "List files and directories inside the active project workspace. "
++                "Paths must be relative to the workspace."
++            ),
++            input_schema={
++                "type": "object",
++                "properties": {
++                    "path": {"type": "string"},
++                    "recursive": {"type": "boolean"},
++                    "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIST_LIMIT},
++                },
++                "required": [],
++                "additionalProperties": False,
++            },
++            risk_level="low",
++            metadata={
++                "actions": ["list_files"],
++                "category": "filesystem",
++                "workspace_scoped": True,
++            },
++        )
++
++    def execute(self, request: ToolRequest) -> ToolResult:
++        import time
++
++        start = time.perf_counter()
++        try:
++            root = self._root()
++            directory = resolve_workspace_path(
++                root,
++                request.arguments.get("path", "."),
++                allow_root=True,
++            )
++            if _is_sensitive_path(root, directory):
++                raise WorkspacePathError("That workspace path is not available to the file tools.")
++            if not directory.is_dir():
++                raise WorkspacePathError("The requested workspace path is not a directory.")
++
++            recursive = request.arguments.get("recursive", False)
++            if not isinstance(recursive, bool):
++                raise WorkspacePathError("'recursive' must be a boolean.")
++            limit = request.arguments.get("limit", DEFAULT_LIST_LIMIT)
++            if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIST_LIMIT:
++                raise WorkspacePathError(f"'limit' must be an integer from 1 to {MAX_LIST_LIMIT}.")
++
++            candidates = directory.rglob("*") if recursive else directory.iterdir()
++            items = []
++            for candidate in candidates:
++                try:
++                    resolved = candidate.resolve(strict=False)
++                    resolved.relative_to(root)
++                    if (
++                        _is_sensitive_path(root, resolved)
++                        or _is_sensitive_parts(candidate.relative_to(root).parts)
++                    ):
++                        continue
++                    kind = "directory" if candidate.is_dir() else "file"
++                    if kind == "file" and not candidate.is_file():
++                        continue
++                    items.append(
++                        {
++                            "path": candidate.relative_to(root).as_posix(),
++                            "kind": kind,
++                        }
++                    )
++                except (OSError, RuntimeError, ValueError):
++                    # Skip unreadable entries and links that leave the workspace.
++                    continue
++                if len(items) >= limit:
++                    break
++
++            items.sort(key=lambda item: (item["kind"] != "directory", item["path"].lower()))
++            return _tool_result(
++                request,
++                success=True,
++                output={
++                    "path": directory.relative_to(root).as_posix() or ".",
++                    "items": items,
++                    "count": len(items),
++                    "truncated": len(items) >= limit,
++                },
++                start=start,
++            )
++        except (OSError, WorkspacePathError) as exc:
++            return _tool_result(request, success=False, error=str(exc), start=start)
++
++
++class ReadWorkspaceFileTool(_WorkspaceFileTool):
++    @property
++    def definition(self) -> ToolDefinition:
++        return ToolDefinition(
++            name="filesystem.read_file",
++            description=(
++                "Read a UTF-8 text file inside the active project workspace. "
++                "Credential files and files outside the workspace are blocked."
++            ),
++            input_schema={
++                "type": "object",
++                "properties": {"path": {"type": "string", "minLength": 1}},
++                "required": ["path"],
++                "additionalProperties": False,
++            },
++            risk_level="low",
++            metadata={
++                "actions": ["read_file"],
++                "category": "filesystem",
++                "workspace_scoped": True,
++            },
++        )
++
++    def execute(self, request: ToolRequest) -> ToolResult:
++        import time
++
++        start = time.perf_counter()
++        try:
++            root = self._root()
++            requested_path = request.arguments.get("path")
++            path = resolve_workspace_path(root, requested_path)
++            if (
++                _is_sensitive_path(root, path)
++                or _is_sensitive_parts(
++                    str(requested_path).replace("\\", "/").split("/")
++                )
++            ):
++                raise WorkspacePathError("That file is not available to the file tools.")
++            if not path.is_file():
++                raise WorkspacePathError("The requested workspace file does not exist.")
++            if path.stat().st_size > MAX_TEXT_FILE_BYTES:
++                raise WorkspacePathError(
++                    f"Files larger than {MAX_TEXT_FILE_BYTES} bytes cannot be read by this tool."
++                )
++            with path.open("rb") as handle:
++                raw = handle.read(MAX_TEXT_FILE_BYTES + 1)
++            if len(raw) > MAX_TEXT_FILE_BYTES:
++                raise WorkspacePathError(
++                    f"Files larger than {MAX_TEXT_FILE_BYTES} bytes cannot be read by this tool."
++                )
++            content = raw.decode("utf-8")
++            return _tool_result(
++                request,
++                success=True,
++                output={
++                    "path": path.relative_to(root).as_posix(),
++                    "content": content,
++                    "sha256": hashlib.sha256(raw).hexdigest(),
++                    "bytes_read": len(raw),
++                },
++                start=start,
++            )
++        except (OSError, UnicodeDecodeError, WorkspacePathError) as exc:
++            return _tool_result(request, success=False, error=str(exc), start=start)
++
++
++class WriteWorkspaceFileTool(_WorkspaceFileTool):
++    @property
++    def definition(self) -> ToolDefinition:
++        return ToolDefinition(
++            name="filesystem.write_file",
++            description=(
++                "Create or update a UTF-8 text file inside the active project workspace. "
++                "New files are create-only; updating an existing file requires the SHA-256 "
++                "returned by filesystem.read_file."
++            ),
++            input_schema={
++                "type": "object",
++                "properties": {
++                    "path": {"type": "string", "minLength": 1},
++                    "content": {"type": "string"},
++                    "expected_sha256": {"type": "string"},
++                },
++                "required": ["path", "content"],
++                "additionalProperties": False,
++            },
++            risk_level="medium",
++            metadata={
++                "actions": ["write_file"],
++                "category": "filesystem",
++                "workspace_scoped": True,
++                "atomic_write": True,
++            },
++        )
++
++    def execute(self, request: ToolRequest) -> ToolResult:
++        import time
++
++        start = time.perf_counter()
++        temp_path: Path | None = None
++        try:
++            root = self._root()
++            requested_path = request.arguments.get("path")
++            path = resolve_workspace_path(root, requested_path)
++            if (
++                _is_sensitive_path(root, path)
++                or _is_sensitive_parts(
++                    str(requested_path).replace("\\", "/").split("/")
++                )
++            ):
++                raise WorkspacePathError("That file is not available to the file tools.")
++
++            content = request.arguments.get("content")
++            if not isinstance(content, str):
++                raise WorkspacePathError("'content' must be a string.")
++            payload = content.encode("utf-8")
++            if len(payload) > MAX_TEXT_FILE_BYTES:
++                raise WorkspacePathError(
++                    f"Files larger than {MAX_TEXT_FILE_BYTES} bytes cannot be written by this tool."
++                )
++
++            expected = request.arguments.get("expected_sha256")
++            if expected is not None and (
++                not isinstance(expected, str)
++                or not re.fullmatch(r"[0-9a-fA-F]{64}", expected)
++            ):
++                raise WorkspacePathError(
++                    "'expected_sha256' must be a 64-character SHA-256 digest."
++                )
++
++            path.parent.mkdir(parents=True, exist_ok=True)
++            # Re-resolve after creating parents to catch links introduced in
++            # any already-existing part of the path.
++            path = resolve_workspace_path(root, request.arguments.get("path"))
++            path.parent.resolve(strict=True).relative_to(root)
++
++            exists = path.exists()
++            if exists:
++                if not path.is_file():
++                    raise WorkspacePathError("The requested workspace path is not a regular file.")
++                if path.stat().st_size > MAX_TEXT_FILE_BYTES:
++                    raise WorkspacePathError(
++                        f"Files larger than {MAX_TEXT_FILE_BYTES} bytes cannot be updated by this tool."
++                    )
++                if expected is None:
++                    raise WorkspacePathError(
++                        "The file already exists. Read it first and supply its expected_sha256 to update it."
++                    )
++                with path.open("rb") as handle:
++                    existing = handle.read(MAX_TEXT_FILE_BYTES + 1)
++                if len(existing) > MAX_TEXT_FILE_BYTES:
++                    raise WorkspacePathError(
++                        f"Files larger than {MAX_TEXT_FILE_BYTES} bytes cannot be updated by this tool."
++                    )
++                existing_hash = hashlib.sha256(existing).hexdigest()
++                if not hmac.compare_digest(existing_hash, expected.lower()):
++                    raise WorkspacePathError(
++                        "The file changed since it was read; read it again before updating."
++                    )
++            elif expected is not None:
++                raise WorkspacePathError(
++                    "The file no longer exists; omit expected_sha256 to create it."
++                )
++
++            with tempfile.NamedTemporaryFile(
++                mode="wb",
++                prefix=".asta-write-",
++                dir=str(path.parent),
++                delete=False,
++            ) as handle:
++                temp_path = Path(handle.name)
++                handle.write(payload)
++                handle.flush()
++                os.fsync(handle.fileno())
++
++            os.replace(temp_path, path)
++            temp_path = None
++            digest = hashlib.sha256(payload).hexdigest()
++            return _tool_result(
++                request,
++                success=True,
++                output={
++                    "path": path.relative_to(root).as_posix(),
++                    "created": not exists,
++                    "bytes_written": len(payload),
++                    "sha256": digest,
++                },
++                start=start,
++            )
++        except (OSError, RuntimeError, WorkspacePathError) as exc:
++            return _tool_result(request, success=False, error=str(exc), start=start)
++        finally:
++            if temp_path is not None:
++                try:
++                    temp_path.unlink(missing_ok=True)
++                except OSError:
++                    pass
+\ No newline at end of file
+diff --git a/main.py b/main.py
+index e28eefc..9543703 100644
+--- a/main.py
++++ b/main.py
+@@ -188,6 +188,9 @@ def main():
+         ComputerHotkeyTool,
+         ComputerScrollTool,
+         ComputerWaitTool,
++        ListWorkspaceFilesTool,
++        ReadWorkspaceFileTool,
++        WriteWorkspaceFileTool,
+         ToolRuntimeModule,
+     )
+     from speech.speech_module import SpeechModule
+@@ -243,7 +246,10 @@ def main():
+         BrowserSearchTool(),
+         LaunchApplicationTool(),
+         StartProcessTool(),
+-        RunCommandTool(),
++        RunCommandTool(workspace_manager=kernel.workspace_manager),
++        ListWorkspaceFilesTool(kernel.workspace_manager),
++        ReadWorkspaceFileTool(kernel.workspace_manager),
++        WriteWorkspaceFileTool(kernel.workspace_manager),
+         StopProcessTool(),
+         CloseApplicationTool(kernel.application_manager),
+         ScreenshotTool(capture=capture_screenshot),
+diff --git a/tests/test_workspace_project_task.py b/tests/test_workspace_project_task.py
+new file mode 100644
+index 0000000..79d3e77
+--- /dev/null
++++ b/tests/test_workspace_project_task.py
+@@ -0,0 +1,593 @@
++from __future__ import annotations
++
++import copy
++import sys
++
++from core import Kernel, Planner
++from core.agent import AgentPlanProposal
++from core.contracts import (
++    IntentType,
++    PlanStepStatus,
++    TaskStatus,
++    ToolRequest,
++    ToolResult,
++)
++from core.intent_router import IntentRouter
++from core.task_runtime import TaskRuntimeModule
++from core.tools import (
++    ListWorkspaceFilesTool,
++    ReadWorkspaceFileTool,
++    RunCommandTool,
++    ToolRuntimeModule,
++    WriteWorkspaceFileTool,
++)
++
++
++GOAL = (
++    "Create main.py that prints exactly ASTA_OK. Run it, and tell me the result. "
++    "Only work in this project."
++)
++FILE_CONTENT = 'print("ASTA_OK")\n'
++
++
++class FixedPlanBrain:
++    """Deterministic planner fixture; the live executor remains ASTA's runtime."""
++
++    enabled = True
++
++    def __init__(self, steps, replanned_steps=None):
++        self.steps = copy.deepcopy(steps)
++        self.replanned_steps = copy.deepcopy(replanned_steps)
++        self.plan_calls = 0
++        self.intents = []
++
++    def plan(self, goal, *, intent):
++        self.plan_calls += 1
++        self.intents.append(copy.deepcopy(intent.entities))
++        steps = (
++            self.replanned_steps
++            if self.plan_calls > 1 and self.replanned_steps is not None
++            else self.steps
++        )
++        return AgentPlanProposal(
++            goal_summary="Create and verify a tiny workspace program.",
++            success_conditions=(
++                "main.py contains the requested print statement",
++                "running main.py exits successfully and prints ASTA_OK",
++            ),
++            rationale="Use the workspace file tools and verify observed results.",
++            steps=tuple(copy.deepcopy(steps)),
++            uncertainty=0.0,
++        )
++
++    @staticmethod
++    def task_metadata(proposal):
++        return {
++            "agent_mode": "cognitive_v1",
++            "agent_goal_summary": proposal.goal_summary,
++            "agent_success_conditions": list(proposal.success_conditions),
++            "agent_rationale": proposal.rationale,
++            "agent_uncertainty": proposal.uncertainty,
++        }
++
++
++class RecordingEngine:
++    def generate_response(self, *args, **kwargs):
++        raise AssertionError("A fixed acceptance plan must not call the chat model")
++
++
++def _happy_plan():
++    return [
++        {
++            "action": "list_files",
++            "tool": "filesystem.list_files",
++            "path": ".",
++            "description": "Inspect the project workspace",
++        },
++        {
++            "action": "write_file",
++            "tool": "filesystem.write_file",
++            "path": "main.py",
++            "content": FILE_CONTENT,
++            "description": "Create main.py",
++        },
++        {
++            "action": "read_file",
++            "tool": "filesystem.read_file",
++            "path": "main.py",
++            "expected_path": "main.py",
++            "expected_content": FILE_CONTENT,
++            "verification": "filesystem.file_content",
++            "description": "Verify main.py contents",
++        },
++        {
++            "action": "run",
++            "tool": "system.run_command",
++            "target": sys.executable,
++            "arguments": ["main.py"],
++            "cwd": ".",
++            "verification": "command.output",
++            "expected_returncode": 0,
++            "expected_stdout": "ASTA_OK",
++            "stdout_match": "exact",
++            "description": "Run main.py and verify output",
++        },
++    ]
++
++
++def _recovery_plan():
++    return [
++        {
++            "action": "list_files",
++            "tool": "filesystem.list_files",
++            "path": ".",
++            "description": "Inspect the project workspace",
++        },
++        {
++            "action": "read_file",
++            "tool": "filesystem.read_file",
++            "path": "main.py",
++            "description": "Read the existing file before correction",
++        },
++        {
++            "action": "write_file",
++            "tool": "filesystem.write_file",
++            "path": "main.py",
++            "content": FILE_CONTENT,
++            "expected_sha256_from_step": "step-2",
++            "description": "Correct main.py using the observed file revision",
++        },
++        {
++            "action": "read_file",
++            "tool": "filesystem.read_file",
++            "path": "main.py",
++            "expected_path": "main.py",
++            "expected_content": FILE_CONTENT,
++            "verification": "filesystem.file_content",
++            "description": "Verify the corrected file",
++        },
++        {
++            "action": "run",
++            "tool": "system.run_command",
++            "target": sys.executable,
++            "arguments": ["main.py"],
++            "cwd": ".",
++            "verification": "command.output",
++            "expected_returncode": 0,
++            "expected_stdout": "ASTA_OK",
++            "stdout_match": "exact",
++            "description": "Run main.py and verify output",
++        },
++    ]
++
++
++def _wrong_output_plan():
++    return [
++        {
++            "action": "list_files",
++            "tool": "filesystem.list_files",
++            "path": ".",
++            "description": "Inspect the project workspace",
++        },
++        {
++            "action": "run",
++            "tool": "system.run_command",
++            "target": sys.executable,
++            "arguments": ["main.py"],
++            "cwd": ".",
++            "verification": "command.output",
++            "expected_returncode": 0,
++            "expected_stdout": "ASTA_OK",
++            "stdout_match": "exact",
++            "description": "Run main.py and verify output",
++        },
++    ]
++
++
++def _build_runtime(
++    workspace,
++    authority_path,
++    plan,
++    replanned_plan=None,
++    *,
++    authorize_run=True,
++):
++    kernel = Kernel(authority_path=authority_path)
++    kernel.workspace_manager.update_project(
++        name="acceptance-project",
++        path=str(workspace),
++    )
++    kernel.register_tool(ListWorkspaceFilesTool(kernel.workspace_manager))
++    kernel.register_tool(ReadWorkspaceFileTool(kernel.workspace_manager))
++    kernel.register_tool(WriteWorkspaceFileTool(kernel.workspace_manager))
++    kernel.register_tool(RunCommandTool(kernel.workspace_manager))
++
++    brain = FixedPlanBrain(plan, replanned_steps=replanned_plan)
++    kernel.agent_brain = brain
++    kernel.planner = Planner(kernel.tool_registry, agent_brain=brain)
++    # This is test-only authorization for the known, generated one-line script.
++    # Production risk settings remain unchanged: system.run_command is critical.
++    if authorize_run:
++        kernel.authority_manager.grant(
++            "system.run_command",
++            reason="isolated acceptance fixture",
++        )
++
++    tasks = TaskRuntimeModule(kernel)
++    # Exercise the deterministic plan through the real task and tool runtimes.
++    # No live model is needed to decide follow-up actions in this fixed-plan test.
++    tasks._run_agent_decision = lambda *args, **kwargs: False
++    tools = ToolRuntimeModule(kernel)
++    from ai.ai_module import AIModule
++
++    ai = AIModule(kernel)
++    ai.engine = RecordingEngine()
++    tasks.initialize()
++    ai.initialize()
++    tools.initialize()
++    return kernel, tasks, ai, tools
++
++
++def _shutdown(tasks, ai, tools):
++    tools.shutdown()
++    ai.shutdown()
++    tasks.shutdown()
++
++
++def _request(tool, arguments):
++    return ToolRequest(tool=tool, arguments=arguments, request_id="workspace-test")
++
++
++def test_project_task_language_routes_to_bounded_task_intent():
++    result = IntentRouter().analyze(GOAL)
++
++    assert result.intent is IntentType.TASK
++    assert result.entities["capability_scope"] == [
++        "filesystem.list_files",
++        "filesystem.read_file",
++        "filesystem.write_file",
++        "system.run_command",
++    ]
++
++
++def test_accepts_and_verifies_a_workspace_scoped_python_task(tmp_path):
++    workspace = tmp_path / "project"
++    workspace.mkdir()
++    kernel, tasks, ai, tools = _build_runtime(
++        workspace,
++        tmp_path / "authority.json",
++        _happy_plan(),
++    )
++    messages = []
++    kernel.event_bus.subscribe(
++        "assistant_sentence",
++        lambda text=None, **kwargs: messages.append(text),
++    )
++    try:
++        kernel.event_bus.emit("user_message", GOAL)
++
++        task = kernel.task_manager.list()[0]
++        assert task.status is TaskStatus.COMPLETED
++        assert (workspace / "main.py").read_text(encoding="utf-8") == FILE_CONTENT
++        assert [step.metadata["tool"] for step in task.plan.steps] == [
++            "filesystem.list_files",
++            "filesystem.write_file",
++            "filesystem.read_file",
++            "system.run_command",
++        ]
++        assert all(step.status.value == "completed" for step in task.plan.steps)
++        assert all(
++            str((workspace / item["output"]["path"]).resolve()).startswith(
++                str(workspace.resolve())
++            )
++            for item in task.evidence
++            if item.get("tool") in {"filesystem.read_file", "filesystem.write_file"}
++            and isinstance(item.get("output"), dict)
++            and item["output"].get("path")
++        )
++
++        result = task.result
++        assert result["verified"] is True
++        assert result["artifacts"] == [{"path": "main.py"}]
++        assert result["command"]["returncode"] == 0
++        assert result["command"]["stdout"].strip() == "ASTA_OK"
++        assert [item["status"] for item in result["verifications"]] == [
++            "verified",
++            "verified",
++        ]
++        assert messages
++        assert "main.py" in messages[-1]
++        assert "ASTA_OK" in messages[-1]
++    finally:
++        _shutdown(tasks, ai, tools)
++
++
++def test_replans_after_wrong_output_then_corrects_and_verifies(tmp_path):
++    workspace = tmp_path / "project"
++    workspace.mkdir()
++    (workspace / "main.py").write_text('print("WRONG")\n', encoding="utf-8")
++    kernel, tasks, ai, tools = _build_runtime(
++        workspace,
++        tmp_path / "authority.json",
++        _wrong_output_plan(),
++        _recovery_plan(),
++    )
++    try:
++        kernel.event_bus.emit("user_message", GOAL)
++
++        task = kernel.task_manager.list()[0]
++        assert task.status is TaskStatus.COMPLETED
++        assert (workspace / "main.py").read_text(encoding="utf-8") == FILE_CONTENT
++        initial_bad_result = next(
++            item
++            for item in task.evidence
++            if item.get("tool") == "system.run_command"
++            and isinstance(item.get("output"), dict)
++            and str(item["output"].get("stdout") or "").strip() == "WRONG"
++        )
++        assert initial_bad_result["verification"]["status"] == "failed"
++        assert task.metadata["replan_attempts"] == 1
++        assert task.plan.steps[2].metadata["expected_sha256_from_step"] == "step-2"
++        assert task.result["command"]["stdout"].strip() == "ASTA_OK"
++        recovery_evidence = kernel.agent_brain.intents[1]["recovery_context"][
++            "recent_evidence"
++        ]
++        assert any(
++            item.get("output", {}).get("stdout") == "WRONG\n"
++            for item in recovery_evidence
++        )
++    finally:
++        _shutdown(tasks, ai, tools)
++
++
++def test_workspace_file_tools_reject_traversal_absolute_paths_and_escaping_symlinks(
++    tmp_path,
++):
++    workspace = tmp_path / "project"
++    workspace.mkdir()
++    outside = tmp_path / "outside.txt"
++    outside.write_text("do not touch", encoding="utf-8")
++    (workspace / "escape.txt").symlink_to(outside)
++
++    kernel = Kernel()
++    kernel.workspace_manager.update_project(path=str(workspace))
++    read = ReadWorkspaceFileTool(kernel.workspace_manager)
++    write = WriteWorkspaceFileTool(kernel.workspace_manager)
++    listing = ListWorkspaceFilesTool(kernel.workspace_manager)
++
++    for path in ("../outside.txt", str(outside), "C:\\outside.txt", "escape.txt"):
++        result = read.execute(_request("filesystem.read_file", {"path": path}))
++        assert not result.success
++
++    for path in ("../outside.txt", str(outside), "escape.txt"):
++        result = write.execute(
++            _request(
++                "filesystem.write_file",
++                {"path": path, "content": "changed"},
++            )
++        )
++        assert not result.success
++
++    listed = listing.execute(
++        _request("filesystem.list_files", {"path": ".", "recursive": True})
++    )
++    assert listed.success
++    assert all(item["path"] != "escape.txt" for item in listed.output["items"])
++    assert outside.read_text(encoding="utf-8") == "do not touch"
++
++
++def test_workspace_file_tools_hide_sensitive_aliases_and_allow_env_example(tmp_path):
++    workspace = tmp_path / "project"
++    workspace.mkdir()
++    (workspace / "settings.txt").write_text("ordinary", encoding="utf-8")
++    (workspace / ".env").symlink_to(workspace / "settings.txt")
++    (workspace / ".env.example").write_text("TEMPLATE=value\n", encoding="utf-8")
++
++    kernel = Kernel()
++    kernel.workspace_manager.update_project(path=str(workspace))
++    read = ReadWorkspaceFileTool(kernel.workspace_manager)
++    listing = ListWorkspaceFilesTool(kernel.workspace_manager)
++
++    assert not read.execute(
++        _request("filesystem.read_file", {"path": ".env"})
++    ).success
++    assert read.execute(
++        _request("filesystem.read_file", {"path": ".env.example"})
++    ).success
++    items = listing.execute(
++        _request("filesystem.list_files", {"path": ".", "recursive": True})
++    ).output["items"]
++    paths = {item["path"] for item in items}
++    assert ".env" not in paths
++    assert ".env.example" in paths
++
++
++def test_run_command_is_workspace_rooted_and_times_out(tmp_path):
++    workspace = tmp_path / "project"
++    workspace.mkdir()
++    kernel = Kernel()
++    kernel.workspace_manager.update_project(path=str(workspace))
++    tool = RunCommandTool(kernel.workspace_manager)
++
++    escaped = tool.execute(
++        ToolRequest(
++            tool="system.run_command",
++            arguments={
++                "target": sys.executable,
++                "arguments": ["-c", "print('should not run')"],
++                "cwd": "../",
++            },
++            request_id="escape",
++            timeout_seconds=0.2,
++        )
++    )
++    assert not escaped.success
++
++    timed_out = tool.execute(
++        ToolRequest(
++            tool="system.run_command",
++            arguments={
++                "target": sys.executable,
++                "arguments": ["-c", "import time; time.sleep(2)"],
++                "cwd": ".",
++            },
++            request_id="timeout",
++            timeout_seconds=0.1,
++        )
++    )
++    assert not timed_out.success
++    assert "timed out" in timed_out.error.lower()
++
++
++def test_write_waits_for_explicit_authorization_before_touching_file(tmp_path):
++    workspace = tmp_path / "project"
++    workspace.mkdir()
++    kernel = Kernel(authority_path=tmp_path / "authority.json")
++    kernel.workspace_manager.update_project(path=str(workspace))
++    kernel.register_tool(WriteWorkspaceFileTool(kernel.workspace_manager))
++    kernel.authority_manager.require_confirmation("filesystem.write_file")
++
++    result = kernel.tool_dispatcher.dispatch(
++        _request(
++            "filesystem.write_file",
++            {"path": "main.py", "content": FILE_CONTENT},
++        )
++    )
++
++    assert not result.success
++    assert result.metadata["requires_confirmation"] is True
++    assert not (workspace / "main.py").exists()
++    kernel.register_tool(RunCommandTool(kernel.workspace_manager))
++    command_result = kernel.tool_dispatcher.dispatch(
++        ToolRequest(
++            tool="system.run_command",
++            arguments={
++                "target": sys.executable,
++                "arguments": [
++                    "-c",
++                    "from pathlib import Path; Path('command-ran').write_text('yes')",
++                ],
++                "cwd": ".",
++            },
++            request_id="critical-command",
++        )
++    )
++    assert not command_result.success
++    assert command_result.metadata["requires_confirmation"] is True
++    assert not (workspace / "command-ran").exists()
++
++
++def test_cancellation_stops_later_tool_requests(tmp_path):
++    workspace = tmp_path / "project"
++    workspace.mkdir()
++    kernel = Kernel(authority_path=tmp_path / "authority.json")
++    kernel.workspace_manager.update_project(path=str(workspace))
++    kernel.register_tool(ListWorkspaceFilesTool(kernel.workspace_manager))
++    kernel.register_tool(ReadWorkspaceFileTool(kernel.workspace_manager))
++    kernel.register_tool(WriteWorkspaceFileTool(kernel.workspace_manager))
++    kernel.register_tool(RunCommandTool(kernel.workspace_manager))
++    brain = FixedPlanBrain(_happy_plan())
++    kernel.agent_brain = brain
++    kernel.planner = Planner(kernel.tool_registry, agent_brain=brain)
++    tasks = TaskRuntimeModule(kernel)
++    tasks.initialize()
++    requests = []
++    kernel.event_bus.subscribe(
++        "tool_request",
++        lambda request=None, **kwargs: requests.append(request),
++    )
++    try:
++        intent = kernel.intent_router.analyze(GOAL)
++        task = tasks.start_plan(GOAL, intent)
++        assert task is not None
++        kernel.task_manager.cancel("test cancellation", task.id)
++
++        first = tasks._next_ready_plan_step(task)
++        assert first is not None
++        request = tasks.build_plan_request(task, first)
++        kernel.event_bus.emit("tool_request", request=request)
++
++        assert task.status is TaskStatus.CANCELLED
++        assert requests == [request]
++        assert not (workspace / "main.py").exists()
++    finally:
++        tasks.shutdown()
++
++
++def test_successful_process_without_observable_stdout_stays_unverified(tmp_path):
++    workspace = tmp_path / "project"
++    workspace.mkdir()
++    kernel, tasks, ai, tools = _build_runtime(
++        workspace,
++        tmp_path / "authority.json",
++        _happy_plan(),
++    )
++
++    original_dispatch = kernel.tool_dispatcher.dispatch
++
++    def omit_command_stdout(request, *, confirmed=False):
++        if request.tool == "system.run_command":
++            return ToolResult(
++                success=True,
++                tool=request.tool,
++                output={"returncode": 0},
++            )
++        return original_dispatch(request, confirmed=confirmed)
++
++    kernel.tool_dispatcher.dispatch = omit_command_stdout
++    try:
++        kernel.event_bus.emit("user_message", GOAL)
++
++        task = kernel.task_manager.list()[0]
++        assert task.status is TaskStatus.PAUSED
++        assert task.plan.steps[-1].status is PlanStepStatus.BLOCKED
++        assert task.result is None
++        assert task.evidence[-1]["verification"]["status"] == "unknown"
++    finally:
++        _shutdown(tasks, ai, tools)
++
++
++def test_denied_critical_command_is_not_retried_or_executed(tmp_path):
++    workspace = tmp_path / "project"
++    workspace.mkdir()
++    kernel, tasks, ai, tools = _build_runtime(
++        workspace,
++        tmp_path / "authority.json",
++        _happy_plan(),
++        authorize_run=False,
++    )
++
++    class RecordingRunTool(RunCommandTool):
++        def __init__(self, manager):
++            super().__init__(manager)
++            self.calls = 0
++
++        def execute(self, request):
++            self.calls += 1
++            return super().execute(request)
++
++    kernel.tool_registry.unregister("system.run_command")
++    run_tool = RecordingRunTool(kernel.workspace_manager)
++    kernel.register_tool(run_tool)
++    confirmations = []
++    kernel.event_bus.subscribe(
++        "tool_confirmation_required",
++        lambda request=None, **kwargs: confirmations.append(request),
++    )
++    try:
++        kernel.event_bus.emit("user_message", GOAL)
++        assert len(confirmations) == 1
++        pending_request = confirmations[0]
++        kernel.event_bus.emit(
++            "tool_confirmation_response",
++            request_id=pending_request.request_id,
++            approved=False,
++        )
++
++        task = kernel.task_manager.list()[0]
++        assert task.status is TaskStatus.FAILED
++        assert run_tool.calls == 0
++        assert not kernel.approval_manager.list_pending()
++        assert (workspace / "main.py").read_text(encoding="utf-8") == FILE_CONTENT
++    finally:
++        _shutdown(tasks, ai, tools)
+\ No newline at end of file

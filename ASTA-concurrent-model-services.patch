@@ -1,0 +1,2878 @@
+diff --git a/.env.example b/.env.example
+index 9511436..4ba075b 100644
+--- a/.env.example
++++ b/.env.example
+@@ -68,6 +68,44 @@ ASTA_LLM_REASONING=off
+ ASTA_LLM_TEMPERATURE=0.7
+ ASTA_LLM_TIMEOUT=120
+ 
++# Optional dual or on-demand routing (see docs/concurrent-model-services.md).
++# Disabled keeps the existing single-model path unchanged.
++ASTA_MODEL_ROUTER=0
++# dual: keep two services resident; on_demand: only one resident text model.
++ASTA_MODEL_MODE=dual
++# One project task on a dedicated worker; other tool actions held while busy.
++ASTA_BACKGROUND_TASKS=0
++# Recommended conversation model: LFM2.5-2.6B Q4_K_M (explicit path required).
++# ASTA_LLM_MODEL_PATH=E:\\Projects\\llama\\models\\LFM2.5-2.6B-Q4_K_M.gguf
++# configure_model_services.py applies the conservative dual settings below.
++# ASTA_LLM_CONTEXT_SIZE=4096
++# ASTA_LLM_BATCH_SIZE=256
++# ASTA_LLM_UBATCH_SIZE=128
++# ASTA_LLM_PARALLEL=1
++# ASTA_LLM_TEMPERATURE=0.1
++ASTA_LLM_TOP_K=50
++ASTA_LLM_MIN_P=0
++ASTA_LLM_ENABLE_THINKING=0
++# Explicitly set ASTA_LLM_MODEL_PATH above before downloading a second GGUF.
++# ASTA_CODING_LLM_MODEL_PATH=E:\\Projects\\llama\\models\\Qwen3.5-4B-Q4_K_M.gguf
++ASTA_CODING_LLM_BASE_URL=http://127.0.0.1:8081/v1
++ASTA_CODING_LLM_CONTEXT_SIZE=4096
++ASTA_CODING_LLM_GPU_LAYERS=99
++ASTA_CODING_LLM_BATCH_SIZE=256
++ASTA_CODING_LLM_UBATCH_SIZE=128
++ASTA_CODING_LLM_PARALLEL=1
++ASTA_CODING_LLM_FLASH_ATTN=on
++ASTA_CODING_LLM_REASONING=off
++ASTA_CODING_LLM_TEMPERATURE=0.6
++ASTA_CODING_LLM_TOP_K=20
++ASTA_CODING_LLM_TOP_P=0.95
++ASTA_CODING_LLM_MIN_P=0
++# Start non-thinking for bounded ASTA JSON control. Enable only with larger budgets.
++ASTA_CODING_LLM_ENABLE_THINKING=0
++ASTA_CODING_LLM_MAX_OUTPUT_TOKENS=2048
++ASTA_CODING_LLM_MAX_REPLY_SECONDS=120
++ASTA_CODING_AGENT_MAX_OUTPUT_TOKENS=2048
++
+ # Fast visual sensor (LFM2.5-VL-1.6B via an OpenAI-compatible local server)
+ # Example llama.cpp port: http://127.0.0.1:8090/v1
+ ASTA_VISION_BASE_URL=http://127.0.0.1:8090/v1
+diff --git a/README.md b/README.md
+index 03ac038..d66b063 100644
+--- a/README.md
++++ b/README.md
+@@ -368,6 +368,24 @@ Laya is not a replacement for the main local LLM. It is intended as a System 1
+ routing/classification layer that can later feed model selection, planning
+ strategy, multilingual intent classification, and guardrails.
+ 
++## General/coding model services (opt-in)
++
++`ASTA_MODEL_ROUTER=1` enables kernel-owned conversation/coding profiles.
++`ASTA_MODEL_MODE=dual` keeps independent services resident; `on_demand` safely
++switches one resident text model for lower-memory operation. Task planning and
++agent decisions use the selected task profile. Interactive chat stays on general
++in dual mode. Only ASTA-owned servers are stopped; unavailable models never
++silently fall back to another profile. Client histories and prompts are separate.
++
++`ASTA_BACKGROUND_TASKS=1` runs one project task on a dedicated worker. Other
++new tool actions are held while it owns the existing single active-task slot.
++Existing sandbox restrictions and approvals remain authoritative. The HUD
++shows both services plus a project phase, separate from foreground voice state.
++
++Set both GGUF paths explicitly. Start with conservative 4K contexts and measure
++actual VRAM with speech/vision active. See [concurrent setup and acceptance
++checks](docs/concurrent-model-services.md), or [on-demand fallback](docs/model-router.md).
++
+ ## Media control
+ 
+ A.S.T.A. exposes media playback through a provider abstraction rather than
+diff --git a/ai/ai_module.py b/ai/ai_module.py
+index 0477af7..5043995 100644
+--- a/ai/ai_module.py
++++ b/ai/ai_module.py
+@@ -123,7 +123,7 @@ class AIModule(Module):
+             kernel=kernel,
+         )
+ 
+-        self.engine = create_llm_provider()
++        self.engine = create_llm_provider(kernel=kernel, purpose="chat")
+         self.tool_request_builder = ToolRequestBuilder(kernel.tool_registry)
+         self.chat_history = ChatHistoryStore()
+ 
+@@ -277,6 +277,17 @@ class AIModule(Module):
+         if self._handle_approval_response(text):
+             return
+ 
++        background = getattr(self.kernel, "background_tasks", None)
++        if background is not None and background.handle_control(text):
++            return
++        if background is not None and background.busy:
++            hint = self.kernel.intent_router.analyze(text)
++            if hint.intent in {IntentType.COMMAND, IntentType.TASK} or re.match(
++                r"^(?:(?:please|can you|could you|would you)\s+)*(?:open|launch|start|close|run|stop|play|pause|resume|press|type|switch|fix|write|create|modify|delete)\b",
++                str(text).strip(), re.I):
++                self._emit_assistant_text("A project task is still active. I can keep chatting, but please cancel it or wait before starting another action.")
++                return
++
+         if self._handle_conversation_mode_command(text):
+             return
+ 
+@@ -353,6 +364,10 @@ class AIModule(Module):
+                     "I can't start a project task because the task runtime is unavailable."
+                 )
+                 return
++            background = getattr(self.kernel, "background_tasks", None)
++            if background is not None:
++                background.start(text, result)
++                return
+             task = starter(text, result)
+             if task is None:
+                 self._emit_assistant_text(
+@@ -1023,6 +1038,23 @@ class AIModule(Module):
+         if not pending:
+             return False
+ 
++        background = getattr(self.kernel, "background_tasks", None)
++        background_pending = [item for item in pending
++            if background is not None and background.owns(item.request.metadata.get("task_id"))]
++        if background_pending:
++            compact = self._normalize_question(text).rstrip(" .!?;:")
++            explicit = {"approve coding step": True, "approve project step": True,
++                        "reject coding step": False, "reject project step": False}
++            if compact in explicit and len(pending) == 1:
++                self.event_bus.emit("tool_confirmation_response",
++                    request_id=pending[0].request.request_id, approved=explicit[compact])
++                return True
++            if compact in self._APPROVAL_CONFIRMATIONS or compact in self._APPROVAL_REJECTIONS:
++                self._emit_assistant_text("For the background task, use the approval button or say approve coding step or reject coding step.")
++                return True
++            # Other chat does not silently approve or cancel background work.
++            return False
++
+         normalized = self._normalize_question(text)
+         compact = normalized.rstrip(" .!?;:")
+ 
+@@ -1339,6 +1371,9 @@ class AIModule(Module):
+             text = f"I need your confirmation before acting on {target}."
+         else:
+             text = "I need your confirmation before performing that action."
++        background = getattr(self.kernel, "background_tasks", None)
++        if background is not None and background.owns(request.metadata.get("task_id")):
++            text += " Use the approval button, or say approve coding step or reject coding step."
+         print(f"[AI] Approval required: {reason}", flush=True)
+         self._emit_assistant_text(text)
+ 
+diff --git a/ai/llama_cpp_engine.py b/ai/llama_cpp_engine.py
+index b2e3d9b..8bf0d83 100644
+--- a/ai/llama_cpp_engine.py
++++ b/ai/llama_cpp_engine.py
+@@ -21,22 +21,31 @@ class LlamaCppEngine:
+         max_output_tokens=256,
+         reasoning_retry_tokens=512,
+         reasoning="off",
++        *,
++        env_prefix="ASTA_LLM",
++        server_manager=None,
+     ):
++        self.env_prefix = env_prefix
++        def setting(suffix, default=None):
++            return os.getenv(f"{env_prefix}_{suffix}", default)
++
+         self.base_url = (base_url or os.getenv(
+-            "ASTA_LLM_BASE_URL", "http://127.0.0.1:8080/v1"
++            f"{env_prefix}_BASE_URL", "http://127.0.0.1:8080/v1"
+         )).rstrip("/")
+-        self.model = model or os.getenv("ASTA_LLM_MODEL") or None
+-        self.timeout = float(os.getenv("ASTA_LLM_TIMEOUT", timeout))
+-        self.max_output_tokens = int(os.getenv(
+-            "ASTA_LLM_MAX_OUTPUT_TOKENS", max_output_tokens
+-        ))
+-        self.reasoning_retry_tokens = int(os.getenv(
+-            "ASTA_LLM_REASONING_RETRY_TOKENS", reasoning_retry_tokens
+-        ))
+-        self.temperature = float(os.getenv("ASTA_LLM_TEMPERATURE", "0.7"))
+-        self.reasoning = reasoning
++        self.model = model or setting("MODEL") or None
++        self.timeout = float(setting("TIMEOUT", timeout))
++        self.max_output_tokens = int(setting("MAX_OUTPUT_TOKENS", max_output_tokens))
++        self.reasoning_retry_tokens = int(setting("REASONING_RETRY_TOKENS", reasoning_retry_tokens))
++        self.temperature = float(setting("TEMPERATURE", "0.7"))
++        self.reasoning = setting("REASONING", reasoning)
++        self.enable_thinking = setting("ENABLE_THINKING", "0").strip().lower() in {"1", "true", "yes", "on"}
++        self.top_k = int(setting("TOP_K", "50" if env_prefix == "ASTA_LLM" else "20"))
++        self.top_p = float(setting("TOP_P", "0.95"))
++        self.min_p = float(setting("MIN_P", "0.0"))
+         self.session = requests.Session()
+-        self.server_manager = LlamaServerManager(base_url=self.base_url)
++        self.server_manager = server_manager or LlamaServerManager(
++            base_url=self.base_url, env_prefix=env_prefix
++        )
+ 
+         host = urlparse(self.base_url).hostname
+         if host in {"localhost", "127.0.0.1", "::1"}:
+@@ -371,12 +380,19 @@ Your goal is not merely to produce an answer. Help the user understand the probl
+             "max_tokens": max_output_tokens,
+             "temperature": self.temperature,
+             "cache_prompt": True,
++            "top_k": self.top_k,
++            "top_p": self.top_p,
++            "min_p": self.min_p,
++            "chat_template_kwargs": {"enable_thinking": self.enable_thinking},
+         }
+ 
+         # Free VRAM held by an idle vision model before generating.
+         gpu_share.release_idle("the chat reply")
+         try:
+-            max_reply_seconds = float(os.getenv("ASTA_LLM_MAX_REPLY_SECONDS", "45"))
++            max_reply_seconds = float(os.getenv(
++                f"{self.env_prefix}_MAX_REPLY_SECONDS",
++                "120" if self.env_prefix != "ASTA_LLM" else "45",
++            ))
+         except ValueError:
+             max_reply_seconds = 45.0
+ 
+diff --git a/ai/llama_server_manager.py b/ai/llama_server_manager.py
+index c943f33..2b8acf0 100644
+--- a/ai/llama_server_manager.py
++++ b/ai/llama_server_manager.py
+@@ -22,51 +22,54 @@ class LlamaServerManager:
+         gpu_layers: int | None = None,
+         jinja: bool | None = None,
+         reasoning: str | None = None,
++        env_prefix: str = "ASTA_LLM",
+     ):
++        self.env_prefix = env_prefix
++        def setting(suffix, default):
++            return os.getenv(f"{env_prefix}_{suffix}", default)
++
+         self.base_url = str(base_url).rstrip("/")
+         self.server_path = (
+             server_path
++            or setting("SERVER_PATH", "")
+             or os.getenv("ASTA_LLAMA_SERVER_PATH")
+             or self._default_server_path()
+         )
+         self.model_path = (
+             model_path
+-            or os.getenv("ASTA_LLM_MODEL_PATH")
+-            or self._model_path_from_legacy_env()
++            or setting("MODEL_PATH", "")
++            or (self._model_path_from_legacy_env() if env_prefix == "ASTA_LLM" else None)
+         )
+         self.startup_timeout = float(
+             startup_timeout
+             if startup_timeout is not None
+-            else os.getenv("ASTA_LLAMA_SERVER_STARTUP_TIMEOUT", "120")
++            else setting("STARTUP_TIMEOUT", os.getenv("ASTA_LLAMA_SERVER_STARTUP_TIMEOUT", "120"))
+         )
+         self.context_size = int(
+             context_size
+             if context_size is not None
+-            else os.getenv("ASTA_LLM_CONTEXT_SIZE", "8192")
++            else setting("CONTEXT_SIZE", "4096" if env_prefix != "ASTA_LLM" else "8192")
+         )
+         self.gpu_layers = int(
+             gpu_layers
+             if gpu_layers is not None
+-            else os.getenv("ASTA_LLM_GPU_LAYERS", "99")
++            else setting("GPU_LAYERS", "99")
+         )
+         self.batch_size = int(
+-            os.getenv("ASTA_LLM_BATCH_SIZE", "2048")
++            setting("BATCH_SIZE", "256" if env_prefix != "ASTA_LLM" else "2048")
+         )
+         self.ubatch_size = int(
+-            os.getenv("ASTA_LLM_UBATCH_SIZE", "512")
+-        )
+-        self.flash_attn = os.getenv("ASTA_LLM_FLASH_ATTN", "auto").strip().lower()
+-        self.cache_type_k = os.getenv("ASTA_LLM_CACHE_TYPE_K", "").strip().lower()
+-        self.cache_type_v = os.getenv("ASTA_LLM_CACHE_TYPE_V", "").strip().lower()
+-        self.parallel = int(os.getenv("ASTA_LLM_PARALLEL", "1"))
+-        self.jinja = self._env_bool(
+-            "ASTA_LLM_JINJA",
+-            True if jinja is None else jinja,
++            setting("UBATCH_SIZE", "128" if env_prefix != "ASTA_LLM" else "512")
+         )
++        self.flash_attn = setting("FLASH_ATTN", "auto").strip().lower()
++        self.cache_type_k = setting("CACHE_TYPE_K", "").strip().lower()
++        self.cache_type_v = setting("CACHE_TYPE_V", "").strip().lower()
++        self.parallel = int(setting("PARALLEL", "1"))
++        self.jinja = jinja if jinja is not None else self._env_bool(f"{env_prefix}_JINJA", True)
+         self.reasoning = (
+             reasoning
+             if reasoning is not None
+-            else os.getenv("ASTA_LLM_REASONING", "off")
++            else setting("REASONING", "off")
+         ).strip()
+ 
+         self.process: subprocess.Popen | None = None
+@@ -112,13 +115,27 @@ class LlamaServerManager:
+         return self.process is not None and self.process.poll() is None
+ 
+     def ensure_running(self) -> bool:
++        if self.process is not None and self.process.poll() is not None:
++            # A new process may now occupy the port; a dead handle does not
++            # establish ownership of that replacement.
++            self.process = None
++            self.owned = False
+         if self._server_is_ready():
+             print(
+-                "[AI] llama.cpp server already running; A.S.T.A. will not own it.",
++                "[AI] llama.cpp server already running; "
++                + ("A.S.T.A. owns it." if self.owned else "A.S.T.A. will not own it."),
+                 flush=True,
+             )
+             return True
+ 
++        if self.running:
++            # Never overwrite a live child's ownership handle when its
++            # endpoint is temporarily unavailable or an earlier stop failed.
++            ready = self._wait_until_ready()
++            if not ready:
++                self.stop()
++            return ready
++
+         if not self._autostart_enabled():
+             print(
+                 "[AI] llama.cpp auto-start disabled "
+@@ -193,18 +210,18 @@ class LlamaServerManager:
+         self.stop()
+         return False
+ 
+-    def stop(self) -> None:
++    def stop(self) -> bool:
++        """Stop only our child, retaining ownership if termination fails."""
+         process = self.process
+         owned = self.owned
+ 
+-        self.process = None
+-        self.owned = False
+-
+         if not owned or process is None:
+-            return
++            return True
+ 
+         if process.poll() is not None:
+-            return
++            self.process = None
++            self.owned = False
++            return True
+ 
+         print(
+             f"[AI] Stopping llama.cpp server (PID {process.pid})...",
+@@ -225,6 +242,7 @@ class LlamaServerManager:
+                         0x08000000,
+                     ),
+                 )
++                process.wait(timeout=5)
+             else:
+                 process.terminate()
+                 process.wait(timeout=5)
+@@ -233,12 +251,21 @@ class LlamaServerManager:
+                 process.kill()
+                 process.wait(timeout=3)
+             except (OSError, subprocess.TimeoutExpired):
+-                pass
++                return False
+         except OSError:
+-            pass
++            return False
++
++        if process.poll() is None:
++            return False
++        self.process = None
++        self.owned = False
++        return True
+ 
+     def _autostart_enabled(self) -> bool:
+-        return self._env_bool("ASTA_LLM_AUTOSTART", True)
++        return self._env_bool(
++            f"{self.env_prefix}_AUTOSTART",
++            self._env_bool("ASTA_LLM_AUTOSTART", True),
++        )
+ 
+     def _resolve_server_path(self) -> str | None:
+         value = str(self.server_path).strip() if self.server_path else ""
+@@ -266,6 +293,10 @@ class LlamaServerManager:
+         if not server_path:
+             return None
+ 
++        if self.env_prefix != "ASTA_LLM":
++            # A second profile must not accidentally discover the general GGUF.
++            return None
++
+         server_dir = Path(server_path).resolve().parent
+         model_dir = server_dir / "models"
+         candidates = sorted(model_dir.glob("*.gguf"))
+diff --git a/ai/llm_provider.py b/ai/llm_provider.py
+index 2ee09c3..546b604 100644
+--- a/ai/llm_provider.py
++++ b/ai/llm_provider.py
+@@ -1,8 +1,10 @@
+ from __future__ import annotations
+ 
+ import os
++import threading
+ from typing import Callable, Protocol
+ 
++_RUNTIME_LOCK = threading.Lock()
+ 
+ class LLMProvider(Protocol):
+     system_prompt: str
+@@ -29,11 +31,28 @@ class LLMProvider(Protocol):
+         ...
+ 
+ 
+-def create_llm_provider() -> LLMProvider:
++def create_llm_provider(*, kernel=None, purpose="chat") -> LLMProvider:
+     """Create the configured local LLM provider."""
+     provider = os.getenv("ASTA_LLM_PROVIDER", "llama_cpp").strip().lower()
+ 
+     if provider in {"llama_cpp", "llamacpp", "llama.cpp"}:
++        if os.getenv("ASTA_MODEL_ROUTER", "0").strip().lower() in {"1", "true", "yes", "on"}:
++            if kernel is None:
++                raise ValueError("Model routing requires a kernel-scoped runtime.")
++            from .model_router import ModelRuntime, RoutedLLMProvider
++
++            with _RUNTIME_LOCK:
++                runtime = getattr(kernel, "model_runtime", None)
++                if runtime is None:
++                    runtime = ModelRuntime(kernel)
++                    kernel.model_runtime = runtime
++            if os.getenv("ASTA_BACKGROUND_TASKS", "0").strip().lower() in {"1", "true", "yes", "on"}:
++                from core.background_tasks import BackgroundTaskCoordinator
++                with _RUNTIME_LOCK:
++                    if getattr(kernel, "background_tasks", None) is None:
++                        kernel.background_tasks = BackgroundTaskCoordinator(kernel)
++            return RoutedLLMProvider(runtime, purpose=purpose)
++
+         from .llama_cpp_engine import LlamaCppEngine
+ 
+         return LlamaCppEngine()
+diff --git a/ai/model_router.py b/ai/model_router.py
+new file mode 100644
+index 0000000..2d9dab8
+--- /dev/null
++++ b/ai/model_router.py
+@@ -0,0 +1,355 @@
++"""Kernel-owned model services: safe switching or independent dual residency."""
++from __future__ import annotations
++
++import os
++import re
++import threading
++import time
++import weakref
++from collections import OrderedDict
++from urllib.parse import urlparse
++
++from core import gpu_share
++from .llama_cpp_engine import LlamaCppEngine
++from .llama_server_manager import LlamaServerManager
++
++
++class ModelRoutingError(RuntimeError):
++    pass
++
++
++_CODE = re.compile(
++    r"\b(?:code|coding|debug(?:ging)?|refactor(?:ing)?|pytest|unittest|traceback|"
++    r"python|javascript|typescript|sql|compiler|codebase|repository|"
++    r"write\s+code|review\s+(?:the\s+)?code|fix\s+(?:the\s+)?(?:bug|test)|"
++    r"(?:implement|write|add|create|modify|test)\s+(?:a\s+|the\s+)?(?:function|script|class|unit\s+test))\b"
++    r"|\b[\w.-]+\.(?:py|js|ts|tsx|jsx|rs|cpp|java|go)\b|```",
++    re.IGNORECASE,
++)
++_FOLLOWUP = re.compile(r"^(?:please\s+)?(?:fix|retry|try again|continue|resume|change that|explain that)\b", re.I)
++
++
++def _name(value):
++    return str(value or "").replace("\\", "/").rsplit("/", 1)[-1]
++
++
++class ModelRuntime:
++    """Shared ownership/serialization only; client prompts and histories stay separate."""
++
++    def __init__(self, kernel, *, managers=None):
++        self.kernel = kernel
++        self.lock = threading.RLock()  # Metadata / single-resident lifecycle only.
++        self.mode = os.getenv("ASTA_MODEL_MODE", "on_demand").strip().lower()
++        if self.mode not in {"on_demand", "dual"}:
++            raise ValueError("ASTA_MODEL_MODE must be on_demand or dual.")
++        self.profile_locks = {p: threading.RLock() for p in ("general", "coding")}
++        self.priority = threading.Condition()
++        self.general_requests = 0
++        self.closing = threading.Event()
++        self.active_profile = None
++        self.clients = weakref.WeakSet()
++        self.task_profiles = OrderedDict()
++        self.pending_goals = OrderedDict()
++        if managers is None:
++            general_url = os.getenv("ASTA_LLM_BASE_URL", "http://127.0.0.1:8080/v1")
++            coding_url = os.getenv("ASTA_CODING_LLM_BASE_URL", "http://127.0.0.1:8081/v1")
++            managers = {
++                "general": LlamaServerManager(base_url=general_url),
++                "coding": LlamaServerManager(base_url=coding_url, env_prefix="ASTA_CODING_LLM"),
++            }
++        self.managers = managers
++        ports = []
++        for manager in managers.values():
++            url = urlparse(manager.base_url)
++            if url.hostname not in {"127.0.0.1", "localhost", "::1"} or url.scheme != "http":
++                raise ValueError("Model switching requires loopback HTTP llama.cpp endpoints.")
++            ports.append(url.port or 80)
++        if len(set(ports)) != len(ports):
++            raise ValueError("General and coding models must use different local ports.")
++        bus = getattr(kernel, "event_bus", None)
++        if bus is not None:
++            bus.subscribe("task_created", self.on_task_created)
++
++    def emit(self, profile, status):
++        model = _name(self.managers[profile].model_path)
++        print(f"[ModelRouter] {profile}: {status} ({model or 'unconfigured'})", flush=True)
++        bus = getattr(self.kernel, "event_bus", None)
++        if bus is not None:
++            bus.emit("model_route_changed", profile=profile, status=status, model=model)
++
++    def select(self, goal, *, task_id=None, coding_scope=False, followup_profile=None):
++        with self.lock:
++            if task_id and task_id in self.task_profiles:
++                return self.task_profiles[task_id]
++            text = str(goal or "").strip()
++            text = re.sub(
++                r"\b(?:postal|zip|dress|morse|qr|verification|access)\s+codes?\b",
++                "", text, flags=re.I,
++            )
++            profile = "coding" if (
++                coding_scope or _CODE.search(text)
++                or (_FOLLOWUP.match(text) and followup_profile == "coding")
++            ) else "general"
++            if task_id:
++                self.task_profiles[task_id] = profile
++                while len(self.task_profiles) > 128:
++                    self.task_profiles.popitem(last=False)
++            return profile
++
++    def on_task_created(self, task=None, **kwargs):
++        if not isinstance(task, dict) or not task.get("id"):
++            return
++        with self.lock:
++            goal = str(task.get("goal") or "").strip()
++            profile = self.pending_goals.pop(goal, None)
++            if profile is None:
++                profile = self.select(goal, task_id=task["id"])
++            self.task_profiles[task["id"]] = profile
++            while len(self.task_profiles) > 128:
++                self.task_profiles.popitem(last=False)
++
++    def _validate_files(self, profile):
++        manager = self.managers[profile]
++        # Explicit paths avoid discovering the wrong GGUF after a second download.
++        if not manager.model_path:
++            raise ModelRoutingError(f"Set {manager.env_prefix}_MODEL_PATH explicitly before routing.")
++        server = manager._resolve_server_path()
++        if not server or not manager._resolve_model_path(server):
++            raise ModelRoutingError(f"The {profile} llama-server executable or GGUF file is unavailable.")
++
++    def _activate(self, profile, engine):
++        target = self.managers[profile]
++        # Validate target BEFORE unloading a working general/coding server.
++        self._validate_files(profile)
++        if profile == "coding" and target._server_is_ready() and not (target.owned and target.running):
++            if self.mode == "on_demand":
++                raise ModelRoutingError("Coding endpoint is externally owned; use a free port for ASTA-managed coding.")
++        for other_profile, other in (self.managers.items() if self.mode == "on_demand" else ()):
++            if other_profile == profile:
++                continue
++            if not other.running and not other._server_is_ready():
++                continue
++            if not other.owned:
++                raise ModelRoutingError(
++                    f"Cannot switch: the {other_profile} endpoint is externally owned. "
++                    "Stop it yourself or disable ASTA_MODEL_ROUTER; ASTA will not terminate it."
++                )
++            self.emit(profile, "loading")
++            if not other.stop():
++                raise ModelRoutingError(f"Could not confirm termination of the {other_profile} server.")
++            self.active_profile = None
++            deadline = time.monotonic() + 5
++            while other.running or other._server_is_ready():
++                if time.monotonic() >= deadline:
++                    raise ModelRoutingError(f"The {other_profile} endpoint is still occupied after stopping.")
++                time.sleep(0.1)
++
++        already_ready = target._server_is_ready()
++        if profile != self.active_profile or not already_ready:
++            self.emit(profile, "loading")
++        gpu_share.release_idle(f"loading the {profile} model")
++        if not target.ensure_running():
++            raise ModelRoutingError(f"The {profile} model did not become ready; check llama.cpp and VRAM.")
++        if self.closing.is_set():
++            raise ModelRoutingError("Model runtime is shutting down.")
++        try:
++            model = engine._discover_model()
++        except Exception as exc:
++            if target.owned:
++                target.stop()
++            raise ModelRoutingError(f"Could not verify the {profile} endpoint's model identity.") from exc
++        expected = os.getenv(f"{target.env_prefix}_MODEL") or target.model_path
++        if _name(model).casefold() != _name(expected).casefold():
++            if target.owned:
++                target.stop()
++            raise ModelRoutingError(f"The {profile} endpoint reported a different model than configured.")
++        self.active_profile = profile
++        self.emit(profile, "ready")
++
++    def execute(self, profile, engine, operation):
++        # Separate services may overlap; one request per profile remains serialized.
++        lock = self.lock if self.mode == "on_demand" else self.profile_locks[profile]
++        foreground = self.mode == "dual" and profile == "general"
++        if foreground:
++            with self.priority:
++                self.general_requests += 1
++        try:
++            if self.mode == "dual" and profile == "coding":
++                with self.priority:
++                    while self.general_requests and not self.closing.is_set():
++                        self.priority.wait(0.1)
++            return self._execute_locked(profile, engine, operation, lock)
++        finally:
++            if foreground:
++                with self.priority:
++                    self.general_requests -= 1
++                    self.priority.notify_all()
++
++    def _execute_locked(self, profile, engine, operation, lock):
++        with lock:
++            if self.closing.is_set():
++                raise ModelRoutingError("Model runtime is shut down.")
++            try:
++                self._activate(profile, engine)
++                self.emit(profile, "generating")
++                result = operation(engine)
++                self.emit(profile, "ready")
++                return result
++            except ModelRoutingError:
++                self.emit(profile, "error")
++                raise
++            except Exception as exc:
++                self.emit(profile, "error")
++                raise ModelRoutingError(
++                    f"The {profile} model request failed ({type(exc).__name__})."
++                ) from exc
++
++    def shutdown(self):
++        self.closing.set()
++        with self.priority:
++            self.priority.notify_all()
++        for client in tuple(self.clients):
++            client.cancel()
++        with self.lock:
++            for profile, manager in self.managers.items():
++                with self.profile_locks[profile]:
++                    if manager.owned and not manager.stop():
++                        print("[ModelRouter] Owned server did not stop; retaining its process handle.", flush=True)
++            self.active_profile = None
++            bus = getattr(self.kernel, "event_bus", None)
++            if bus is not None:
++                bus.unsubscribe("task_created", self.on_task_created)
++            for client in tuple(self.clients):
++                for engine in client.engines.values():
++                    engine.session.close()
++
++
++class RoutedLLMProvider:
++    def __init__(self, runtime, *, purpose="chat", engine_factory=LlamaCppEngine):
++        self.runtime = runtime
++        self.purpose = purpose
++        self.engine_factory = engine_factory
++        self.client_lock = threading.RLock()
++        self.engines = {}
++        general = self._engine("general")
++        self.system_prompt = general.system_prompt
++        self.max_output_tokens = general.max_output_tokens
++        self.reasoning_retry_tokens = general.reasoning_retry_tokens
++        self.temperature = general.temperature
++        self.history = []
++        self.last_profile = "general"
++        self.runtime.clients.add(self)
++
++    @property
++    def model(self):
++        engine = self.engines.get(self.last_profile)
++        return engine.model if engine is not None else None
++
++    def _engine(self, profile):
++        if profile not in self.engines:
++            manager = self.runtime.managers[profile]
++            prefix = manager.env_prefix
++            engine = self.engine_factory(
++                base_url=manager.base_url, server_manager=manager, env_prefix=prefix,
++                max_output_tokens=2048 if profile == "coding" else 256,
++                reasoning_retry_tokens=2048 if profile == "coding" else 512,
++            )
++            if hasattr(self, "system_prompt"):
++                engine.set_system_prompt(self.system_prompt)
++            self.engines[profile] = engine
++        return self.engines[profile]
++
++    def set_system_prompt(self, prompt):
++        if not isinstance(prompt, str) or not prompt.strip():
++            raise ValueError("System prompt must be non-empty.")
++        with self.client_lock:
++            self.system_prompt = prompt.strip()
++            for engine in self.engines.values():
++                engine.set_system_prompt(self.system_prompt)
++            self.history = []
++
++    def reset_conversation(self):
++        with self.client_lock:
++            self.history = []
++            self.last_profile = "general"
++            for engine in self.engines.values():
++                engine.reset_conversation()
++
++    def cancel(self):
++        for engine in tuple(self.engines.values()):
++            engine.cancel()
++
++    def shutdown(self):
++        # Client lifetime is not shared process lifetime. Kernel owns the runtime.
++        self.cancel()
++
++    def warmup(self):
++        try:
++            return self.runtime.execute("general", self._engine("general"), lambda engine: engine.warmup())
++        except Exception as exc:
++            print(f"[ModelRouter] General warmup unavailable: {exc}", flush=True)
++            return False
++
++    def _configure(self, engine, profile):
++        if self.purpose == "agent":
++            budget = int(os.getenv("ASTA_CODING_AGENT_MAX_OUTPUT_TOKENS", "2048")) if profile == "coding" else self.max_output_tokens
++            engine.max_output_tokens = max(64, budget)
++            engine.reasoning_retry_tokens = engine.max_output_tokens
++            engine.temperature = float(os.getenv("ASTA_CODING_LLM_TEMPERATURE", "0.6")) if profile == "coding" else self.temperature
++        elif profile == "general":
++            engine.max_output_tokens = self.max_output_tokens
++            engine.reasoning_retry_tokens = self.reasoning_retry_tokens
++            engine.temperature = self.temperature
++        else:
++            engine.temperature = float(os.getenv("ASTA_CODING_LLM_TEMPERATURE", "0.6"))
++
++    def generate_for_task(self, prompt, *, goal, task_id=None, coding_scope=False):
++        with self.client_lock:
++            profile = self.runtime.select(goal, task_id=task_id, coding_scope=coding_scope)
++            engine = self._engine(profile)
++            self._configure(engine, profile)
++            engine.reset_conversation()
++            self.last_profile = profile
++            response = self.runtime.execute(profile, engine, lambda e: e.generate_response(prompt, context=None))
++            if not task_id and response:
++                with self.runtime.lock:
++                    self.runtime.pending_goals[str(goal).strip()] = profile
++                    while len(self.runtime.pending_goals) > 64:
++                        self.runtime.pending_goals.popitem(last=False)
++            return response
++
++    def generate_response(self, text, on_sentence=None, context=None):
++        if not text:
++            return ""
++        with self.client_lock:
++            manager = getattr(self.runtime.kernel, "task_manager", None)
++            task = manager.current() if manager is not None else None
++            task_profile = self.runtime.task_profiles.get(getattr(task, "id", None))
++            followup = task_profile or (
++                "coding" if self.runtime.active_profile == "coding" else self.last_profile
++            )
++            # In dual mode interactive chat always stays on the conversation service.
++            profile = "general" if self.runtime.mode == "dual" else self.runtime.select(text, followup_profile=followup)
++            engine = self._engine(profile)
++            self._configure(engine, profile)
++            # Canonical per-client chat history crosses profiles; agent history is separate.
++            engine._messages = [{"role": "system", "content": self.system_prompt}] + [dict(item) for item in self.history]
++            engine._trim_history()
++            try:
++                response = self.runtime.execute(profile, engine, lambda e: e.generate_response(text, on_sentence=on_sentence, context=context))
++            except ModelRoutingError as exc:
++                response = f"I couldn't use the requested {profile} model: {exc} No alternate model was used."
++                if on_sentence:
++                    on_sentence(response)
++                return response
++            self.history = [dict(item) for item in engine._messages[1:]]
++            self.last_profile = profile
++            return response
++
++    def complete_json(self, system, user, max_tokens=96, timeout=None):
++        with self.client_lock:
++            # Intent classification is role-neutral. Reuse the resident profile
++            # instead of swapping back to general before every coding follow-up.
++            profile = "general" if self.runtime.mode == "dual" else (self.runtime.active_profile or "general")
++            engine = self._engine(profile)
++            return self.runtime.execute(profile, engine, lambda e: e.complete_json(system, user, max_tokens=max_tokens, timeout=timeout))
+diff --git a/core/agent/brain.py b/core/agent/brain.py
+index b34c67b..0eb6777 100644
+--- a/core/agent/brain.py
++++ b/core/agent/brain.py
+@@ -101,7 +101,7 @@ class AgentBrain:
+             else:
+                 from ai.llm_provider import create_llm_provider
+ 
+-                self._provider = create_llm_provider()
++                self._provider = create_llm_provider(kernel=self.kernel, purpose="agent")
+ 
+             setter = getattr(self._provider, "set_system_prompt", None)
+             if callable(setter):
+@@ -138,11 +138,16 @@ class AgentBrain:
+         prompt = self._build_prompt(goal, intent)
+         provider = self.provider()
+ 
+-        reset = getattr(provider, "reset_conversation", None)
+-        if callable(reset):
+-            reset()
+-
+-        response = provider.generate_response(prompt, context=None)
++        routed = getattr(provider, "generate_for_task", None)
++        if callable(routed):
++            response = routed(
++                prompt, goal=goal, coding_scope=intent.intent is IntentType.TASK,
++            )
++        else:
++            reset = getattr(provider, "reset_conversation", None)
++            if callable(reset):
++                reset()
++            response = provider.generate_response(prompt, context=None)
+ 
+         proposal = self._parse_response(response)
+         self._validate_proposal(proposal)
+@@ -156,11 +161,17 @@ class AgentBrain:
+         prompt = self._build_decision_prompt(task_state)
+         provider = self.provider()
+ 
+-        reset = getattr(provider, "reset_conversation", None)
+-        if callable(reset):
+-            reset()
+-
+-        response = provider.generate_response(prompt, context=None)
++        routed = getattr(provider, "generate_for_task", None)
++        if callable(routed):
++            response = routed(
++                prompt, goal=str(task_state.get("goal") or ""),
++                task_id=str(task_state.get("id") or "") or None,
++            )
++        else:
++            reset = getattr(provider, "reset_conversation", None)
++            if callable(reset):
++                reset()
++            response = provider.generate_response(prompt, context=None)
+         decision = self._parse_decision(response)
+         decision = self._normalize_visual_next_action(
+             decision,
+diff --git a/core/background_tasks.py b/core/background_tasks.py
+new file mode 100644
+index 0000000..5666c70
+--- /dev/null
++++ b/core/background_tasks.py
+@@ -0,0 +1,224 @@
++"""One background project task; ordinary conversation never owns its task slot.
++
++The existing synchronous bus/tool loop is preserved, but project planning and
++approved continuations are dispatched on a dedicated worker. Desktop actions
++are held while it owns the single TaskManager slot. No arbitrary parallel tools.
++"""
++from __future__ import annotations
++
++import queue
++import re
++import threading
++from uuid import uuid4
++
++
++_TERMINAL = {"completed", "failed", "cancelled"}
++
++
++class BackgroundTaskCoordinator:
++    def __init__(self, kernel):
++        self.kernel = kernel
++        self.lock = threading.RLock()
++        self.queue = queue.Queue(maxsize=8)
++        self.closing = threading.Event()
++        self.cancelled = threading.Event()
++        self.state = None
++        self.workspace_identity = None
++        self.running_operation = False
++        self.worker = threading.Thread(target=self._run, name="asta-project-worker", daemon=True)
++        self.subscriptions = {
++            "workspace_updated": self.on_workspace,
++            "task_created": self.on_created,
++            "task_progress": self.on_progress,
++            "tool_confirmation_required": self.on_approval,
++            "task_completed": self.on_terminal,
++            "task_failed": self.on_terminal,
++            "task_cancelled": self.on_terminal,
++            "task_paused": self.on_terminal,
++        }
++        for event, callback in self.subscriptions.items():
++            kernel.event_bus.subscribe(event, callback)
++        self.worker.start()
++
++    @property
++    def busy(self):
++        with self.lock:
++            return bool(self.running_operation or (self.state and self.state["phase"] not in _TERMINAL))
++
++    def in_worker(self):
++        return threading.current_thread() is self.worker
++
++    def owns(self, task_id):
++        with self.lock:
++            return bool(task_id and self.state and self.state.get("task_id") == task_id)
++
++    def snapshot(self):
++        with self.lock:
++            return dict(self.state) if self.state else None
++
++    def _publish(self):
++        snapshot = self.snapshot()
++        if snapshot:
++            self.kernel.event_bus.emit("background_task_changed", task=snapshot)
++
++    def _phase(self, phase, message=""):
++        with self.lock:
++            if self.state is None:
++                return
++            if self.cancelled.is_set() and phase != "cancelled":
++                return
++            self.state.update(phase=phase, message=message)
++        self._publish()
++
++    def start(self, goal, intent):
++        with self.lock:
++            current = self.kernel.task_manager.current()
++            active = current is not None and current.status.value not in _TERMINAL
++            if self.closing.is_set() or self.busy or active:
++                self.kernel.event_bus.emit("assistant_response", text="A task is already active. Please finish or cancel it before starting another project task.")
++                return False
++            self.cancelled.clear()
++            manager = getattr(self.kernel, "workspace_manager", None)
++            self.workspace_identity = manager.snapshot().get("project_path", "") if manager else None
++            self.state = {"job_id": str(uuid4()), "task_id": None, "phase": "queued",
++                          "goal": str(goal), "message": "Project task queued"}
++            self.schedule(lambda: self._start_goal(goal, intent))
++        self._publish()
++        self.kernel.event_bus.emit("assistant_response", text="I’ve queued that project task in the background. We can keep talking while it runs.")
++        return True
++
++    def schedule(self, operation):
++        with self.lock:
++            if self.closing.is_set() or self.cancelled.is_set() or self.state is None:
++                return False
++            job_id = self.state["job_id"]
++            try:
++                self.queue.put_nowait((job_id, operation))
++            except queue.Full:
++                self.kernel.event_bus.emit("assistant_response", text="The project worker queue is full. Please wait for the current step.")
++                return False
++            return True
++
++    def _run(self):
++        while not self.closing.is_set():
++            try:
++                job_id, operation = self.queue.get(timeout=0.1)
++            except queue.Empty:
++                continue
++            try:
++                with self.lock:
++                    if self.closing.is_set() or self.cancelled.is_set() or not self.state or self.state["job_id"] != job_id:
++                        continue
++                    self.running_operation = True
++                operation()
++            except Exception as exc:
++                self._phase("failed", f"Project worker failed ({type(exc).__name__})")
++                snapshot = self.snapshot()
++                task = self.kernel.task_manager.get(snapshot["task_id"]) if snapshot and snapshot["task_id"] else None
++                if task is not None and task.status.value not in _TERMINAL:
++                    self.kernel.task_manager.fail("Background worker failed.", task.id)
++                self.kernel.event_bus.emit("assistant_response", text="The background project task failed. Check its status before retrying.")
++            finally:
++                with self.lock:
++                    self.running_operation = False
++                self.queue.task_done()
++
++    def _start_goal(self, goal, intent):
++        self._phase("planning", "Preparing a safe project plan")
++        task = self.kernel.task_runtime.start_goal(goal, intent)
++        if self.cancelled.is_set():
++            return
++        if task is None:
++            self._phase("failed", "No safe executable project plan was created")
++            self.kernel.event_bus.emit("assistant_response", text="I couldn’t create a safe executable project plan. No further project actions will run.")
++        elif task.status.value in _TERMINAL or task.status.value == "paused":
++            self._phase(task.status.value, "Project task " + task.status.value)
++        elif self.snapshot()["phase"] != "awaiting_approval":
++            self._phase("working", "Project task is active")
++
++    def on_created(self, task=None, **kwargs):
++        if not isinstance(task, dict) or not self.in_worker():
++            return
++        with self.lock:
++            if not self.state or self.state["task_id"] is not None:
++                return
++            self.state["task_id"] = task["id"]
++            should_cancel = self.cancelled.is_set()
++        if should_cancel:
++            self.kernel.task_manager.cancel("Background task cancelled during planning.", task["id"])
++        self._publish()
++
++    def on_progress(self, task_id=None, phase="working", text="", **kwargs):
++        if self.owns(task_id) or (self.in_worker() and self.state and not self.state["task_id"]):
++            self._phase(phase, str(text))
++
++    def on_approval(self, request=None, **kwargs):
++        if request is not None and self.owns(request.metadata.get("task_id")):
++            self._phase("awaiting_approval", "Review the requested action; approval is still required")
++
++    def on_terminal(self, task=None, **kwargs):
++        if isinstance(task, dict) and self.owns(task.get("id")):
++            if task.get("status") in _TERMINAL:
++                for pending in self.kernel.approval_manager.list_pending():
++                    if pending.request.metadata.get("task_id") == task["id"]:
++                        self.kernel.approval_manager.reject(pending.request.request_id)
++            self._phase(task.get("status", "failed"), "Project task " + task.get("status", "failed"))
++
++    def on_workspace(self, workspace=None, **kwargs):
++        if self.busy and self.workspace_identity is not None and isinstance(workspace, dict):
++            if workspace.get("project_path", "") != self.workspace_identity:
++                self.cancel()
++
++    def allow_request(self, request):
++        if self.closing.is_set():
++            return False
++        task_id = request.metadata.get("task_id")
++        task = self.kernel.task_manager.get(task_id) if task_id else None
++        if task is not None and task.status.value in _TERMINAL:
++            return False
++        if self.owns(request.metadata.get("task_id")):
++            return not (self.closing.is_set() or self.cancelled.is_set())
++        return not self.busy
++
++    def cancel(self):
++        if not self.busy:
++            return False
++        self.cancelled.set()
++        self._phase("cancelled", "Cancellation requested; any in-flight tool must finish safely")
++        runtime = getattr(self.kernel, "model_runtime", None)
++        if runtime is not None:
++            for client in tuple(runtime.clients):
++                if client.purpose == "agent":
++                    client.cancel()
++        snapshot = self.snapshot()
++        if snapshot and snapshot["task_id"]:
++            # Remove pending approvals before emitting a terminal event.
++            for pending in self.kernel.approval_manager.list_pending():
++                if pending.request.metadata.get("task_id") == snapshot["task_id"]:
++                    self.kernel.approval_manager.reject(pending.request.request_id)
++            task = self.kernel.task_manager.get(snapshot["task_id"])
++            if task is not None and task.status.value not in _TERMINAL:
++                self.kernel.task_manager.cancel("Background cancellation requested.", task.id)
++        return True
++
++    def handle_control(self, text):
++        value = re.sub(r"[.!?]+$", "", str(text).strip().lower())
++        if value in {"cancel coding task", "cancel project task", "stop coding task", "stop project task"}:
++            message = "Cancellation requested. An in-flight tool may need to finish safely." if self.cancel() else "There is no active background project task."
++        elif value in {"coding status", "project task status", "background task status", "what is the coding task doing"}:
++            state = self.snapshot()
++            message = (f"The project task is {state['phase'].replace('_', ' ')}. {state['message']}" if state else "There is no background project task.")
++        else:
++            return False
++        self.kernel.event_bus.emit("assistant_response", text=message)
++        return True
++
++    def shutdown(self):
++        if self.closing.is_set():
++            return
++        self.cancel()
++        self.closing.set()
++        if not self.in_worker():
++            self.worker.join(timeout=5)
++        for event, callback in self.subscriptions.items():
++            self.kernel.event_bus.unsubscribe(event, callback)
+diff --git a/core/kernel.py b/core/kernel.py
+index 6b854f8..321a790 100644
+--- a/core/kernel.py
++++ b/core/kernel.py
+@@ -39,6 +39,8 @@ class Kernel:
+         authority_path=None,
+     ):
+         self.event_bus = EventBus()
++        self.model_runtime = None
++        self.background_tasks = None
+         self.media_manager = MediaManager()
+         self.intent_router = IntentRouter(
+             media_providers=self.media_manager.providers(),
+@@ -149,6 +151,7 @@ class Kernel:
+                     module.shutdown()
+                 except Exception as exc:
+                     print(f"[Kernel] Error shutting down {module.name}: {exc}")
++            self._shutdown_model_runtime()
+             vision_shutdown = getattr(self.vision_engine, "shutdown", None)
+             if callable(vision_shutdown):
+                 try:
+@@ -210,6 +213,8 @@ class Kernel:
+         try:
+             print("[Kernel] Shutting down...")
+ 
++            if self.background_tasks is not None:
++                self.background_tasks.shutdown()
+             self.approval_manager.clear()
+ 
+             for module in reversed(self.modules):
+@@ -218,6 +223,7 @@ class Kernel:
+                 except Exception as exc:
+                     print(f"[Kernel] Error shutting down {module.name}: {exc}")
+ 
++            self._shutdown_model_runtime()
+             vision_shutdown = getattr(self.vision_engine, "shutdown", None)
+             if callable(vision_shutdown):
+                 try:
+@@ -230,3 +236,13 @@ class Kernel:
+             with self._shutdown_lock:
+                 self._shutdown_owner = None
+                 self._shutdown_complete.set()
++
++    def _shutdown_model_runtime(self):
++        if self.background_tasks is not None:
++            self.background_tasks.shutdown()
++        runtime = self.model_runtime
++        if runtime is not None:
++            try:
++                runtime.shutdown()
++            except Exception as exc:
++                print(f"[Kernel] Error shutting down model runtime: {exc}")
+diff --git a/core/task_runtime.py b/core/task_runtime.py
+index 7cd39b8..29ed916 100644
+--- a/core/task_runtime.py
++++ b/core/task_runtime.py
+@@ -174,6 +174,9 @@ class TaskRuntimeModule(Module):
+             self._handle_user_message(text, acknowledge=False)
+             return
+ 
++        background = getattr(self.kernel, "background_tasks", None)
++        if background is not None and background.busy and not background.in_worker():
++            return
+         value = str(text or "").strip()
+         if not value:
+             return
+@@ -222,6 +225,9 @@ class TaskRuntimeModule(Module):
+         )
+ 
+     def _handle_user_message(self, text, *, acknowledge=True):
++        background = getattr(self.kernel, "background_tasks", None)
++        if background is not None and background.busy and not background.in_worker():
++            return
+         if not text:
+             return
+ 
+@@ -312,6 +318,9 @@ class TaskRuntimeModule(Module):
+         incremental_segment_index: int | None = None,
+     ):
+         """Create an executable task plan from any structured command intent."""
++        background = getattr(self.kernel, "background_tasks", None)
++        if background is not None and background.busy and not background.in_worker():
++            return None
+         self._emit_progress(
+             "planning",
+             "I’m working out how to do that.",
+@@ -525,6 +534,9 @@ class TaskRuntimeModule(Module):
+         self._incremental_sessions.pop(session_id, None)
+ 
+     def on_tool_request(self, request):
++        background = getattr(self.kernel, "background_tasks", None)
++        if background is not None and background.busy and not background.in_worker() and not background.owns(getattr(request, "metadata", {}).get("task_id")):
++            return
+         if not isinstance(request, ToolRequest):
+             return
+ 
+@@ -558,6 +570,8 @@ class TaskRuntimeModule(Module):
+         )
+ 
+     def on_tool_result(self, result):
++        if isinstance(result, ToolResult) and result.metadata.get("background_conflict"):
++            return
+         if not isinstance(result, ToolResult):
+             return
+ 
+diff --git a/core/tools/module.py b/core/tools/module.py
+index 9013edf..d568fc6 100644
+--- a/core/tools/module.py
++++ b/core/tools/module.py
+@@ -36,6 +36,12 @@ class ToolRuntimeModule(Module):
+             print("[Tools] Ignoring invalid tool request.", flush=True)
+             return
+ 
++        background = getattr(self.kernel, "background_tasks", None)
++        if background is not None and not background.allow_request(request):
++            self._emit_result(ToolResult(success=False, tool=request.tool,
++                error="Background task cancelled or conflicting action blocked.",
++                metadata={"background_conflict": True}), request=request)
++            return
+         result = self.kernel.tool_dispatcher.dispatch(
+             request,
+             confirmed=self._is_user_directed(request),
+@@ -83,6 +89,15 @@ class ToolRuntimeModule(Module):
+         return tool in cls._USER_DIRECTED_TOOLS
+ 
+     def on_confirmation_response(self, request_id, approved):
++        background = getattr(self.kernel, "background_tasks", None)
++        pending = self.kernel.approval_manager.get(request_id) if isinstance(request_id, str) else None
++        task_id = pending.request.metadata.get("task_id") if pending is not None else None
++        if background is not None and background.owns(task_id) and not background.in_worker():
++            background.schedule(lambda: self._confirmation_response(request_id, approved))
++            return
++        self._confirmation_response(request_id, approved)
++
++    def _confirmation_response(self, request_id, approved):
+         if not isinstance(request_id, str):
+             self._emit_error(request_id, "Invalid request_id.")
+             return
+@@ -101,6 +116,12 @@ class ToolRuntimeModule(Module):
+                 )
+                 return
+ 
++            background = getattr(self.kernel, "background_tasks", None)
++            if background is not None and not background.allow_request(request):
++                self._emit_result(ToolResult(success=False, tool=request.tool,
++                    error="Background task cancelled or conflicting action blocked.",
++                    metadata={"background_conflict": True}), request=request)
++                return
+             result = self.kernel.tool_dispatcher.dispatch(
+                 request,
+                 confirmed=True,
+diff --git a/docs/concurrent-model-services.md b/docs/concurrent-model-services.md
+new file mode 100644
+index 0000000..f1881db
+--- /dev/null
++++ b/docs/concurrent-model-services.md
+@@ -0,0 +1,104 @@
++# Concurrent conversation and background project work
++
++## Scope
++
++Optional two-profile local inference: LFM2.5-2.6B for interactive conversation
++and Qwen3.5-4B for project planning and bounded agent decisions. Model names are
++configuration, not hard-coded architecture. The router is disabled by default.
++This patch is standalone against main at 6afda1b; do not apply the earlier
++ASTA-on-demand-model-router.patch first.
++
++Two services do not provide two GPUs. Dual mode allows overlapping HTTP
++inference on separate local llama.cpp servers. It does not guarantee overlapping
++CUDA kernels, a particular response latency, or enough VRAM with speech/vision.
++The coding service starts lazily and stays resident after its first request.
++
++## Operating modes
++
++- `ASTA_MODEL_ROUTER=0`: unchanged legacy single-model provider.
++- `ASTA_MODEL_ROUTER=1`, `ASTA_MODEL_MODE=dual`: independent general/coding
++  service locks, separate client histories and request sessions; one request per
++  profile at a time. Interactive chat/intent JSON always use general, even when
++  a coding task is active. New coding inference waits for existing foreground
++  requests at inference boundaries; active generations are not preempted.
++- `ASTA_MODEL_MODE=on_demand`: explicit low-memory fallback, one text service at
++  a time. Chat can wait behind coding inference in this mode. No automatic
++  unload/retry policy after an OOM: errors remain visible and the user chooses
++  the fallback.
++- `ASTA_BACKGROUND_TASKS=1`: planning and the existing synchronous project
++  tool loop run on a dedicated worker, including approved continuations. One
++  project task only. No new arbitrary shell execution or parallel tool workers.
++
++## Ownership, safety and limitations
++
++Both GGUF paths must be explicit. Endpoints must be distinct loopback HTTP
++ports. A mismatched model identity is rejected. Only ASTA-owned child processes
++are stopped. Dual mode may reuse an externally owned endpoint if its model
++identity matches; its lifecycle belongs to the user. On-demand mode refuses to
++stop an external model in order to switch profiles.
++
++The existing TaskManager has one active slot. While background project work
++owns it, other tool actions and new project tasks are held, not interleaved.
++Read-only conversation, task status and approvals remain available. This is not
++a multi-project agent or concurrent desktop automation implementation.
++
++Existing permissions and critical sandbox approvals remain mandatory. Ordinary
++chat does not cancel a background approval, and bare yes/no cannot authorize it.
++Use the HUD button (request-ID bound), `approve coding step`, or `reject coding
++step`. Approvals still expire according to the existing TTL; expired requests
++cannot execute. Terminal background tasks discard their pending approvals.
++
++`cancel coding task` / `cancel project task` stop future work and remove pending
++approvals. An already-running tool, filesystem operation or sandbox process is
++not forcibly interrupted or rolled back. Do not assume cancellation undoes edits.
++A workspace root change requests cancellation before further background steps.
++Planning/task state is in memory only; tasks do not resume after restart.
++
++The HUD shows both model-service states plus a separate project phase. Background
++progress does not overwrite ordinary listening/speaking state. Approval continues
++to use the existing prominent approval flow. No raw model reasoning is displayed.
++
++## Setup
++
++Close ASTA. Keep the existing CUDA llama-server path in `.env`; use a recent
++llama.cpp build supporting both models and their chat templates. Download:
++
++- `LiquidAI/LFM2.5-2.6B-GGUF`, `LFM2.5-2.6B-Q4_K_M.gguf`
++- `unsloth/Qwen3.5-4B-GGUF`, `Qwen3.5-4B-Q4_K_M.gguf`
++
++Install the optional `huggingface_hub` downloader dependency, then run
++`scripts/download_model_services.py --model-dir PATH`. The checked-in manifest
++pins each download to a repository revision; no model weights are in this patch.
++
++Run `scripts/configure_model_services.py --general PATH --coding PATH`. It updates
++only model-related `.env` keys, removes duplicate selected keys, preserves
++unrelated configuration, and enables the cognitive planner and background work.
++It does not print secrets. `.env` remains ignored. Start with 4K contexts,
++256/128 batch/microbatch and one slot per service. Coding thinking is initially
++disabled for bounded JSON control; benchmark reasoning separately before
++raising context/output budgets. The research benchmarks are not reproduced by
++these conservative settings.
++
++## Acceptance checks
++
++1. Run the focused tests for model router, concurrency, server manager, provider,
++   HUD, workspace tasks and sandbox. They use fakes, not downloaded models.
++2. With ASTA closed, run `python scripts/smoke_concurrent_models.py`. It checks
++   model identities, dual residency and a real chat finishing during coding.
++   It executes no generated code and shuts down only its own servers. Successful
++   output ends with `ASTA_CONCURRENT_MODELS_SMOKE_OK`. Very short coding output
++   may finish too soon to demonstrate overlap; that is reported as inconclusive,
++   not a false positive.
++3. Start ASTA, request an existing supported project task, then ask an unrelated
++   conversational question. Check that chat answers while the project phase
++   remains visible. Check `project task status` and cancel behavior.
++4. At an approval prompt, ask an unrelated question; verify no tool ran. Bare
++   `yes` must not approve background work. Use the request-bound approval button
++   or the explicit phrase, then verify continuation runs on the project worker.
++5. Test memory with speech active and vision loaded when needed; sample
++   `nvidia-smi` peak VRAM and response latency. The model-only smoke omits those
++   resource consumers. If dual residency fails, set `ASTA_MODEL_MODE=on_demand`
++   and use the switching smoke (`scripts/smoke_model_router.py`) instead.
++
++No local Windows/RTX measurement is claimed by the patch. Automated tests prove
++software coordination, not model quality or laptop capacity.
+diff --git a/docs/model-router.md b/docs/model-router.md
+new file mode 100644
+index 0000000..f0adec7
+--- /dev/null
++++ b/docs/model-router.md
+@@ -0,0 +1,110 @@
++> This document describes the **on_demand fallback mode**. For dual-model
++> operation and background project work, use [concurrent model services](concurrent-model-services.md).
++> Both modes ship in one standalone patch; the earlier router patch is not required.
++
++# On-demand general/coding model router (V1)
++
++## Scope
++
++The router is opt-in (`ASTA_MODEL_ROUTER=1
++ASTA_MODEL_MODE=on_demand`). Existing single-model behavior is
++unchanged when disabled. It reuses llama.cpp, the provider interface, and the
++existing validated planner/tools; it is not a second agent framework.
++
++V1 uses conservative rules over the original user goal, plus the existing
++workspace task scope. Coding planning and post-action decisions are covered,
++not just ordinary chat. Internal capability descriptions are not classified as
++user intent. An additional LLM classifier is intentionally not implemented yet.
++
++One kernel-scoped runtime owns model-server lifecycles and serializes all text
++inference, including streaming and stateless intent JSON requests. Chat and
++agent clients have separate prompts/histories. Chat history is replayed across
++model switches; task state, approvals, tool results, and verification remain in
++the existing kernel/runtime. A task's role is retained by its in-memory task ID.
++Short coding follow-ups and intent classification can reuse the resident model.
++An unrelated general question can switch back. Nothing automatically resumes a
++previous task or persists model-routing state across restart.
++
++## Setup
++
++Close ASTA normally before changing settings or running the standalone smoke.
++Use an up-to-date CUDA llama.cpp build supporting the existing server flags.
++Download the chosen coding GGUF yourself; ASTA never downloads models at runtime.
++For the initial 8 GB RTX 4060 laptop target, use:
++
++- General: NVIDIA-Nemotron-3-Nano-4B-Q4_K_M.gguf (existing model).
++- Coding baseline: Qwen3.5-4B-Q4_K_M.gguf from
++  unsloth/Qwen3.5-4B-GGUF.
++
++Before placing a second GGUF in the model directory, set the general model path
++explicitly. Automatic single-GGUF discovery becomes ambiguous with two files.
++Add/update the following in the ignored local `.env`, using your actual paths:
++
++```text
++ASTA_MODEL_ROUTER=1
++ASTA_LLM_MODEL_PATH=E:\Projects\llama\models\NVIDIA-Nemotron-3-Nano-4B-Q4_K_M.gguf
++ASTA_CODING_LLM_MODEL_PATH=E:\Projects\llama\models\Qwen3.5-4B-Q4_K_M.gguf
++ASTA_CODING_LLM_BASE_URL=http://127.0.0.1:8081/v1
++ASTA_CODING_LLM_CONTEXT_SIZE=4096
++ASTA_CODING_LLM_GPU_LAYERS=99
++ASTA_CODING_LLM_BATCH_SIZE=256
++ASTA_CODING_LLM_UBATCH_SIZE=128
++ASTA_CODING_LLM_PARALLEL=1
++ASTA_CODING_LLM_FLASH_ATTN=on
++ASTA_CODING_LLM_REASONING=off
++ASTA_CODING_LLM_TEMPERATURE=0.6
++ASTA_CODING_LLM_MAX_OUTPUT_TOKENS=2048
++ASTA_CODING_LLM_MAX_REPLY_SECONDS=120
++ASTA_CODING_AGENT_MAX_OUTPUT_TOKENS=2048
++```
++
++The existing `ASTA_LLAMA_SERVER_PATH` executable is shared. The general endpoint
++remains port 8080. Coding has its own `ASTA_CODING_LLM_*` settings; it does not
++inherit the general model ID, model path, batch sizes, or output budget. An
++optional `ASTA_CODING_LLM_MODEL` alias must match the server's reported model ID.
++Keep both endpoints on loopback HTTP and separate ports. Context includes both
++input and output; these initial settings are for small tasks, not full-repository
++prompts or guaranteed model quality.
++
++If a profile's target files are missing or its endpoint is already occupied by
++an external coding server, reject the switch before unloading the working model.
++ASTA only stops its own child process and confirms exit before starting another.
++An existing matching external general endpoint can be reused, but ASTA refuses
++to unload it for a coding switch. Stop that independently owned server yourself,
++or disable routing. A failed switch never silently uses another model.
++
++Idle optional vision resources use the existing GPU-share release mechanism.
++Active vision, speech GPU usage, unrelated CUDA processes, and display resources
++are not forcibly stopped. Therefore the one-text-model policy is not a guarantee
++that the coding model fits the complete ASTA workload. Measure VRAM and latency
++on the actual laptop. No claim of live GPU validation is made by unit tests.
++
++The HUD shows the requested profile, loading/ready/error status, and model file
++name only. These fields do not overwrite task/approval status and do not display
++hidden reasoning, local model-directory paths, or file contents.
++
++## Validation
++
++```powershell
++.venv\Scripts\python -m pytest -q tests/test_model_router.py tests/test_llm_provider.py tests/test_llama_server_manager.py tests/test_ai_engine.py tests/test_cognitive_planner.py tests/test_workspace_project_task.py tests/test_hud_module.py
++```
++
++With both GGUFs downloaded and ASTA/independent text servers closed:
++
++```powershell
++.venv\Scripts\python scripts/smoke_model_router.py
++```
++
++Expected: general -> coding -> general, only one owned text-server endpoint
++active after each request, ending with `ASTA_MODEL_ROUTER_SMOKE_OK`. This is a
++load/switch smoke, not a coding-correctness test and not the full voice/HUD memory
++budget. It does not execute generated code, register tools, or write project files.
++
++Then start `main.py`, ask an ordinary question, ask a coding question, and ask
++another ordinary question. Verify loading status in the HUD and use `nvidia-smi`
++to record memory with speech/vision present. Finally repeat the small-project
++acceptance task with sandbox approval and observed pytest results. A better
++model does not bypass execution permission or make an unverified task successful.
++
++Rollback: set `ASTA_MODEL_ROUTER=0`, close/restart ASTA. Keep the explicit general
++model path after downloading a second GGUF.
+diff --git a/hud/hud_module.py b/hud/hud_module.py
+index 0b5903e..b26e4cb 100644
+--- a/hud/hud_module.py
++++ b/hud/hud_module.py
+@@ -1,3 +1,5 @@
++from threading import RLock
++
+ from core.module import Module
+ 
+ from chat_history import ChatHistoryStore
+@@ -20,12 +22,15 @@ class HUDModule(Module):
+     def __init__(self, kernel):
+         super().__init__(name="HUD", event_bus=kernel.event_bus, kernel=kernel)
+         self.state = HUDState()
++        self._model_state_lock = RLock()
+         self.transport = HUDTransport()
+         self.chat_history = ChatHistoryStore()
+         self._conversation_active = False
+         self._runtime_ready = False
+ 
+     def initialize(self):
++        self.event_bus.subscribe("model_route_changed", self.on_model_route_changed)
++        self.event_bus.subscribe("background_task_changed", self.on_background_task_changed)
+         self.event_bus.subscribe("workspace_updated", self.on_workspace_updated)
+         self.event_bus.subscribe("voice_ready", self.on_voice_ready)
+         self.event_bus.subscribe("assistant_sentence", self.on_assistant_sentence)
+@@ -99,6 +104,30 @@ class HUDModule(Module):
+     def on_workspace_updated(self, workspace=None, **kwargs):
+         self._publish_workspace_context(workspace)
+ 
++    def on_model_route_changed(self, profile="", status="", model="", **kwargs):
++        if profile not in {"general", "coding"} or status not in {"loading", "ready", "error", "generating"}:
++            return
++        # Model loading must not overwrite approval or task-execution state.
++        with self._model_state_lock:
++            self.state.model_services = dict(self.state.model_services)
++            self.state.model_services[profile] = {"status": status, "model": str(model or "").replace("\\", "/").rsplit("/", 1)[-1][:160]}
++            self.state.model_profile = profile
++            self.state.model_status = status
++            self.state.model_name = str(model or "").replace("\\", "/").rsplit("/", 1)[-1][:160]
++            self._publish_state()
++
++    def on_background_task_changed(self, task=None, **kwargs):
++        if not isinstance(task, dict):
++            return
++        # No file content, model reasoning or absolute workspace paths in status.
++        self.state.background_task = {key: str(task.get(key) or "")[:200]
++            for key in ("job_id", "task_id", "phase")}
++        self._publish_state()
++
++    def _background_owns(self, task_id=None):
++        background = getattr(getattr(self, "kernel", None), "background_tasks", None)
++        return background is not None and (background.owns(task_id) if task_id else background.in_worker())
++
+     def get_state(self):
+         return self.state
+ 
+@@ -305,6 +334,8 @@ class HUDModule(Module):
+         )
+ 
+     def on_task_progress(self, task_id=None, phase="working", text="", *args, **kwargs):
++        if self._background_owns(task_id):
++            return  # The background row does not replace foreground voice state.
+         phase_value = str(phase or "working").strip().lower()
+         activity = str(text or "working").strip() or "working"
+         sandbox_run = "isolated container" in activity.lower()
+@@ -350,7 +381,7 @@ class HUDModule(Module):
+         task = getattr(self.kernel, "task_manager", None)
+         current = task.current() if task is not None else None
+         status = getattr(current, "status", None)
+-        if getattr(status, "value", "") == "active":
++        if getattr(status, "value", "") == "active" and not self._background_owns(getattr(current, "id", None)):
+             self.set_state(
+                 mode="executing",
+                 intensity="high",
+@@ -397,6 +428,8 @@ class HUDModule(Module):
+     })
+ 
+     def on_tool_request(self, request):
++        if self._background_owns(getattr(request, "metadata", {}).get("task_id")):
++            return
+         tool = str(getattr(request, "tool", "") or "")
+         sandbox_run = tool == "system.run_command"
+         self.set_state(
+@@ -440,6 +473,8 @@ class HUDModule(Module):
+             pass
+ 
+     def on_agent_thinking_started(self, *args, **kwargs):
++        if self._background_owns():
++            return
+         self.set_state(
+             mode="thinking",
+             intensity="high",
+@@ -457,6 +492,9 @@ class HUDModule(Module):
+         return None
+ 
+     def on_task_finished(self, *args, **kwargs):
++        task = kwargs.get("task") or (args[0] if args else None)
++        if isinstance(task, dict) and self._background_owns(task.get("id")):
++            return
+         self._restore_window()
+         self.set_state(
+             mode="idle",
+@@ -488,6 +526,8 @@ class HUDModule(Module):
+ 
+     def shutdown(self):
+         for event_name, callback in (
++            ("model_route_changed", self.on_model_route_changed),
++            ("background_task_changed", self.on_background_task_changed),
+             ("workspace_updated", self.on_workspace_updated),
+             ("voice_ready", self.on_voice_ready),
+             ("assistant_sentence", self.on_assistant_sentence),
+diff --git a/hud/hud_state.py b/hud/hud_state.py
+index 3038b7a..7371969 100644
+--- a/hud/hud_state.py
++++ b/hud/hud_state.py
+@@ -1,4 +1,4 @@
+-from dataclasses import dataclass
++from dataclasses import dataclass, field
+ from typing import Optional
+ 
+ 
+@@ -11,3 +11,8 @@ class HUDState:
+     status: str = "IDLE"
+     progress: Optional[float] = None
+     activity: Optional[str] = None
++    model_profile: Optional[str] = None
++    model_status: Optional[str] = None
++    model_name: Optional[str] = None
++    model_services: dict = field(default_factory=dict)
++    background_task: Optional[dict] = None
+diff --git a/hud/renderer/chat_fullscreen_fix.css b/hud/renderer/chat_fullscreen_fix.css
+index 2d6402e..f558429 100644
+--- a/hud/renderer/chat_fullscreen_fix.css
++++ b/hud/renderer/chat_fullscreen_fix.css
+@@ -32,6 +32,7 @@
+ }
+ 
+ .chat.chat-fullscreen .chat-header,
++.chat.chat-fullscreen .model-status,
+ .chat.chat-fullscreen .workspace-context,
+ .chat.chat-fullscreen .chat-messages,
+ .chat.chat-fullscreen .chat-input,
+diff --git a/hud/renderer/chat_history.css b/hud/renderer/chat_history.css
+index 6403d43..6dc7824 100644
+--- a/hud/renderer/chat_history.css
++++ b/hud/renderer/chat_history.css
+@@ -16,6 +16,11 @@
+   width: 0;
+ }
+ 
++.model-status { flex: 0 0 auto; padding: 6px 12px; color: rgba(210, 235, 245, 0.65); border-bottom: 1px solid rgba(0, 229, 255, 0.10); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.model-status[hidden] { display: none !important; }
++.model-status[data-status="loading"] { color: var(--cyan); }
++.model-status[data-status="error"] { color: #ffc46b; }
++
+ .workspace-context {
+   flex: 0 0 auto;
+   margin: 8px 10px 0;
+diff --git a/hud/renderer/hud_state_bridge.js b/hud/renderer/hud_state_bridge.js
+index bc914c7..ec7b430 100644
+--- a/hud/renderer/hud_state_bridge.js
++++ b/hud/renderer/hud_state_bridge.js
+@@ -164,6 +164,22 @@
+           window.AstaHUD.applyCanonicalState(state)
+         }
+         renderTaskStatus(state)
++        var modelNode = document.getElementById('modelStatus')
++        if (modelNode) {
++          modelNode.hidden = !state.model_profile
++          modelNode.dataset.status = String(state.model_status || '')
++          var services = state.model_services || {}
++          modelNode.textContent = Object.keys(services).map(function (name) {
++            return name.toUpperCase() + ' · ' + String(services[name].status || '')
++          }).join(' | ') || String(state.model_profile || '').toUpperCase()
++        }
++        var backgroundNode = document.getElementById('backgroundTaskStatus')
++        if (backgroundNode) {
++          var background = state.background_task
++          backgroundNode.hidden = !background
++          backgroundNode.textContent = background ? 'PROJECT · ' + String(background.phase || '').replace(/_/g, ' ') : ''
++          backgroundNode.dataset.status = background ? String(background.phase || '') : ''
++        }
+ 
+         document.body.dataset.hudMode = String(state.mode || 'idle').toLowerCase()
+         document.body.dataset.hudActivity = state.activity || ''
+diff --git a/hud/renderer/index.html b/hud/renderer/index.html
+index 0fab1e5..6042886 100644
+--- a/hud/renderer/index.html
++++ b/hud/renderer/index.html
+@@ -52,6 +52,8 @@
+           </button>
+         </div>
+ 
++        <div class="model-status" id="modelStatus" hidden role="status" aria-live="polite"></div>
++      <div id="backgroundTaskStatus" class="model-status" role="status" aria-live="polite" hidden></div>
+         <section class="workspace-context" id="workspaceContext" aria-label="Current project" hidden>
+           <div class="workspace-context-identity">
+             <span class="workspace-context-mark" aria-hidden="true"></span>
+diff --git a/scripts/configure_model_services.py b/scripts/configure_model_services.py
+new file mode 100644
+index 0000000..afff052
+--- /dev/null
++++ b/scripts/configure_model_services.py
+@@ -0,0 +1,60 @@
++"""Update only model-service settings in the ignored local .env; never print secrets."""
++from __future__ import annotations
++import argparse
++import re
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parent.parent
++
++
++def update_env(path, values):
++    lines = path.read_text(encoding='utf-8-sig').splitlines() if path.exists() else []
++    emitted = set()
++    result = []
++    for line in lines:
++        match = re.match(r'^\s*(?:export\s+)?([A-Za-z_][A-Za-z_0-9]*)\s*=', line)
++        key = match.group(1) if match else None
++        if key in values:
++            if key not in emitted:
++                result.append(f'{key}={values[key]}')
++                emitted.add(key)
++        else:
++            result.append(line)
++    result.extend(f'{key}={value}' for key, value in values.items() if key not in emitted)
++    path.write_text('\n'.join(result)+'\n', encoding='utf-8')
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument('--general', required=True, type=Path)
++    parser.add_argument('--coding', required=True, type=Path)
++    parser.add_argument('--mode', choices=['dual','on_demand'], default='dual')
++    args = parser.parse_args()
++    for path in (args.general, args.coding):
++        if not path.is_file() or path.suffix.lower() != '.gguf':
++            parser.error('Both model paths must point to existing GGUF files.')
++    if args.general.resolve() == args.coding.resolve():
++        parser.error('Conversation and coding profiles require different files.')
++    values = {
++        'ASTA_MODEL_ROUTER':'1','ASTA_MODEL_MODE':args.mode,'ASTA_BACKGROUND_TASKS':'1',
++        'ASTA_LLM_PROVIDER':'llama_cpp','ASTA_AGENT_MODE':'1',
++        'ASTA_LLM_MODEL_PATH':args.general.resolve().as_posix(),
++        'ASTA_LLM_MODEL':'', 'ASTA_LLM_BASE_URL':'http://127.0.0.1:8080/v1',
++        'ASTA_LLM_CONTEXT_SIZE':'4096','ASTA_LLM_BATCH_SIZE':'256','ASTA_LLM_UBATCH_SIZE':'128',
++        'ASTA_LLM_PARALLEL':'1','ASTA_LLM_TEMPERATURE':'0.1','ASTA_LLM_TOP_K':'50',
++        'ASTA_LLM_TOP_P':'0.95','ASTA_LLM_MIN_P':'0','ASTA_LLM_REASONING':'off',
++        'ASTA_LLM_ENABLE_THINKING':'0','ASTA_CODING_LLM_MODEL_PATH':args.coding.resolve().as_posix(),
++        'ASTA_CODING_LLM_MODEL':'','ASTA_CODING_LLM_BASE_URL':'http://127.0.0.1:8081/v1',
++        'ASTA_CODING_LLM_CONTEXT_SIZE':'4096','ASTA_CODING_LLM_BATCH_SIZE':'256',
++        'ASTA_CODING_LLM_UBATCH_SIZE':'128','ASTA_CODING_LLM_PARALLEL':'1',
++        'ASTA_CODING_LLM_TEMPERATURE':'0.6','ASTA_CODING_LLM_TOP_K':'20',
++        'ASTA_CODING_LLM_TOP_P':'0.95','ASTA_CODING_LLM_MIN_P':'0',
++        'ASTA_CODING_LLM_REASONING':'off','ASTA_CODING_LLM_ENABLE_THINKING':'0',
++        'ASTA_CODING_LLM_MAX_OUTPUT_TOKENS':'2048','ASTA_CODING_AGENT_MAX_OUTPUT_TOKENS':'2048',
++    }
++    update_env(ROOT/'.env', values)
++    print('Updated local .env model settings. Existing unrelated settings were preserved.')
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/scripts/download_model_services.py b/scripts/download_model_services.py
+new file mode 100644
+index 0000000..13d0de0
+--- /dev/null
++++ b/scripts/download_model_services.py
+@@ -0,0 +1,39 @@
++"""Download the two pinned GGUFs; requires the optional huggingface_hub package."""
++from __future__ import annotations
++import argparse
++import json
++from pathlib import Path
++
++MANIFEST = Path(__file__).with_name('model_services_manifest.json')
++
++
++def download_models(model_dir, download=None):
++    if download is None:
++        try:
++            from huggingface_hub import hf_hub_download
++        except ImportError as exc:
++            raise RuntimeError('Install huggingface_hub with your virtual environment Python first.') from exc
++        download = hf_hub_download
++    model_dir = Path(model_dir).expanduser().resolve()
++    model_dir.mkdir(parents=True, exist_ok=True)
++    paths = []
++    for model in json.loads(MANIFEST.read_text(encoding='utf-8')):
++        filename = model['filename']
++        if Path(filename).name != filename or not filename.endswith('.gguf'):
++            raise ValueError('Invalid model manifest filename.')
++        print(f"Downloading {model['repo']}: {filename}", flush=True)
++        paths.append(download(repo_id=model['repo'], revision=model['revision'],
++                              filename=filename, local_dir=str(model_dir)))
++    return paths
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--model-dir', required=True, type=Path)
++    args = parser.parse_args()
++    for path in download_models(args.model_dir):
++        print(f'Ready: {path}')
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/scripts/model_services_manifest.json b/scripts/model_services_manifest.json
+new file mode 100644
+index 0000000..390ac39
+--- /dev/null
++++ b/scripts/model_services_manifest.json
+@@ -0,0 +1,12 @@
++[
++  {
++    "repo": "LiquidAI/LFM2.5-2.6B-GGUF",
++    "revision": "e7caca5d835a3901a8e0d63e94009429bafafdfc",
++    "filename": "LFM2.5-2.6B-Q4_K_M.gguf"
++  },
++  {
++    "repo": "unsloth/Qwen3.5-4B-GGUF",
++    "revision": "e87f176479d0855a907a41277aca2f8ee7a09523",
++    "filename": "Qwen3.5-4B-Q4_K_M.gguf"
++  }
++]
+diff --git a/scripts/smoke_concurrent_models.py b/scripts/smoke_concurrent_models.py
+new file mode 100644
+index 0000000..69c863b
+--- /dev/null
++++ b/scripts/smoke_concurrent_models.py
+@@ -0,0 +1,97 @@
++"""Real two-server overlap test, without tools or the speech/vision stack.
++
++Close ASTA first. No external server is killed, no generated code is executed.
++This checks model residency and overlap only; full speech-stack VRAM still needs
++checking in ASTA itself. A successful HTTP overlap is not proof of parallel GPU kernels.
++"""
++from __future__ import annotations
++import json
++import os
++import sys
++import threading
++import time
++from pathlib import Path
++ROOT = Path(__file__).resolve().parent.parent
++sys.path.insert(0, str(ROOT))
++
++
++def main():
++    from core import Kernel
++    from core.config import load_local_environment
++    from ai.llm_provider import create_llm_provider
++    load_local_environment()
++    if os.getenv('ASTA_MODEL_ROUTER','0') != '1' or os.getenv('ASTA_MODEL_MODE') != 'dual':
++        raise RuntimeError('Configure ASTA_MODEL_ROUTER=1 and ASTA_MODEL_MODE=dual first.')
++    kernel = Kernel()
++    threads = []
++    try:
++        chat = create_llm_provider(kernel=kernel, purpose='chat')
++        coder = create_llm_provider(kernel=kernel, purpose='agent')
++        runtime = kernel.model_runtime
++        if any(m._server_is_ready() for m in runtime.managers.values()):
++            raise RuntimeError('Close ASTA and external text servers before this smoke test.')
++        for profile, client in [('general',chat),('coding',coder)]:
++            runtime.execute(profile, client._engine(profile), lambda e: e.warmup())
++        if not all(m.owned and m.running for m in runtime.managers.values()):
++            raise RuntimeError('Both ASTA-owned models must be resident.')
++        # The event fires within the coding request, after receiving a sentence.
++        # If it finishes too quickly to overlap, report that instead of claiming success.
++        first_output = threading.Event()
++        timings, replies, failures = {}, {}, []
++        def coding():
++            try:
++                engine = coder._engine('coding')
++                coder._configure(engine, 'coding')
++                engine.reset_conversation()
++                timings['coding_start'] = time.perf_counter()
++                replies['coding'] = runtime.execute('coding', engine, lambda e: e.generate_response(
++                    'Write a Python CLI todo application with JSON persistence, argument parsing, input validation, and several pytest tests. Return the complete code with a short explanation.',
++                    on_sentence=lambda sentence: first_output.set()))
++                timings['coding_end'] = time.perf_counter()
++            except Exception as exc:
++                failures.append(type(exc).__name__+': '+str(exc)); first_output.set()
++        thread = threading.Thread(target=coding, name='smoke-coding')
++        threads.append(thread); thread.start()
++        if not first_output.wait(120):
++            raise RuntimeError('Coding produced no sentence within 120 seconds.')
++        if failures:
++            raise RuntimeError(failures[0])
++        if not thread.is_alive():
++            raise RuntimeError('Coding finished before overlap could be tested; no concurrency result established.')
++        timings['general_start'] = time.perf_counter()
++        replies['general'] = chat.generate_response('What is the capital of India? Answer in one sentence.')
++        timings['general_end'] = time.perf_counter()
++        thread.join(timeout=180)
++        if thread.is_alive():
++            raise RuntimeError('Coding did not finish within the smoke limit.')
++        if failures:
++            raise RuntimeError(failures[0])
++        if not replies.get('coding') or not replies.get('general') or replies['general'].startswith("I couldn't use"):
++            raise RuntimeError('A model returned no usable response.')
++        if timings['general_end'] >= timings['coding_end']:
++            raise RuntimeError('Chat did not finish before coding; interactive overlap was not demonstrated.')
++        if not all(m.running for m in runtime.managers.values()):
++            raise RuntimeError('A resident model stopped during overlap.')
++        print(json.dumps({'general_seconds':round(timings['general_end']-timings['general_start'],2),
++            'coding_seconds':round(timings['coding_end']-timings['coding_start'],2),
++            'chat_finished_while_coding_active':True,
++            'both_servers_resident':True,'general_reply':replies['general']},indent=2),flush=True)
++    finally:
++        runtime = kernel.model_runtime
++        if runtime is not None:
++            for client in tuple(runtime.clients):
++                client.cancel()
++        for thread in threads:
++            thread.join(timeout=5)
++        kernel.shutdown()
++        if runtime and any(m.owned for m in runtime.managers.values()):
++            raise RuntimeError('An owned model process could not be stopped.')
++    print('ASTA_CONCURRENT_MODELS_SMOKE_OK',flush=True)
++
++
++if __name__ == '__main__':
++    try:
++        main()
++    except Exception as exc:
++        print(f'Concurrent smoke failed: {type(exc).__name__}: {exc}',file=sys.stderr)
++        raise SystemExit(1)
+diff --git a/scripts/smoke_model_router.py b/scripts/smoke_model_router.py
+new file mode 100644
+index 0000000..8640708
+--- /dev/null
++++ b/scripts/smoke_model_router.py
+@@ -0,0 +1,71 @@
++"""Real-model general -> coding -> general smoke. Does not run tools or load voice.
++
++Close ASTA and any independently launched text-model servers first. This script
++loads the ignored local .env and never kills an externally owned endpoint.
++"""
++from __future__ import annotations
++
++import json
++import os
++import sys
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parent.parent
++sys.path.insert(0, str(ROOT))
++
++
++def main():
++    from core import Kernel
++    from core.config import load_local_environment
++    from ai.llm_provider import create_llm_provider
++    from ai.model_router import RoutedLLMProvider
++
++    load_local_environment()
++    if os.getenv("ASTA_MODEL_ROUTER", "0").strip().lower() not in {"1", "true", "yes", "on"}:
++        raise RuntimeError("Enable ASTA_MODEL_ROUTER=1 and configure both GGUF paths first.")
++    if os.getenv("ASTA_MODEL_MODE", "on_demand").strip().lower() != "on_demand":
++        raise RuntimeError("Use scripts/smoke_concurrent_models.py for dual mode.")
++    kernel = Kernel()
++    try:
++        provider = create_llm_provider(kernel=kernel)
++        assert isinstance(provider, RoutedLLMProvider)
++        if any(manager._server_is_ready() for manager in provider.runtime.managers.values()):
++            raise RuntimeError("Close ASTA and independently launched text-model servers before this smoke test.")
++        for expected, prompt in (
++            ("general", "Reply with the word Ready."),
++            ("coding", "Write a short Python function add(a, b) that returns their sum. Return code only."),
++            ("general", "What is the capital of India? Answer briefly."),
++        ):
++            started = time.perf_counter()
++            response = provider.generate_response(prompt)
++            runtime = provider.runtime
++            if not response or response.startswith("I couldn't use the requested"):
++                raise RuntimeError("The model did not produce a usable response.")
++            if runtime.active_profile != expected:
++                raise RuntimeError(f"Expected {expected}, got {runtime.active_profile}.")
++            if not runtime.managers[expected].owned:
++                raise RuntimeError("Smoke inference must use an ASTA-owned server.")
++            other = "coding" if expected == "general" else "general"
++            if runtime.managers[other].running or runtime.managers[other]._server_is_ready():
++                raise RuntimeError("The other text-model endpoint is still active.")
++            print(json.dumps({
++                "profile": expected,
++                "model": str(provider.model).replace("\\", "/").rsplit("/", 1)[-1],
++                "elapsed_seconds": round(time.perf_counter() - started, 2),
++                "reply": response,
++            }, ensure_ascii=False), flush=True)
++    finally:
++        kernel.shutdown()
++        runtime = getattr(kernel, "model_runtime", None)
++        if runtime is not None and any(manager.owned for manager in runtime.managers.values()):
++            raise RuntimeError("An owned model process could not be stopped.")
++    print("ASTA_MODEL_ROUTER_SMOKE_OK", flush=True)
++
++
++if __name__ == "__main__":
++    try:
++        main()
++    except Exception as exc:
++        print(f"Model router smoke failed: {type(exc).__name__}: {exc}", file=sys.stderr)
++        raise SystemExit(1)
+diff --git a/tests/test_concurrent_models.py b/tests/test_concurrent_models.py
+new file mode 100644
+index 0000000..e6d69ae
+--- /dev/null
++++ b/tests/test_concurrent_models.py
+@@ -0,0 +1,317 @@
++from __future__ import annotations
++
++import threading
++from types import SimpleNamespace
++
++from ai.model_router import ModelRuntime, RoutedLLMProvider
++from core.background_tasks import BackgroundTaskCoordinator
++from core.contracts import IntentResult, IntentType
++from core.event_bus import EventBus
++from core.task_manager import TaskManager
++from core.tools.approval import ApprovalManager
++from tests.test_model_router import FakeEngine, FakeManager
++
++
++def dual(monkeypatch):
++    monkeypatch.setenv("ASTA_MODEL_MODE", "dual")
++    log = []
++    kernel = SimpleNamespace(event_bus=EventBus())
++    managers = {p: FakeManager(p, log) for p in ("general", "coding")}
++    runtime = ModelRuntime(kernel, managers=managers)
++    kernel.model_runtime = runtime
++    return kernel, runtime, managers, log
++
++
++def test_chat_completes_while_coding_inference_is_blocked(monkeypatch):
++    kernel, runtime, managers, log = dual(monkeypatch)
++    chat = RoutedLLMProvider(runtime, engine_factory=FakeEngine)
++    coder = RoutedLLMProvider(runtime, purpose="agent", engine_factory=FakeEngine)
++    entered, release, answered = threading.Event(), threading.Event(), threading.Event()
++    error = []
++    engine = coder._engine("coding")
++    original = engine.generate_response
++    def blocking(*args, **kwargs):
++        entered.set()
++        assert release.wait(3)
++        return original(*args, **kwargs)
++    engine.generate_response = blocking
++    def code():
++        try:
++            coder.generate_for_task("task prompt", goal="Debug Python", coding_scope=True)
++        except Exception as exc:
++            error.append(exc)
++    thread = threading.Thread(target=code)
++    thread.start()
++    assert entered.wait(2)
++    def converse():
++        assert chat.generate_response("Explain what Python is") == "generated: Explain what Python is"
++        assert chat.complete_json("system", "user") == '{"action":"none"}'
++        answered.set()
++    foreground = threading.Thread(target=converse)
++    foreground.start()
++    try:
++        assert answered.wait(1), "chat was serialized behind coding"
++        assert thread.is_alive()
++        assert all(m.running for m in managers.values())
++        assert not any(s.startswith("stop:") for s in log)
++        assert coder._engine("coding")._messages[0]["content"] == coder.system_prompt
++    finally:
++        release.set()
++        thread.join(3); foreground.join(3); runtime.shutdown()
++    assert not error
++
++
++def test_coding_waits_at_boundary_for_foreground_turn(monkeypatch):
++    _, runtime, _, _ = dual(monkeypatch)
++    chat = RoutedLLMProvider(runtime, engine_factory=FakeEngine)
++    coder = RoutedLLMProvider(runtime, purpose="agent", engine_factory=FakeEngine)
++    general_entered, release, coding_entered = threading.Event(), threading.Event(), threading.Event()
++    def general(_engine):
++        general_entered.set(); assert release.wait(3)
++    thread = threading.Thread(target=lambda: runtime.execute("general", chat._engine("general"), general))
++    thread.start(); assert general_entered.wait(2)
++    worker = threading.Thread(target=lambda: runtime.execute("coding", coder._engine("coding"), lambda _: coding_entered.set()))
++    worker.start()
++    try:
++        assert not coding_entered.wait(0.1)
++        release.set()
++        assert coding_entered.wait(2)
++    finally:
++        release.set(); thread.join(3); worker.join(3); runtime.shutdown()
++
++
++def test_dual_missing_coder_preserves_conversation(monkeypatch):
++    _, runtime, managers, _ = dual(monkeypatch)
++    chat = RoutedLLMProvider(runtime, engine_factory=FakeEngine)
++    coder = RoutedLLMProvider(runtime, purpose="agent", engine_factory=FakeEngine)
++    assert chat.warmup()
++    managers['coding'].valid = False
++    import pytest
++    with pytest.raises(Exception, match="unavailable"):
++        coder.generate_for_task("prompt", goal="Debug Python")
++    assert managers['general'].running
++    assert chat.generate_response("Hello") == "generated: Hello"
++    runtime.shutdown()
++
++
++def background():
++    bus = EventBus()
++    kernel = SimpleNamespace(event_bus=bus, task_manager=TaskManager(event_bus=bus),
++        approval_manager=ApprovalManager(), model_runtime=None)
++    coordinator = BackgroundTaskCoordinator(kernel)
++    kernel.background_tasks = coordinator
++    return kernel, coordinator
++
++
++def task_intent():
++    return IntentResult(intent=IntentType.TASK, confidence=1.0,
++        normalized_text="Debug Python", entities={})
++
++
++def test_background_start_returns_and_reserves_single_task_slot():
++    kernel, coordinator = background()
++    entered, release = threading.Event(), threading.Event()
++    def starter(goal, intent):
++        entered.set(); assert release.wait(3)
++        task = kernel.task_manager.create(goal)
++        kernel.task_manager.complete(task_id=task.id)
++        return task
++    kernel.task_runtime = SimpleNamespace(start_goal=starter)
++    try:
++        assert coordinator.start("Debug Python", task_intent())
++        assert entered.wait(2)
++        assert coordinator.busy
++        assert not coordinator.start("Other project", task_intent())
++        assert coordinator.handle_control("project task status")
++    finally:
++        release.set(); coordinator.queue.join(); coordinator.shutdown()
++    assert coordinator.snapshot()['phase'] == 'completed'
++
++
++def test_cancel_during_planning_prevents_new_tools():
++    kernel, coordinator = background()
++    entered, release = threading.Event(), threading.Event()
++    def starter(goal, intent):
++        entered.set(); assert release.wait(3)
++        return kernel.task_manager.create(goal)
++    kernel.task_runtime = SimpleNamespace(start_goal=starter)
++    try:
++        coordinator.start("Debug Python", task_intent()); assert entered.wait(2)
++        assert coordinator.cancel()
++        release.set(); coordinator.queue.join()
++        task = kernel.task_manager.get(coordinator.snapshot()['task_id'])
++        assert task.status.value == 'cancelled'
++        from core.contracts import ToolRequest
++        assert not coordinator.allow_request(ToolRequest(tool='workspace.read_file', request_id='cancel-test', arguments={}, metadata={'task_id':task.id}))
++    finally:
++        release.set(); coordinator.shutdown()
++
++
++def test_approval_continuation_runs_on_worker_not_chat_thread():
++    kernel, coordinator = background()
++    from core.contracts import ToolRequest, ToolResult
++    from core.tools.module import ToolRuntimeModule
++    kernel.tool_registry = SimpleNamespace()
++    tool_module = ToolRuntimeModule(kernel)
++    executed = threading.Event()
++    threads = []
++    def dispatch(request, confirmed=False):
++        threads.append(threading.current_thread().name)
++        assert confirmed
++        executed.set()
++        return ToolResult(success=True, tool=request.tool, output={})
++    kernel.tool_dispatcher = SimpleNamespace(dispatch=dispatch)
++    kernel.tool_registry = SimpleNamespace()
++    kernel.task_runtime = SimpleNamespace(start_goal=lambda goal, intent: kernel.task_manager.create(goal))
++    try:
++        coordinator.start('Debug Python', task_intent()); coordinator.queue.join()
++        task_id = coordinator.snapshot()['task_id']
++        request = ToolRequest(tool='system.run_command', request_id='approval-test', arguments={}, metadata={'task_id':task_id})
++        kernel.approval_manager.request_approval(request=request, reason='critical')
++        tool_module.on_confirmation_response(request.request_id, True)
++        assert executed.wait(2)
++        coordinator.queue.join()
++        assert threads == ['asta-project-worker']
++    finally:
++        coordinator.shutdown()
++
++
++def test_background_approval_survives_chat_but_plain_yes_cannot_execute():
++    kernel, coordinator = background()
++    from ai.ai_module import AIModule
++    from core.contracts import ToolRequest
++    from core import Kernel
++    # Test only approval interpretation, not model/network initialization.
++    ai = AIModule.__new__(AIModule)
++    ai.kernel = kernel; ai.event_bus = kernel.event_bus
++    replies, approvals = [], []
++    ai._emit_assistant_text = replies.append
++    kernel.event_bus.subscribe('tool_confirmation_response', lambda **kw: approvals.append(kw))
++    kernel.task_runtime = SimpleNamespace(start_goal=lambda goal, intent: kernel.task_manager.create(goal))
++    try:
++        coordinator.start('Debug Python', task_intent()); coordinator.queue.join()
++        task_id = coordinator.snapshot()['task_id']
++        request = ToolRequest(tool='system.run_command', request_id='preserve', arguments={}, metadata={'task_id':task_id})
++        kernel.approval_manager.request_approval(request, 'critical')
++        assert not ai._handle_approval_response('What is the capital of India?')
++        assert kernel.approval_manager.get('preserve') is not None
++        assert ai._handle_approval_response('yes')
++        assert not approvals
++        assert ai._handle_approval_response('approve coding step')
++        assert approvals == [{'request_id':'preserve', 'approved':True}]
++    finally:
++        coordinator.shutdown()
++
++
++def test_failed_background_task_rejects_stale_approval_and_tool():
++    kernel, coordinator = background()
++    from core.contracts import ToolRequest
++    kernel.task_runtime = SimpleNamespace(start_goal=lambda goal, intent: kernel.task_manager.create(goal))
++    try:
++        coordinator.start('Debug Python', task_intent()); coordinator.queue.join()
++        task_id = coordinator.snapshot()['task_id']
++        request = ToolRequest(tool='system.run_command', request_id='stale', arguments={}, metadata={'task_id':task_id})
++        kernel.approval_manager.request_approval(request, 'critical')
++        kernel.task_manager.fail('failure', task_id)
++        assert not kernel.approval_manager.list_pending()
++        assert not coordinator.allow_request(request)
++    finally:
++        coordinator.shutdown()
++
++
++def test_workspace_change_cancels_background_task():
++    kernel, coordinator = background()
++    from core.workspace_manager import WorkspaceManager
++    kernel.workspace_manager = WorkspaceManager(event_bus=kernel.event_bus)
++    kernel.workspace_manager.update_project(path='/first')
++    kernel.task_runtime = SimpleNamespace(start_goal=lambda goal, intent: kernel.task_manager.create(goal))
++    try:
++        coordinator.start('Debug Python', task_intent()); coordinator.queue.join()
++        kernel.workspace_manager.update_project(path='/second')
++        assert coordinator.snapshot()['phase'] == 'cancelled'
++    finally:
++        coordinator.shutdown()
++
++
++def test_conflicting_request_does_not_rebind_background_task():
++    from core import Kernel
++    from core.task_runtime import TaskRuntimeModule
++    from core.tools.module import ToolRuntimeModule
++    from core.contracts import ToolRequest
++    kernel = Kernel()
++    task_runtime = TaskRuntimeModule(kernel); task_runtime.initialize()
++    tools = ToolRuntimeModule(kernel); tools.initialize()
++    coordinator = BackgroundTaskCoordinator(kernel); kernel.background_tasks = coordinator
++    # Use a stub only for planning; actual bus callbacks validate ownership.
++    kernel.task_runtime = SimpleNamespace(start_goal=lambda goal, intent: kernel.task_manager.create(goal))
++    try:
++        coordinator.start('Debug Python', task_intent()); coordinator.queue.join()
++        task_id = coordinator.snapshot()['task_id']
++        request = ToolRequest(tool='workspace.read_file', request_id='conflict', arguments={'path':'a.py'})
++        kernel.event_bus.emit('tool_request', request=request)
++        assert 'task_id' not in request.metadata
++        assert kernel.task_manager.get(task_id).status.value == 'active'
++    finally:
++        coordinator.shutdown(); tools.shutdown(); task_runtime.shutdown(); kernel.shutdown()
++
++
++def test_real_project_bus_keeps_chat_available_then_continues_after_approval(tmp_path):
++    from tests.test_workspace_project_task import _build_runtime, _happy_plan, _shutdown, GOAL
++    workspace = tmp_path/'project'; workspace.mkdir()
++    kernel, tasks, ai, tools = _build_runtime(workspace, tmp_path/'authority.json', _happy_plan(), authorize_run=False)
++    coordinator = BackgroundTaskCoordinator(kernel); kernel.background_tasks = coordinator
++    planning, release = threading.Event(), threading.Event()
++    original_plan = kernel.agent_brain.plan
++    def plan(*args, **kwargs):
++        planning.set(); assert release.wait(3)
++        return original_plan(*args, **kwargs)
++    kernel.agent_brain.plan = plan
++    messages = []
++    kernel.event_bus.subscribe('assistant_response', lambda text=None, **kw: messages.append(text))
++    class Conversation:
++        def generate_response(self, text, on_sentence=None, context=None):
++            if on_sentence: on_sentence('New Delhi.')
++            return 'New Delhi.'
++    ai.engine = Conversation()
++    try:
++        kernel.event_bus.emit('user_message', GOAL)
++        assert planning.wait(2)
++        kernel.event_bus.emit('user_message', 'What is the capital of India?')
++        assert 'New Delhi.' in messages
++        assert coordinator.busy
++        release.set(); coordinator.queue.join()
++        assert coordinator.snapshot()['phase'] == 'awaiting_approval'
++        assert len(kernel.approval_manager.list_pending()) == 1
++        kernel.event_bus.emit('user_message', 'What is the capital of India?')
++        assert len(kernel.approval_manager.list_pending()) == 1
++        kernel.event_bus.emit('user_message', 'approve coding step')
++        coordinator.queue.join()
++        assert coordinator.snapshot()['phase'] == 'completed'
++        task = kernel.task_manager.get(coordinator.snapshot()['task_id'])
++        assert task.status.value == 'completed'
++        assert workspace.joinpath('main.py').read_text() == 'print("ASTA_OK")\n'
++    finally:
++        release.set(); coordinator.shutdown(); _shutdown(tasks, ai, tools); kernel.shutdown()
++
++
++def test_configure_services_preserves_unrelated_env_and_removes_duplicate_keys(tmp_path):
++    from scripts.configure_model_services import update_env
++    env = tmp_path/'.env'
++    env.write_text('PRIVATE_KEY=secret\nASTA_MODEL_MODE=old\nASTA_MODEL_MODE=duplicate\n# note\n')
++    update_env(env, {'ASTA_MODEL_MODE':'dual','ASTA_BACKGROUND_TASKS':'1'})
++    assert env.read_text() == 'PRIVATE_KEY=secret\nASTA_MODEL_MODE=dual\n# note\nASTA_BACKGROUND_TASKS=1\n'
++
++
++def test_download_services_uses_pinned_manifest_without_downloading(tmp_path):
++    import re
++    from scripts.download_model_services import download_models
++    calls = []
++    def download(**kwargs):
++        calls.append(kwargs)
++        return str(tmp_path/kwargs['filename'])
++    paths = download_models(tmp_path, download=download)
++    assert len(paths) == 2
++    assert calls[0]['filename'] == 'LFM2.5-2.6B-Q4_K_M.gguf'
++    assert calls[1]['filename'] == 'Qwen3.5-4B-Q4_K_M.gguf'
++    assert all(re.fullmatch(r'[0-9a-f]{40}', item['revision']) for item in calls)
++    assert all(item['local_dir'] == str(tmp_path.resolve()) for item in calls)
+diff --git a/tests/test_hud_module.py b/tests/test_hud_module.py
+index 70110af..4b4e49c 100644
+--- a/tests/test_hud_module.py
++++ b/tests/test_hud_module.py
+@@ -226,3 +226,37 @@ def test_hud_text_input_uses_normal_user_message_event():
+     assert hud.get_state().activity == "reasoning"
+ 
+     hud.shutdown()
++
++
++def test_model_loading_status_preserves_tool_approval_state():
++    kernel, hud = build_hud()
++    try:
++        hud.on_tool_confirmation_required(reason="critical command")
++        kernel.event_bus.emit(
++            "model_route_changed", profile="coding", status="loading",
++            model=r"E:\Projects\llama\models\coder.gguf",
++        )
++        assert hud.state.mode == "approval"
++        assert hud.state.activity == "critical command"
++        assert hud.state.model_profile == "coding"
++        assert hud.state.model_status == "loading"
++        assert hud.state.model_name == "coder.gguf"
++    finally:
++        hud.shutdown()
++
++
++def test_hud_separates_background_status_and_both_model_services():
++    kernel = SimpleNamespace(event_bus=EventBus(), background_tasks=SimpleNamespace(
++        owns=lambda task_id: task_id == 'background', in_worker=lambda: False))
++    hud = HUDModule(kernel)
++    hud.transport = RecordingHUDTransport()
++    hud.set_state(mode='listening', status='LISTENING')
++    hud.on_model_route_changed(profile='general', status='ready', model='conversation.gguf')
++    hud.on_model_route_changed(profile='coding', status='generating', model='coder.gguf')
++    hud.on_background_task_changed(task={'job_id':'job', 'task_id':'background', 'phase':'testing',
++        'goal':'private data', 'message':'private path'})
++    hud.on_task_progress(task_id='background', phase='executing', text='private content')
++    assert hud.state.mode == 'listening'
++    assert hud.state.model_services['general']['status'] == 'ready'
++    assert hud.state.model_services['coding']['status'] == 'generating'
++    assert hud.state.background_task == {'job_id':'job','task_id':'background','phase':'testing'}
+diff --git a/tests/test_llama_server_manager.py b/tests/test_llama_server_manager.py
+index 9f2fa84..244d4f0 100644
+--- a/tests/test_llama_server_manager.py
++++ b/tests/test_llama_server_manager.py
+@@ -1,4 +1,7 @@
+ from pathlib import Path
++import os
++import subprocess
++from types import SimpleNamespace
+ 
+ from ai.llama_server_manager import LlamaServerManager
+ 
+@@ -16,6 +19,15 @@ class FakeProcess:
+     def poll(self):
+         return self.returncode
+ 
++    def terminate(self):
++        self.returncode = 0
++
++    def kill(self):
++        self.returncode = 0
++
++    def wait(self, timeout=None):
++        self.returncode = 0
++        return self.returncode
+ 
+ def test_manager_starts_server_with_configured_model_and_waits_until_ready(
+     monkeypatch,
+@@ -94,7 +106,49 @@ def test_manager_starts_server_with_configured_model_and_waits_until_ready(
+ 
+     assert manager.owned is False
+     assert manager.process is None
+-    assert kill_calls[0][0] == ["taskkill", "/PID", "4242", "/T", "/F"]
++    if os.name == "nt":
++        assert kill_calls[0][0] == ["taskkill", "/PID", "4242", "/T", "/F"]
++    else:
++        assert not kill_calls
++
++
++def test_stop_waits_for_windows_child_and_retains_ownership_on_failure(monkeypatch):
++    manager = LlamaServerManager(base_url="http://127.0.0.1:8080/v1")
++    process = FakeProcess()
++    calls = []
++    manager.process = process
++    manager.owned = True
++    monkeypatch.setattr("ai.llama_server_manager.os", SimpleNamespace(name="nt"))
++    monkeypatch.setattr(
++        "ai.llama_server_manager.subprocess.run",
++        lambda *args, **kwargs: calls.append(args[0]),
++    )
++    def never_exits(timeout=None):
++        raise subprocess.TimeoutExpired("llama-server", timeout)
++    def cannot_kill():
++        raise OSError("permission denied")
++    process.wait = never_exits
++    process.kill = cannot_kill
++    assert manager.stop() is False
++    assert manager.owned and manager.process is process
++    assert calls[0] == ["taskkill", "/PID", "4242", "/T", "/F"]
++
++
++def test_coding_namespace_never_discovers_general_model(monkeypatch, tmp_path):
++    monkeypatch.setenv("ASTA_LLM_MODEL_PATH", str(tmp_path / "general.gguf"))
++    server = tmp_path / "llama-server.exe"
++    server.write_text("")
++    (tmp_path / "models").mkdir()
++    (tmp_path / "models" / "general.gguf").write_text("")
++    manager = LlamaServerManager(
++        base_url="http://127.0.0.1:8081/v1", server_path=str(server),
++        env_prefix="ASTA_CODING_LLM",
++    )
++    assert not manager.model_path
++    assert manager._resolve_model_path(str(server)) is None
++    assert manager.context_size == 4096
++    assert manager.batch_size == 256
++    assert manager.ubatch_size == 128
+ 
+ 
+ def test_manager_does_not_own_already_running_server(monkeypatch):
+@@ -180,3 +234,29 @@ def test_manager_emits_memory_friendly_server_tuning_flags(monkeypatch, tmp_path
+     assert "-ctk" in command and "q8_0" in command
+     assert "-ctv" in command and "q8_0" in command
+ 
++
++
++def test_unready_owned_process_is_not_replaced_after_failed_stop(monkeypatch):
++    manager = LlamaServerManager(base_url="http://127.0.0.1:8080/v1")
++    process = FakeProcess()
++    manager.process = process
++    manager.owned = True
++    monkeypatch.setattr(manager, "_server_is_ready", lambda: False)
++    monkeypatch.setattr(manager, "_wait_until_ready", lambda: False)
++    monkeypatch.setattr(manager, "stop", lambda: False)
++    def forbidden_spawn(*args, **kwargs):
++        raise AssertionError("must retain the existing child handle")
++    monkeypatch.setattr("ai.llama_server_manager.subprocess.Popen", forbidden_spawn)
++    assert not manager.ensure_running()
++    assert manager.process is process and manager.owned
++
++
++def test_dead_child_does_not_claim_ownership_of_replacement_endpoint(monkeypatch):
++    manager = LlamaServerManager(base_url="http://127.0.0.1:8080/v1")
++    process = FakeProcess()
++    process.returncode = 0
++    manager.process = process
++    manager.owned = True
++    monkeypatch.setattr(manager, "_server_is_ready", lambda: True)
++    assert manager.ensure_running()
++    assert manager.process is None and not manager.owned
+diff --git a/tests/test_llm_provider.py b/tests/test_llm_provider.py
+index 12b70f0..ae887fc 100644
+--- a/tests/test_llm_provider.py
++++ b/tests/test_llm_provider.py
+@@ -3,6 +3,7 @@ from ai.llama_cpp_engine import LlamaCppEngine
+ 
+ 
+ def test_default_llm_provider_is_llama_cpp(monkeypatch):
++    monkeypatch.setenv("ASTA_MODEL_ROUTER", "0")
+     monkeypatch.delenv("ASTA_LLM_PROVIDER", raising=False)
+     provider = create_llm_provider()
+ 
+@@ -10,6 +11,7 @@ def test_default_llm_provider_is_llama_cpp(monkeypatch):
+ 
+ 
+ def test_llm_provider_can_be_selected_explicitly(monkeypatch):
++    monkeypatch.setenv("ASTA_MODEL_ROUTER", "0")
+     monkeypatch.setenv("ASTA_LLM_PROVIDER", "llama_cpp")
+     provider = create_llm_provider()
+ 
+diff --git a/tests/test_model_router.py b/tests/test_model_router.py
+new file mode 100644
+index 0000000..04a77a1
+--- /dev/null
++++ b/tests/test_model_router.py
+@@ -0,0 +1,403 @@
++from __future__ import annotations
++
++import os
++import threading
++from types import SimpleNamespace
++
++import pytest
++
++from ai.llm_provider import create_llm_provider
++from ai.llama_cpp_engine import LlamaCppEngine
++from ai.model_router import ModelRoutingError, ModelRuntime, RoutedLLMProvider
++from core.event_bus import EventBus
++
++
++@pytest.fixture(autouse=True)
++def clean_router_environment(monkeypatch):
++    monkeypatch.setenv("ASTA_MODEL_ROUTER", "0")
++    monkeypatch.delenv("ASTA_LLM_MODEL", raising=False)
++    for key in list(os.environ):
++        if key.startswith("ASTA_CODING_"):
++            monkeypatch.delenv(key, raising=False)
++
++
++class FakeManager:
++    def __init__(self, profile, log):
++        self.profile = profile
++        self.env_prefix = "ASTA_LLM" if profile == "general" else "ASTA_CODING_LLM"
++        self.base_url = f"http://127.0.0.1:{8080 if profile == 'general' else 8081}/v1"
++        self.model_path = f"/models/{profile}.gguf"
++        self.log = log
++        self.owned = False
++        self.ready = False
++        self.valid = True
++        self.start_ok = True
++        self.stop_ok = True
++
++    @property
++    def running(self):
++        return self.owned and self.ready
++
++    def _resolve_server_path(self):
++        return "llama-server"
++
++    def _resolve_model_path(self, server):
++        return self.model_path if self.valid else None
++
++    def _server_is_ready(self):
++        return self.ready
++
++    def ensure_running(self):
++        if not self.ready:
++            self.log.append("start:" + self.profile)
++            self.ready = self.start_ok
++            self.owned = self.start_ok
++        return self.ready
++
++    def stop(self):
++        self.log.append("stop:" + self.profile)
++        if not self.stop_ok:
++            return False
++        self.ready = False
++        self.owned = False
++        return True
++
++
++class FakeEngine:
++    def __init__(self, *, base_url, server_manager, env_prefix, max_output_tokens, reasoning_retry_tokens):
++        self.server_manager = server_manager
++        self.model = None
++        self.system_prompt = "default"
++        self.max_output_tokens = max_output_tokens
++        self.reasoning_retry_tokens = reasoning_retry_tokens
++        self.temperature = 0.7
++        self._messages = [{"role": "system", "content": self.system_prompt}]
++        self.session = SimpleNamespace(close=lambda: None)
++        self.cancelled = False
++        self.seen = []
++
++    def _discover_model(self):
++        self.model = self.server_manager.model_path
++        return self.model
++
++    def reset_conversation(self):
++        self._messages = [{"role": "system", "content": self.system_prompt}]
++
++    def set_system_prompt(self, prompt):
++        self.system_prompt = prompt
++        self.reset_conversation()
++
++    def _trim_history(self):
++        self._messages = self._messages[:1] + self._messages[1:][-24:]
++
++    def generate_response(self, text, on_sentence=None, context=None):
++        self.seen = [dict(item) for item in self._messages]
++        answer = "generated: " + text
++        self._messages += [{"role": "user", "content": text}, {"role": "assistant", "content": answer}]
++        if on_sentence:
++            on_sentence(answer)
++        return answer
++
++    def complete_json(self, system, user, max_tokens=96, timeout=None):
++        return '{"action":"none"}'
++
++    def warmup(self):
++        return True
++
++    def cancel(self):
++        self.cancelled = True
++
++
++def build_runtime():
++    log = []
++    kernel = SimpleNamespace(event_bus=EventBus())
++    managers = {role: FakeManager(role, log) for role in ("general", "coding")}
++    runtime = ModelRuntime(kernel, managers=managers)
++    return runtime, managers, log
++
++
++def client(runtime, purpose="chat"):
++    return RoutedLLMProvider(runtime, purpose=purpose, engine_factory=FakeEngine)
++
++
++@pytest.mark.parametrize("text,expected", [
++    ("What is the capital of India?", "general"),
++    ("Open Chrome", "general"),
++    ("Tell me my postal code", "general"),
++    ("Debug this Python traceback", "coding"),
++    ("Refactor the repository and run pytest", "coding"),
++    ("Add a function to src/main.py", "coding"),
++    ("Explain this SQL query", "coding"),
++])
++def test_rules_route_user_goal_not_internal_prompt(text, expected):
++    runtime, _, _ = build_runtime()
++    assert runtime.select(text) == expected
++
++
++def test_owned_models_switch_in_order_and_no_other_model_remains_running():
++    runtime, managers, log = build_runtime()
++    provider = client(runtime)
++    assert provider.warmup()
++    provider.generate_response("Debug Python code")
++    assert managers["coding"].running
++    assert not managers["general"].running
++    provider.generate_response("What is the capital of India?")
++    assert log == ["start:general", "stop:general", "start:coding", "stop:coding", "start:general"]
++
++
++@pytest.mark.parametrize("failure", ["missing_file", "missing_config", "external_target"])
++def test_target_preflight_preserves_working_general_model(failure):
++    runtime, managers, log = build_runtime()
++    provider = client(runtime)
++    provider.warmup()
++    if failure == "missing_file":
++        managers["coding"].valid = False
++    elif failure == "missing_config":
++        managers["coding"].model_path = None
++    else:
++        managers["coding"].ready = True  # Not ASTA-owned.
++    with pytest.raises(ModelRoutingError):
++        provider.generate_for_task("prompt", goal="Debug Python")
++    assert managers["general"].running
++    assert "stop:general" not in log
++    assert "start:coding" not in log
++
++
++def test_external_general_server_is_not_stopped_to_load_coding():
++    runtime, managers, log = build_runtime()
++    managers["general"].ready = True
++    provider = client(runtime)
++    assert provider.warmup()  # Matching general endpoint can be reused.
++    with pytest.raises(ModelRoutingError, match="externally owned"):
++        provider.generate_for_task("prompt", goal="Debug Python")
++    assert log == []
++    runtime.shutdown()
++    assert managers["general"].ready
++
++
++def test_failed_termination_prevents_coding_launch():
++    runtime, managers, log = build_runtime()
++    provider = client(runtime)
++    provider.warmup()
++    managers["general"].stop_ok = False
++    with pytest.raises(ModelRoutingError, match="termination"):
++        provider.generate_for_task("prompt", goal="Debug Python")
++    assert managers["general"].owned
++    assert "start:coding" not in log
++
++
++def test_coding_start_failure_is_visible_and_has_no_general_generation_fallback():
++    runtime, managers, log = build_runtime()
++    provider = client(runtime)
++    provider.warmup()
++    managers["coding"].start_ok = False
++    sentences = []
++    result = provider.generate_response("Debug Python", on_sentence=sentences.append)
++    assert "No alternate model was used" in result
++    assert sentences == [result]
++    assert not provider.engines["general"].seen
++    assert log == ["start:general", "stop:general", "start:coding"]
++    provider.generate_response("Hello")
++    assert managers["general"].running
++
++
++def test_chat_history_crosses_profiles_but_agent_prompt_does_not_pollute_chat():
++    runtime, _, _ = build_runtime()
++    chat = client(runtime)
++    brain = client(runtime, "agent")
++    chat.set_system_prompt("chat system")
++    brain.set_system_prompt("agent system")
++    chat.generate_response("Hello")
++    chat.generate_response("Explain Python")
++    assert chat.engines["coding"].seen[1]["content"] == "Hello"
++    brain.generate_for_task("control JSON prompt", goal="Debug Python")
++    chat.generate_response("Tell me a joke")
++    assert chat.engines["general"].seen[0]["content"] == "chat system"
++    assert "control JSON prompt" not in str(chat.engines["general"].seen)
++    assert brain.engines["coding"].max_output_tokens == 2048
++    chat.reset_conversation()
++    assert not chat.history
++
++
++def test_task_route_is_sticky_even_for_ambiguous_decision_goal():
++    runtime, _, _ = build_runtime()
++    brain = client(runtime, "agent")
++    brain.generate_for_task("write JSON", goal="Inspect this project", coding_scope=True)
++    runtime.kernel.event_bus.emit("task_created", task={"id": "task-1", "goal": "Inspect this project"})
++    assert runtime.select("continue", task_id="task-1") == "coding"
++    brain.generate_for_task("next decision", goal="continue", task_id="task-1")
++    assert runtime.active_profile == "coding"
++    assert runtime.select("What is the weather?") == "general"
++
++
++def test_followup_and_intent_json_reuse_coding_without_extra_switch():
++    runtime, _, log = build_runtime()
++    provider = client(runtime)
++    provider.generate_response("Debug Python")
++    provider.complete_json("classify", "fix that failure")
++    provider.generate_response("Fix that failure")
++    assert log == ["start:coding"]
++
++
++def test_requests_are_serialized_and_cannot_unload_inflight_model():
++    runtime, managers, log = build_runtime()
++    provider = client(runtime)
++    provider.warmup()
++    entered = threading.Event()
++    release = threading.Event()
++    second_started = threading.Event()
++    errors = []
++
++    def hold(_engine):
++        entered.set()
++        assert release.wait(3)
++
++    def first():
++        try:
++            runtime.execute("general", provider._engine("general"), hold)
++        except Exception as exc:
++            errors.append(exc)
++
++    def second():
++        second_started.set()
++        try:
++            provider.generate_for_task("prompt", goal="Debug Python")
++        except Exception as exc:
++            errors.append(exc)
++
++    thread1 = threading.Thread(target=first)
++    thread2 = threading.Thread(target=second)
++    thread1.start()
++    assert entered.wait(2)
++    thread2.start()
++    assert second_started.wait(2)
++    assert managers["general"].running
++    assert "stop:general" not in log
++    release.set()
++    thread1.join(3)
++    thread2.join(3)
++    assert not thread1.is_alive() and not thread2.is_alive()
++    assert not errors
++    assert runtime.active_profile == "coding"
++
++
++def test_shutdown_cancels_clients_and_rejects_new_requests():
++    runtime, managers, _ = build_runtime()
++    provider = client(runtime)
++    provider.warmup()
++    runtime.shutdown()
++    assert provider.engines["general"].cancelled
++    assert not managers["general"].owned
++    with pytest.raises(ModelRoutingError, match="shut down"):
++        provider.generate_for_task("prompt", goal="Debug Python")
++
++
++def test_engine_profile_settings_do_not_inherit_general_model(monkeypatch):
++    monkeypatch.setenv("ASTA_LLM_MODEL", "nemotron")
++    monkeypatch.setenv("ASTA_LLM_MAX_OUTPUT_TOKENS", "123")
++    manager = FakeManager("coding", [])
++    engine = LlamaCppEngine(base_url=manager.base_url, server_manager=manager,
++                            env_prefix="ASTA_CODING_LLM", max_output_tokens=2048)
++    assert engine.model is None
++    assert engine.max_output_tokens == 2048
++    assert engine.server_manager is manager
++
++
++def test_factory_is_opt_in_and_shares_ownership_not_client_state(monkeypatch):
++    kernel = SimpleNamespace(event_bus=EventBus())
++    assert isinstance(create_llm_provider(), LlamaCppEngine)
++    monkeypatch.setenv("ASTA_MODEL_ROUTER", "1")
++    chat = create_llm_provider(kernel=kernel)
++    brain = create_llm_provider(kernel=kernel, purpose="agent")
++    assert isinstance(chat, RoutedLLMProvider)
++    assert chat.runtime is brain.runtime
++    assert chat.engines["general"] is not brain.engines["general"]
++    assert chat.engines["general"].server_manager is brain.engines["general"].server_manager
++    with pytest.raises(ValueError, match="kernel-scoped"):
++        create_llm_provider()
++
++
++def test_router_rejects_same_port_and_nonlocal_endpoints():
++    runtime, managers, _ = build_runtime()
++    managers["coding"].base_url = "http://localhost:8080/v1"
++    with pytest.raises(ValueError, match="different"):
++        ModelRuntime(runtime.kernel, managers=managers)
++    managers["coding"].base_url = "http://remote.example:8081/v1"
++    with pytest.raises(ValueError, match="loopback"):
++        ModelRuntime(runtime.kernel, managers=managers)
++
++
++def test_wrong_model_on_external_general_endpoint_is_rejected_without_killing_it():
++    runtime, managers, log = build_runtime()
++    managers["general"].ready = True
++    provider = client(runtime)
++    provider.engines["general"]._discover_model = lambda: "wrong.gguf"
++    assert not provider.warmup()
++    assert log == []
++    assert managers["general"].ready
++
++
++def test_agent_brain_passes_original_goal_and_task_id_to_router(monkeypatch):
++    from core.agent.brain import AgentBrain, AgentDecision
++    from core.contracts import IntentResult, IntentType
++    calls = []
++    def generate(prompt, **kwargs):
++        calls.append((prompt, kwargs))
++        return "{}"
++    provider = SimpleNamespace(generate_for_task=generate)
++    brain = AgentBrain(SimpleNamespace(), provider=provider, enabled=True)
++    monkeypatch.setattr(brain, "_build_prompt", lambda *args: "internal capabilities include Python")
++    monkeypatch.setattr(brain, "_parse_response", lambda text: "proposal")
++    monkeypatch.setattr(brain, "_validate_proposal", lambda value: None)
++    intent = IntentResult(intent=IntentType.TASK, confidence=1.0, normalized_text="Inspect this project")
++    assert brain.plan("Inspect this project", intent=intent) == "proposal"
++    assert calls[-1][1] == {"goal": "Inspect this project", "coding_scope": True}
++    monkeypatch.setattr(brain, "_build_decision_prompt", lambda *args: "internal decision prompt")
++    monkeypatch.setattr(brain, "_parse_decision", lambda text: AgentDecision())
++    monkeypatch.setattr(brain, "_normalize_visual_next_action", lambda value, state: value)
++    monkeypatch.setattr(brain, "_enforce_goal_verification_gate", lambda value, state: value)
++    monkeypatch.setattr(brain, "_validate_decision", lambda value: None)
++    brain.decide({"id": "task-1", "goal": "continue"})
++    assert calls[-1][1] == {"goal": "continue", "task_id": "task-1"}
++
++
++def test_kernel_shutdown_owns_shared_runtime_cleanup():
++    from core import Kernel
++    calls = []
++    kernel = Kernel()
++    kernel.model_runtime = SimpleNamespace(shutdown=lambda: calls.append("shutdown"))
++    kernel.shutdown()
++    kernel.shutdown()
++    assert calls == ["shutdown"]
++
++
++def test_startup_rollback_cleans_shared_model_runtime():
++    from core import Kernel
++    calls = []
++    kernel = Kernel()
++    kernel.model_runtime = SimpleNamespace(shutdown=lambda: calls.append("shutdown"))
++    def fail():
++        raise RuntimeError("module failed")
++    kernel.register_module(SimpleNamespace(name="failing", initialize=fail))
++    with pytest.raises(RuntimeError, match="module failed"):
++        kernel.start()
++    assert calls == ["shutdown"]
++
++
++def test_coding_task_followup_routes_even_when_chat_client_did_not_generate_plan():
++    runtime, _, log = build_runtime()
++    brain = client(runtime, "agent")
++    chat = client(runtime)
++    brain.generate_for_task("plan", goal="Debug Python")
++    chat.generate_response("Fix that failure")
++    assert runtime.active_profile == "coding"
++    assert log == ["start:coding"]
++
++
++def test_json_classification_does_not_read_or_change_chat_history():
++    runtime, _, _ = build_runtime()
++    provider = client(runtime)
++    provider.generate_response("Hello")
++    history = [dict(item) for item in provider.history]
++    provider.complete_json("classify", "test input")
++    assert provider.history == history

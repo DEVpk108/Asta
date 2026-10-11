@@ -16,6 +16,11 @@
   width: 0;
 }
 
+.model-status { flex: 0 0 auto; padding: 6px 12px; color: rgba(210, 235, 245, 0.65); border-bottom: 1px solid rgba(0, 229, 255, 0.10); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-status[hidden] { display: none !important; }
+.model-status[data-status="loading"] { color: var(--cyan); }
+.model-status[data-status="error"] { color: #ffc46b; }
+
 .workspace-context {
   flex: 0 0 auto;
   margin: 8px 10px 0;

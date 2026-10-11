@@ -121,7 +121,29 @@ class Planner:
 
         return "command needs open-ended planning"
 
-    def plan(
+    def plan(self, goal: str, *, intent: IntentResult, constraints=None, metadata=None) -> Plan:
+        try:
+            return self._plan_once(goal, intent=intent, constraints=constraints, metadata=metadata)
+        except PlanningError as exc:
+            contract_error = str(exc)
+            retryable = contract_error.startswith((
+                "Project file writes must", "The verified readback must", "File-content verification",
+                "Project command verification", "Project command stdout verification",
+            ))
+            if not isinstance(intent, IntentResult) or intent.intent is not IntentType.TASK or not retryable:
+                raise
+            # One regeneration only. Nothing is dispatched until the complete
+            # plan passes the same validator. Never patch or execute guessed code.
+            corrected_intent = IntentResult(
+                intent=intent.intent, confidence=intent.confidence,
+                normalized_text=intent.normalized_text,
+                entities={**intent.entities, "planning_feedback": contract_error},
+                requires_tools=True, requires_reasoning=True, classifier=intent.classifier,
+            )
+            print(f"[Tasks] Replanning once after contract rejection: {contract_error}", flush=True)
+            return self._plan_once(goal, intent=corrected_intent, constraints=constraints, metadata=metadata)
+
+    def _plan_once(
         self,
         goal: str,
         *,

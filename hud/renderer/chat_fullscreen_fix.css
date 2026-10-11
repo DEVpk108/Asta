@@ -32,6 +32,7 @@
 }
 
 .chat.chat-fullscreen .chat-header,
+.chat.chat-fullscreen .model-status,
 .chat.chat-fullscreen .workspace-context,
 .chat.chat-fullscreen .chat-messages,
 .chat.chat-fullscreen .chat-input,

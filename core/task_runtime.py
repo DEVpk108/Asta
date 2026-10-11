@@ -174,6 +174,9 @@ class TaskRuntimeModule(Module):
             self._handle_user_message(text, acknowledge=False)
             return
 
+        background = getattr(self.kernel, "background_tasks", None)
+        if background is not None and background.busy and not background.in_worker():
+            return
         value = str(text or "").strip()
         if not value:
             return
@@ -222,6 +225,9 @@ class TaskRuntimeModule(Module):
         )
 
     def _handle_user_message(self, text, *, acknowledge=True):
+        background = getattr(self.kernel, "background_tasks", None)
+        if background is not None and background.busy and not background.in_worker():
+            return
         if not text:
             return
 
@@ -312,6 +318,9 @@ class TaskRuntimeModule(Module):
         incremental_segment_index: int | None = None,
     ):
         """Create an executable task plan from any structured command intent."""
+        background = getattr(self.kernel, "background_tasks", None)
+        if background is not None and background.busy and not background.in_worker():
+            return None
         self._emit_progress(
             "planning",
             "I’m working out how to do that.",
@@ -525,6 +534,9 @@ class TaskRuntimeModule(Module):
         self._incremental_sessions.pop(session_id, None)
 
     def on_tool_request(self, request):
+        background = getattr(self.kernel, "background_tasks", None)
+        if background is not None and background.busy and not background.in_worker() and not background.owns(getattr(request, "metadata", {}).get("task_id")):
+            return
         if not isinstance(request, ToolRequest):
             return
 
@@ -558,6 +570,8 @@ class TaskRuntimeModule(Module):
         )
 
     def on_tool_result(self, result):
+        if isinstance(result, ToolResult) and result.metadata.get("background_conflict"):
+            return
         if not isinstance(result, ToolResult):
             return
 

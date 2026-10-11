@@ -164,6 +164,22 @@
           window.AstaHUD.applyCanonicalState(state)
         }
         renderTaskStatus(state)
+        var modelNode = document.getElementById('modelStatus')
+        if (modelNode) {
+          modelNode.hidden = !state.model_profile
+          modelNode.dataset.status = String(state.model_status || '')
+          var services = state.model_services || {}
+          modelNode.textContent = Object.keys(services).map(function (name) {
+            return name.toUpperCase() + ' · ' + String(services[name].status || '')
+          }).join(' | ') || String(state.model_profile || '').toUpperCase()
+        }
+        var backgroundNode = document.getElementById('backgroundTaskStatus')
+        if (backgroundNode) {
+          var background = state.background_task
+          backgroundNode.hidden = !background
+          backgroundNode.textContent = background ? 'PROJECT · ' + String(background.phase || '').replace(/_/g, ' ') : ''
+          backgroundNode.dataset.status = background ? String(background.phase || '') : ''
+        }
 
         document.body.dataset.hudMode = String(state.mode || 'idle').toLowerCase()
         document.body.dataset.hudActivity = state.activity || ''

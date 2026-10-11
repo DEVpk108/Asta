@@ -36,6 +36,12 @@ class ToolRuntimeModule(Module):
             print("[Tools] Ignoring invalid tool request.", flush=True)
             return
 
+        background = getattr(self.kernel, "background_tasks", None)
+        if background is not None and not background.allow_request(request):
+            self._emit_result(ToolResult(success=False, tool=request.tool,
+                error="Background task cancelled or conflicting action blocked.",
+                metadata={"background_conflict": True}), request=request)
+            return
         result = self.kernel.tool_dispatcher.dispatch(
             request,
             confirmed=self._is_user_directed(request),
@@ -83,6 +89,15 @@ class ToolRuntimeModule(Module):
         return tool in cls._USER_DIRECTED_TOOLS
 
     def on_confirmation_response(self, request_id, approved):
+        background = getattr(self.kernel, "background_tasks", None)
+        pending = self.kernel.approval_manager.get(request_id) if isinstance(request_id, str) else None
+        task_id = pending.request.metadata.get("task_id") if pending is not None else None
+        if background is not None and background.owns(task_id) and not background.in_worker():
+            background.schedule(lambda: self._confirmation_response(request_id, approved))
+            return
+        self._confirmation_response(request_id, approved)
+
+    def _confirmation_response(self, request_id, approved):
         if not isinstance(request_id, str):
             self._emit_error(request_id, "Invalid request_id.")
             return
@@ -101,6 +116,12 @@ class ToolRuntimeModule(Module):
                 )
                 return
 
+            background = getattr(self.kernel, "background_tasks", None)
+            if background is not None and not background.allow_request(request):
+                self._emit_result(ToolResult(success=False, tool=request.tool,
+                    error="Background task cancelled or conflicting action blocked.",
+                    metadata={"background_conflict": True}), request=request)
+                return
             result = self.kernel.tool_dispatcher.dispatch(
                 request,
                 confirmed=True,

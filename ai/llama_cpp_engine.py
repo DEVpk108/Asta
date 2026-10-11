@@ -21,22 +21,31 @@ class LlamaCppEngine:
         max_output_tokens=256,
         reasoning_retry_tokens=512,
         reasoning="off",
+        *,
+        env_prefix="ASTA_LLM",
+        server_manager=None,
     ):
+        self.env_prefix = env_prefix
+        def setting(suffix, default=None):
+            return os.getenv(f"{env_prefix}_{suffix}", default)
+
         self.base_url = (base_url or os.getenv(
-            "ASTA_LLM_BASE_URL", "http://127.0.0.1:8080/v1"
+            f"{env_prefix}_BASE_URL", "http://127.0.0.1:8080/v1"
         )).rstrip("/")
-        self.model = model or os.getenv("ASTA_LLM_MODEL") or None
-        self.timeout = float(os.getenv("ASTA_LLM_TIMEOUT", timeout))
-        self.max_output_tokens = int(os.getenv(
-            "ASTA_LLM_MAX_OUTPUT_TOKENS", max_output_tokens
-        ))
-        self.reasoning_retry_tokens = int(os.getenv(
-            "ASTA_LLM_REASONING_RETRY_TOKENS", reasoning_retry_tokens
-        ))
-        self.temperature = float(os.getenv("ASTA_LLM_TEMPERATURE", "0.7"))
-        self.reasoning = reasoning
+        self.model = model or setting("MODEL") or None
+        self.timeout = float(setting("TIMEOUT", timeout))
+        self.max_output_tokens = int(setting("MAX_OUTPUT_TOKENS", max_output_tokens))
+        self.reasoning_retry_tokens = int(setting("REASONING_RETRY_TOKENS", reasoning_retry_tokens))
+        self.temperature = float(setting("TEMPERATURE", "0.7"))
+        self.reasoning = setting("REASONING", reasoning)
+        self.enable_thinking = setting("ENABLE_THINKING", "0").strip().lower() in {"1", "true", "yes", "on"}
+        self.top_k = int(setting("TOP_K", "50" if env_prefix == "ASTA_LLM" else "20"))
+        self.top_p = float(setting("TOP_P", "0.95"))
+        self.min_p = float(setting("MIN_P", "0.0"))
         self.session = requests.Session()
-        self.server_manager = LlamaServerManager(base_url=self.base_url)
+        self.server_manager = server_manager or LlamaServerManager(
+            base_url=self.base_url, env_prefix=env_prefix
+        )
 
         host = urlparse(self.base_url).hostname
         if host in {"localhost", "127.0.0.1", "::1"}:
@@ -371,12 +380,19 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             "max_tokens": max_output_tokens,
             "temperature": self.temperature,
             "cache_prompt": True,
+            "top_k": self.top_k,
+            "top_p": self.top_p,
+            "min_p": self.min_p,
+            "chat_template_kwargs": {"enable_thinking": self.enable_thinking},
         }
 
         # Free VRAM held by an idle vision model before generating.
         gpu_share.release_idle("the chat reply")
         try:
-            max_reply_seconds = float(os.getenv("ASTA_LLM_MAX_REPLY_SECONDS", "45"))
+            max_reply_seconds = float(os.getenv(
+                f"{self.env_prefix}_MAX_REPLY_SECONDS",
+                "120" if self.env_prefix != "ASTA_LLM" else "45",
+            ))
         except ValueError:
             max_reply_seconds = 45.0
 
@@ -391,6 +407,8 @@ Your goal is not merely to produce an answer. Help the user understand the probl
         server_usage = {}
         server_timings = {}
         cancelled = False
+        timed_out = False
+        finish_reason = None
 
         with self.session.post(
             self.chat_url,
@@ -432,15 +450,17 @@ Your goal is not merely to produce an answer. Help the user understand the probl
                 if max_reply_seconds > 0 and now - request_start > max_reply_seconds:
                     print(
                         f"[AI] llama.cpp reply exceeded {max_reply_seconds:.0f}s; stopping. "
-                        "The GPU is probably out of VRAM (check nvidia-smi).",
+                        "Check server logs and resource usage; timeout alone does not establish OOM.",
                         flush=True,
                     )
                     cancelled = True
+                    timed_out = True
                     break
 
                 final_id = data.get("id") or final_id
                 choices = data.get("choices") or []
                 choice = choices[0] if choices else {}
+                finish_reason = choice.get("finish_reason") or finish_reason
                 delta = choice.get("delta") or {}
                 content = self._normalize_text(delta.get("content", ""))
 
@@ -553,6 +573,8 @@ Your goal is not merely to produce an answer. Help the user understand the probl
                 and output_tokens >= max_output_tokens
             ),
             "cancelled": cancelled,
+            "timed_out": timed_out,
+            "finish_reason": finish_reason,
         }
 
         self._messages.append({"role": "user", "content": text})
@@ -599,6 +621,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             return ""
 
         request_start = time.perf_counter()
+        self.last_generation = None
         # A new turn starts uncancelled; an interrupt that arrived while idle
         # must not cancel the next answer.
         self._cancel_event.clear()
@@ -642,6 +665,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
             )
             return ""
 
+        self.last_generation = attempt
         if attempt.get("cancelled"):
             print(
                 f"[AI] Generation cancelled after {attempt['request_time']:.2f}s.",

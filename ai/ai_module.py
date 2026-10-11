@@ -123,7 +123,7 @@ class AIModule(Module):
             kernel=kernel,
         )
 
-        self.engine = create_llm_provider()
+        self.engine = create_llm_provider(kernel=kernel, purpose="chat")
         self.tool_request_builder = ToolRequestBuilder(kernel.tool_registry)
         self.chat_history = ChatHistoryStore()
 
@@ -277,6 +277,17 @@ class AIModule(Module):
         if self._handle_approval_response(text):
             return
 
+        background = getattr(self.kernel, "background_tasks", None)
+        if background is not None and background.handle_control(text):
+            return
+        if background is not None and background.busy:
+            hint = self.kernel.intent_router.analyze(text)
+            if hint.intent in {IntentType.COMMAND, IntentType.TASK} or re.match(
+                r"^(?:(?:please|can you|could you|would you)\s+)*(?:open|launch|start|close|run|stop|play|pause|resume|press|type|switch|fix|write|create|modify|delete)\b",
+                str(text).strip(), re.I):
+                self._emit_assistant_text("A project task is still active. I can keep chatting, but please cancel it or wait before starting another action.")
+                return
+
         if self._handle_conversation_mode_command(text):
             return
 
@@ -352,6 +363,10 @@ class AIModule(Module):
                 self._emit_assistant_text(
                     "I can't start a project task because the task runtime is unavailable."
                 )
+                return
+            background = getattr(self.kernel, "background_tasks", None)
+            if background is not None:
+                background.start(text, result)
                 return
             task = starter(text, result)
             if task is None:
@@ -1023,6 +1038,23 @@ class AIModule(Module):
         if not pending:
             return False
 
+        background = getattr(self.kernel, "background_tasks", None)
+        background_pending = [item for item in pending
+            if background is not None and background.owns(item.request.metadata.get("task_id"))]
+        if background_pending:
+            compact = self._normalize_question(text).rstrip(" .!?;:")
+            explicit = {"approve coding step": True, "approve project step": True,
+                        "reject coding step": False, "reject project step": False}
+            if compact in explicit and len(pending) == 1:
+                self.event_bus.emit("tool_confirmation_response",
+                    request_id=pending[0].request.request_id, approved=explicit[compact])
+                return True
+            if compact in self._APPROVAL_CONFIRMATIONS or compact in self._APPROVAL_REJECTIONS:
+                self._emit_assistant_text("For the background task, use the approval button or say approve coding step or reject coding step.")
+                return True
+            # Other chat does not silently approve or cancel background work.
+            return False
+
         normalized = self._normalize_question(text)
         compact = normalized.rstrip(" .!?;:")
 
@@ -1339,6 +1371,9 @@ class AIModule(Module):
             text = f"I need your confirmation before acting on {target}."
         else:
             text = "I need your confirmation before performing that action."
+        background = getattr(self.kernel, "background_tasks", None)
+        if background is not None and background.owns(request.metadata.get("task_id")):
+            text += " Use the approval button, or say approve coding step or reject coding step."
         print(f"[AI] Approval required: {reason}", flush=True)
         self._emit_assistant_text(text)
 

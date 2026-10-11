@@ -1,0 +1,12 @@
+[
+  {
+    "repo": "LiquidAI/LFM2.5-2.6B-GGUF",
+    "revision": "e7caca5d835a3901a8e0d63e94009429bafafdfc",
+    "filename": "LFM2.5-2.6B-Q4_K_M.gguf"
+  },
+  {
+    "repo": "unsloth/Qwen3.5-4B-GGUF",
+    "revision": "e87f176479d0855a907a41277aca2f8ee7a09523",
+    "filename": "Qwen3.5-4B-Q4_K_M.gguf"
+  }
+]

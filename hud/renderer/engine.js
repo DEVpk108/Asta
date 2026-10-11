@@ -136,7 +136,8 @@
     return a + (b - a) * u
   }
 
-  function buildParticles () {
+  function buildParticles (options) {
+    options = options || {}
     var source = []
     var target = []
     var color = []
@@ -362,11 +363,24 @@
       }
     }
 
-    circularVisualizer(22000)
-
-    blob(2400, 0, 3.50, 0.12, 0.38, 0.38, 0.20, 1, AMBER_HOT, AMBER, 1.0, false)
-    blob(560, 0, 3.50, 0.18, 0.14, 0.14, 0.10, 3, AMBER_HOT, AMBER, 1.05, false)
-    dust(1200)
+    if (options.shape === 'humanoid') {
+      // Reuse the existing cross-section geometry, with a restrained silhouette.
+      shell(6000, 3.18, TOP_Y)
+      shell(5000, BOTTOM_Y, 3.18)
+      ear(220, -1); ear(220, 1)
+      tube(1600, TRAP_PTS, TRAP_R, 0.65, -1, true, true)
+      tube(1600, TRAP_PTS, TRAP_R, 0.65, 1, true, true)
+      tube(700, ARM_PTS, ARM_R, 0.50, -1, false, false)
+      tube(700, ARM_PTS, ARM_R, 0.50, 1, false, false)
+      neural(800)
+      blob(380, 0, 3.50, 0.12, 0.20, 0.24, 0.14, 1, AMBER_HOT, AMBER, 0.8, false)
+      dust(280)
+    } else {
+      circularVisualizer(22000)
+      blob(2400, 0, 3.50, 0.12, 0.38, 0.38, 0.20, 1, AMBER_HOT, AMBER, 1.0, false)
+      blob(560, 0, 3.50, 0.18, 0.14, 0.14, 0.10, 3, AMBER_HOT, AMBER, 1.05, false)
+      dust(1200)
+    }
 
     return {
       count: count,
@@ -527,12 +541,16 @@
 
   function program (gl, vs, fs) {
     var p = gl.createProgram()
-    gl.attachShader(p, compile(gl, gl.VERTEX_SHADER, vs))
-    gl.attachShader(p, compile(gl, gl.FRAGMENT_SHADER, fs))
+    var vertex = compile(gl, gl.VERTEX_SHADER, vs)
+    var fragment = compile(gl, gl.FRAGMENT_SHADER, fs)
+    gl.attachShader(p, vertex)
+    gl.attachShader(p, fragment)
     gl.linkProgram(p)
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
       throw new Error('program link: ' + gl.getProgramInfoLog(p))
     }
+    gl.detachShader(p, vertex); gl.detachShader(p, fragment)
+    gl.deleteShader(vertex); gl.deleteShader(fragment)
     return p
   }
 
@@ -552,18 +570,35 @@
   }
 
   /* -------------------------------- engine -------------------------------- */
-  function create (canvas) {
+  function create (canvas, options) {
+    options = options || {}
+    var buffers = []
     var gl = canvas.getContext('webgl2', {
       alpha: false, antialias: false, depth: false, stencil: false,
-      premultipliedAlpha: false, powerPreference: 'high-performance'
+      premultipliedAlpha: false, powerPreference: options.lowPower ? 'low-power' : 'high-performance'
     })
-    if (!gl) throw new Error('WebGL2 not available')
+    if (!gl || gl.isContextLost()) throw new Error('WebGL2 not available')
 
-    var hdr = !!gl.getExtension('EXT_color_buffer_half_float')
+    var hdr = !options.lowPower && !!gl.getExtension('EXT_color_buffer_half_float')
     var texType = hdr ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE
     var texFmt = hdr ? gl.RGBA16F : gl.RGBA8
 
-    var data = buildParticles()
+    var data = buildParticles(options)
+    var limit = Math.max(1000, Math.min(30000, Number(options.maxParticles) || data.count))
+    if (data.count > limit) {
+      var originalCount = data.count
+      Object.keys(data).forEach(function (key) {
+        if (key === 'count') return
+        var width = data[key].length / originalCount
+        var sampled = new Float32Array(limit * width)
+        for (var i = 0; i < limit; i++) {
+          var sourceIndex = Math.floor(i * originalCount / limit) * width
+          sampled.set(data[key].subarray(sourceIndex, sourceIndex + width), i * width)
+        }
+        data[key] = sampled
+      })
+      data.count = limit
+    }
     var pPoints = program(gl, VS_POINTS, FS_POINTS)
     var pBright = program(gl, VS_QUAD, FS_BRIGHT)
     var pBlur = program(gl, VS_QUAD, FS_BLUR)
@@ -576,6 +611,7 @@
 
     function attrib (index, arr, size) {
       var b = gl.createBuffer()
+      buffers.push(b)
       gl.bindBuffer(gl.ARRAY_BUFFER, b)
       gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STATIC_DRAW)
       gl.enableVertexAttribArray(index)
@@ -598,6 +634,7 @@
     var qvao = gl.createVertexArray()
     gl.bindVertexArray(qvao)
     var qb = gl.createBuffer()
+    buffers.push(qb)
     gl.bindBuffer(gl.ARRAY_BUFFER, qb)
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW)
     gl.enableVertexAttribArray(0)
@@ -645,9 +682,11 @@
     }
 
     function resize () {
-      var dpr = Math.min(global.devicePixelRatio || 1, 2)
-      var w = Math.max(2, Math.round((canvas.clientWidth || 1) * dpr))
-      var h = Math.max(2, Math.round((canvas.clientHeight || 1) * dpr))
+      var dpr = Math.min(global.devicePixelRatio || 1, Number(options.maxDpr) || 2)
+      var cap = Math.max(128, Number(options.maxDimension) || 2048)
+      var ratio = Math.min(1, cap / Math.max(canvas.clientWidth * dpr, canvas.clientHeight * dpr, 1))
+      var w = Math.max(2, Math.round((canvas.clientWidth || 1) * dpr * ratio))
+      var h = Math.max(2, Math.round((canvas.clientHeight || 1) * dpr * ratio))
       if (scene && w === scene.w && h === scene.h) return
       canvas.width = w
       canvas.height = h
@@ -678,6 +717,7 @@
       if (halfH > 4.2) halfH = 4.2
       var camZ = halfH / tanH
       var camY = 6.45 - halfH
+      if (o.compact) { halfH = 1.50; camZ = halfH / tanH; camY = 4.72 }
 
       setPerspective(projM, FOV, aspect, 0.1, 60)
       viewM[13] = -camY
@@ -699,7 +739,7 @@
       gl.uniform1f(uP.uAmp, o.amp || 0)
       gl.uniform1f(uP.uColorMix, o.colorMix || 0)
       gl.uniform1f(uP.uRot, o.rot || 0)
-      gl.uniform1f(uP.uWorldSize, 0.0185)
+      gl.uniform1f(uP.uWorldSize, options.shape === 'humanoid' ? 0.042 : 0.0185)
       gl.uniform1f(uP.uProjScale, scene.h / (2 * tanH))
       gl.drawArrays(gl.POINTS, 0, data.count)
       gl.bindVertexArray(null)
@@ -754,7 +794,13 @@
       resize: resize,
       count: data.count,
       hdr: hdr,
-      gl: gl
+      gl: gl,
+      dispose: function () {
+        destroyTargets()
+        buffers.forEach(function (buffer) { gl.deleteBuffer(buffer) })
+        ;[pPoints, pBright, pBlur, pComp].forEach(function (item) { gl.deleteProgram(item) })
+        gl.deleteVertexArray(vao); gl.deleteVertexArray(qvao)
+      }
     }
   }
 

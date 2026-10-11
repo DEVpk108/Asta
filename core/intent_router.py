@@ -193,10 +193,14 @@ class IntentRouter:
 
         project_task = self._extract_project_task(normalized)
         if project_task:
+            # Classify normalized text, but never normalize an executable goal.
+            # Quoted code, filenames and expected output are case-sensitive.
+            original_goal = str(text).strip()
+            project_task["goal"] = original_goal
             return IntentResult(
                 intent=IntentType.TASK,
                 confidence=0.92,
-                normalized_text=normalized,
+                normalized_text=original_goal,
                 entities=project_task,
                 requires_tools=True,
                 requires_reasoning=True,

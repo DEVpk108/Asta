@@ -22,51 +22,54 @@ class LlamaServerManager:
         gpu_layers: int | None = None,
         jinja: bool | None = None,
         reasoning: str | None = None,
+        env_prefix: str = "ASTA_LLM",
     ):
+        self.env_prefix = env_prefix
+        def setting(suffix, default):
+            return os.getenv(f"{env_prefix}_{suffix}", default)
+
         self.base_url = str(base_url).rstrip("/")
         self.server_path = (
             server_path
+            or setting("SERVER_PATH", "")
             or os.getenv("ASTA_LLAMA_SERVER_PATH")
             or self._default_server_path()
         )
         self.model_path = (
             model_path
-            or os.getenv("ASTA_LLM_MODEL_PATH")
-            or self._model_path_from_legacy_env()
+            or setting("MODEL_PATH", "")
+            or (self._model_path_from_legacy_env() if env_prefix == "ASTA_LLM" else None)
         )
         self.startup_timeout = float(
             startup_timeout
             if startup_timeout is not None
-            else os.getenv("ASTA_LLAMA_SERVER_STARTUP_TIMEOUT", "120")
+            else setting("STARTUP_TIMEOUT", os.getenv("ASTA_LLAMA_SERVER_STARTUP_TIMEOUT", "120"))
         )
         self.context_size = int(
             context_size
             if context_size is not None
-            else os.getenv("ASTA_LLM_CONTEXT_SIZE", "8192")
+            else setting("CONTEXT_SIZE", "4096" if env_prefix != "ASTA_LLM" else "8192")
         )
         self.gpu_layers = int(
             gpu_layers
             if gpu_layers is not None
-            else os.getenv("ASTA_LLM_GPU_LAYERS", "99")
+            else setting("GPU_LAYERS", "99")
         )
         self.batch_size = int(
-            os.getenv("ASTA_LLM_BATCH_SIZE", "2048")
+            setting("BATCH_SIZE", "256" if env_prefix != "ASTA_LLM" else "2048")
         )
         self.ubatch_size = int(
-            os.getenv("ASTA_LLM_UBATCH_SIZE", "512")
+            setting("UBATCH_SIZE", "128" if env_prefix != "ASTA_LLM" else "512")
         )
-        self.flash_attn = os.getenv("ASTA_LLM_FLASH_ATTN", "auto").strip().lower()
-        self.cache_type_k = os.getenv("ASTA_LLM_CACHE_TYPE_K", "").strip().lower()
-        self.cache_type_v = os.getenv("ASTA_LLM_CACHE_TYPE_V", "").strip().lower()
-        self.parallel = int(os.getenv("ASTA_LLM_PARALLEL", "1"))
-        self.jinja = self._env_bool(
-            "ASTA_LLM_JINJA",
-            True if jinja is None else jinja,
-        )
+        self.flash_attn = setting("FLASH_ATTN", "auto").strip().lower()
+        self.cache_type_k = setting("CACHE_TYPE_K", "").strip().lower()
+        self.cache_type_v = setting("CACHE_TYPE_V", "").strip().lower()
+        self.parallel = int(setting("PARALLEL", "1"))
+        self.jinja = jinja if jinja is not None else self._env_bool(f"{env_prefix}_JINJA", True)
         self.reasoning = (
             reasoning
             if reasoning is not None
-            else os.getenv("ASTA_LLM_REASONING", "off")
+            else setting("REASONING", "off")
         ).strip()
 
         self.process: subprocess.Popen | None = None
@@ -112,12 +115,26 @@ class LlamaServerManager:
         return self.process is not None and self.process.poll() is None
 
     def ensure_running(self) -> bool:
+        if self.process is not None and self.process.poll() is not None:
+            # A new process may now occupy the port; a dead handle does not
+            # establish ownership of that replacement.
+            self.process = None
+            self.owned = False
         if self._server_is_ready():
             print(
-                "[AI] llama.cpp server already running; A.S.T.A. will not own it.",
+                "[AI] llama.cpp server already running; "
+                + ("A.S.T.A. owns it." if self.owned else "A.S.T.A. will not own it."),
                 flush=True,
             )
             return True
+
+        if self.running:
+            # Never overwrite a live child's ownership handle when its
+            # endpoint is temporarily unavailable or an earlier stop failed.
+            ready = self._wait_until_ready()
+            if not ready:
+                self.stop()
+            return ready
 
         if not self._autostart_enabled():
             print(
@@ -193,18 +210,18 @@ class LlamaServerManager:
         self.stop()
         return False
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
+        """Stop only our child, retaining ownership if termination fails."""
         process = self.process
         owned = self.owned
 
-        self.process = None
-        self.owned = False
-
         if not owned or process is None:
-            return
+            return True
 
         if process.poll() is not None:
-            return
+            self.process = None
+            self.owned = False
+            return True
 
         print(
             f"[AI] Stopping llama.cpp server (PID {process.pid})...",
@@ -225,6 +242,7 @@ class LlamaServerManager:
                         0x08000000,
                     ),
                 )
+                process.wait(timeout=5)
             else:
                 process.terminate()
                 process.wait(timeout=5)
@@ -233,12 +251,21 @@ class LlamaServerManager:
                 process.kill()
                 process.wait(timeout=3)
             except (OSError, subprocess.TimeoutExpired):
-                pass
+                return False
         except OSError:
-            pass
+            return False
+
+        if process.poll() is None:
+            return False
+        self.process = None
+        self.owned = False
+        return True
 
     def _autostart_enabled(self) -> bool:
-        return self._env_bool("ASTA_LLM_AUTOSTART", True)
+        return self._env_bool(
+            f"{self.env_prefix}_AUTOSTART",
+            self._env_bool("ASTA_LLM_AUTOSTART", True),
+        )
 
     def _resolve_server_path(self) -> str | None:
         value = str(self.server_path).strip() if self.server_path else ""
@@ -264,6 +291,10 @@ class LlamaServerManager:
             return None
 
         if not server_path:
+            return None
+
+        if self.env_prefix != "ASTA_LLM":
+            # A second profile must not accidentally discover the general GGUF.
             return None
 
         server_dir = Path(server_path).resolve().parent

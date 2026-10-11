@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('asta', {
   toggleMaximize: () => ipcRenderer.send('win:toggle-maximize'),
   close: () => ipcRenderer.send('win:close'),
   toggleFullscreen: () => ipcRenderer.send('win:toggle-fullscreen'),
+  respondToApproval: (requestId, approved) => ipcRenderer.send('hud:approval', { requestId, approved }),
   sendTextMessage: (text) => ipcRenderer.send('hud:text-message', text),
   selectChatSession: (sessionId) => ipcRenderer.send('hud:select-chat', sessionId),
   deleteChatSession: (sessionId) => ipcRenderer.send('hud:delete-chat', sessionId),
