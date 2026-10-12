@@ -756,7 +756,9 @@ class AgentBrain:
                 "packages): open them on the user's desktop with action='open_program', "
                 "tool='project.open_program', path=<the .py file>, instead of system.run_command. "
                 "Write such programs with the Python standard library only (tkinter for windows and "
-                "games) unless the user names a package. Use system.run_command for tests and "
+                "games) unless the user names a package, complete and playable: create root = tk.Tk(), "
+                "bind keys on root (a Canvas gets no key events without focus), loop with root.after, "
+                "end with root.mainloop(); use 4-space indentation. Use system.run_command for tests and "
                 "scripts that print a result and exit. If planning_feedback is provided, "
                 "return a complete corrected proposal; the rejected proposal was never executed."
             ),

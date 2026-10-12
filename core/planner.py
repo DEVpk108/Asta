@@ -306,6 +306,11 @@ class Planner:
                 commands,
                 success_conditions=proposal.success_conditions,
                 goal=value,
+                capability_scope=(
+                    intent.entities.get("capability_scope")
+                    if intent.intent is IntentType.TASK
+                    else None
+                ),
             )
 
         commands = self._deduplicate_adjacent_commands(commands)
@@ -1035,8 +1040,17 @@ class Planner:
         *,
         success_conditions: tuple[str, ...] | list[str],
         goal: str,
+        capability_scope=None,
     ) -> list[dict[str, Any]]:
         """Make visual verification a deterministic semantic step."""
+        if isinstance(capability_scope, (list, tuple, set, frozenset)) and (
+            "vision.inspect" not in {str(name) for name in capability_scope}
+        ):
+            # A project task's scope has no screen inspection. Success
+            # conditions like "the user can see the game window" are covered
+            # by the step's own check (a desktop program's process check),
+            # so don't append a step the scope would reject.
+            return commands
         conditions_text = " ".join(
             str(item).strip()
             for item in success_conditions

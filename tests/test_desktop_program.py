@@ -298,3 +298,37 @@ def test_project_tools_never_run_as_a_side_action(tmp_path):
     intent = IntentResult(intent=IntentType.COMMAND, confidence=0.9, normalized_text="run main.py",
                           entities={"action": "run"}, requires_tools=True, classifier="rules")
     assert runner.try_start("run main.py", intent) is False
+
+
+def test_seeing_the_window_does_not_add_a_screen_check_outside_the_task_scope(tmp_path):
+    """Success conditions like "the user can see the game window" used to add
+    a vision.inspect step, which the project scope rejects (plan failed)."""
+    from tests.test_project_edit_fix_loop import SequencePlanBrain
+    from core.agent.brain import AgentPlanProposal
+
+    class SeeingBrain(SequencePlanBrain):
+        def plan(self, goal, *, intent):
+            proposal = super().plan(goal, intent=intent)
+            return AgentPlanProposal(
+                goal_summary=proposal.goal_summary,
+                success_conditions=("The user can see the game window on the screen.",),
+                rationale=proposal.rationale, steps=proposal.steps, uncertainty=0.1,
+            )
+
+    workspace = _empty_project(tmp_path)
+    run = _runtime(tmp_path, workspace, _game_plan(GAME))
+    _with_program_tool(run, FakePopen((None, "")))
+    # ASTA has a screen inspector; it just isn't part of a project task.
+    run.kernel.register_tool(_Fake("vision.inspect", ["inspect"], {"prompt": {"type": "string"}}, ["prompt"], []))
+    brain = SeeingBrain(_game_plan(GAME))
+    run.kernel.agent_brain = brain
+    run.kernel.planner.agent_brain = brain
+    try:
+        from core.intent_router import IntentRouter
+
+        plan = run.kernel.planner.plan(GOAL, intent=IntentRouter().analyze(GOAL))
+        tools = [step.metadata.get("tool") for step in plan.steps]
+        assert "vision.inspect" not in tools
+        assert tools[-1] == "project.open_program"
+    finally:
+        _shutdown(run)
