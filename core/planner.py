@@ -130,7 +130,7 @@ class Planner:
             retryable = contract_error.startswith((
                 "Project file writes must", "The verified readback must", "File-content verification",
                 "Project command verification", "Project command stdout verification",
-                "Project file updates must",
+                "Project file updates must", "Desktop programs must",
             ))
             if not isinstance(intent, IntentResult) or intent.intent is not IntentType.TASK or not retryable:
                 raise
@@ -234,6 +234,11 @@ class Planner:
                 raise PlanningError(
                     f"Cognitive planning failed: {type(exc).__name__}: {exc}"
                 ) from exc
+            program_error = self._desktop_program_error(
+                commands, strict=not (intent.entities or {}).get("planning_feedback"),
+            )
+            if program_error:
+                raise PlanningError(program_error)
         elif intent.intent is IntentType.COMMAND:
             commands = self._commands_from_intent(intent)
             if not commands:
@@ -440,6 +445,57 @@ class Planner:
             flush=True,
         )
         return plan
+
+    _TK_ROOT = re.compile(r"^\s*([A-Za-z_][\w.]*)\s*=\s*(?:tk\.|tkinter\.)?Tk\(\s*\)", re.MULTILINE)
+    _TK_SUBCLASS = re.compile(r"^\s*class\s+\w+\s*\(\s*(?:tk\.|tkinter\.)?Tk\s*\)", re.MULTILINE)
+    _KEY_BIND = re.compile(
+        r"([A-Za-z_][\w.]*)\.bind\(\s*['\"]<(?:Key|KeyPress|KeyRelease|Left|Right|Up|Down|"
+        r"space|Return|Escape|[A-Za-z0-9])(?:[->][^'\"]*)?['\"]"
+    )
+
+    @classmethod
+    def _desktop_program_error(cls, commands, *, strict: bool = True) -> str:
+        """Catch a desktop program that can't work before it is written and opened.
+
+        * It must be valid Python (a syntax error only shows up as a crash
+          after the user approved opening it).
+        * tkinter key bindings on a Canvas/Frame get no keys unless that widget
+          has focus: the snake never turned. Bind on the Tk root, use
+          bind_all, or call focus_set(). (Checked once; a corrected plan that
+          still does it is allowed through.)
+        """
+        def norm(value):
+            return str(value or "").replace("\\", "/").strip().strip("/")
+
+        opened = {norm(command.get("path")) for command in commands
+                  if str(command.get("tool") or "") == "project.open_program"}
+        if not opened:
+            return ""
+        for command in commands:
+            if str(command.get("tool") or "") != "filesystem.write_file":
+                continue
+            path, content = norm(command.get("path")), command.get("content")
+            if path not in opened or not isinstance(content, str) or not path.lower().endswith((".py", ".pyw")):
+                continue
+            try:
+                compile(content, path, "exec")
+            except SyntaxError as exc:
+                return (f"Desktop programs must be valid Python: {path} line {exc.lineno}: {exc.msg}. "
+                        "Rewrite the complete file with consistent 4-space indentation.")
+            except (ValueError, TypeError):
+                return f"Desktop programs must be valid Python: {path} could not be compiled."
+            if not strict or "tkinter" not in content:
+                continue
+            receivers = {match.group(1) for match in cls._KEY_BIND.finditer(content)}
+            roots = set(cls._TK_ROOT.findall(content))
+            if cls._TK_SUBCLASS.search(content):
+                roots.add("self")
+            if receivers and not receivers <= roots and not re.search(r"\b(?:bind_all|focus_set|focus_force)\(", content):
+                widgets = ", ".join(sorted(receivers - roots))
+                return (f"Desktop programs must receive their keys: {path} binds keys on {widgets}, which gets "
+                        "no key events without focus. Bind the keys on the Tk root window "
+                        "(root = tk.Tk(); root.bind('<Left>', ...)), or call focus_set() on that widget.")
+        return ""
 
     @staticmethod
     def _complete_project_commands(

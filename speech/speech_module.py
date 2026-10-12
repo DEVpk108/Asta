@@ -58,6 +58,7 @@ class SpeechModule(Module):
         )
         self.event_bus.subscribe("speech_interrupt", self.on_speech_interrupt)
         self.event_bus.subscribe("speech_false_interrupt", self.on_speech_false_interrupt)
+        self.event_bus.subscribe("speech_retract", self.on_speech_retract)
 
         self._speech_thread = threading.Thread(
             target=self._speech_loop,
@@ -73,6 +74,7 @@ class SpeechModule(Module):
         self._interrupt_event.set()
         self._publish_audio_level(0.0, force=True)
         self.event_bus.unsubscribe("speech_false_interrupt", self.on_speech_false_interrupt)
+        self.event_bus.unsubscribe("speech_retract", self.on_speech_retract)
         self.event_bus.unsubscribe("assistant_sentence", self.on_assistant_sentence)
         self.event_bus.unsubscribe(
             "incremental_voice_listening",
@@ -309,6 +311,37 @@ class SpeechModule(Module):
             self.event_bus.emit("speech_started")
 
         self._queue.put(queued_text)
+
+    def on_speech_retract(self, text=None, **_kwargs):
+        """Drop a line that is queued but not yet spoken (it went out of date).
+
+        A line already being spoken is left alone.
+        """
+        if not text:
+            return 0
+        with self._state_lock:
+            before = len(self._deferred_sentences)
+            self._deferred_sentences[:] = [item for item in self._deferred_sentences if item != text]
+            removed = before - len(self._deferred_sentences)
+        prepared = self._remove_emoji(self._prepare_for_speech(str(text)))
+        dropped = 0
+        if prepared:
+            with self._queue.mutex:
+                kept = [item for item in self._queue.queue if item != prepared]
+                dropped = len(self._queue.queue) - len(kept)
+                if dropped:
+                    self._queue.queue.clear()
+                    self._queue.queue.extend(kept)
+                    self._queue.unfinished_tasks -= dropped
+                    if self._queue.unfinished_tasks <= 0:
+                        self._queue.unfinished_tasks = 0
+                        self._queue.all_tasks_done.notify_all()
+            if dropped:
+                with self._state_lock:
+                    self._queued_text = max(0, self._queued_text - dropped)
+                print(f"[Speech] Dropped an out-of-date line: {prepared}", flush=True)
+                self._maybe_finish_speech()
+        return removed + dropped
 
     def on_speech_interrupt(self, *args, **kwargs):
         """Cancel current speech and discard anything queued behind it."""

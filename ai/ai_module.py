@@ -3,7 +3,7 @@ import re
 import time
 
 from core.quick_answers import quick_math, unsupported_file_action
-from core.agent import intent_resolver, work_awareness
+from core.agent import intent_resolver, project_followup, work_awareness
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from core.module import Module
@@ -164,6 +164,7 @@ class AIModule(Module):
             "tool_confirmation_required",
             self.on_tool_confirmation_required,
         )
+        self.event_bus.subscribe("tool_confirmation_response", self.on_tool_confirmation_answered)
         print("[AI] Ready", flush=True)
 
     def shutdown(self):
@@ -179,6 +180,7 @@ class AIModule(Module):
             "tool_confirmation_required",
             self.on_tool_confirmation_required,
         )
+        self.event_bus.unsubscribe("tool_confirmation_response", self.on_tool_confirmation_answered)
         self.chat_history.close()
 
         engine_shutdown = getattr(self.engine, "shutdown", None)
@@ -348,6 +350,11 @@ class AIModule(Module):
             return
 
         intent_hint = self.kernel.intent_router.analyze(text)
+        if intent_hint.intent in {IntentType.UNKNOWN, IntentType.CONVERSATION}:
+            followup = project_followup.followup_intent(text, getattr(self.kernel, "task_manager", None))
+            if followup is not None:
+                print(f"[AI] Follow-up to the last project task: {followup.normalized_text}", flush=True)
+                intent_hint = followup
         recovered_intent = self._recover_recent_command(text, intent_hint)
         if recovered_intent is not None:
             intent_hint = recovered_intent
@@ -381,6 +388,8 @@ class AIModule(Module):
                     "I can't start a project task because the task runtime is unavailable."
                 )
                 return
+            if result.classifier == "project_followup":
+                text = str((result.entities or {}).get("goal") or text)
             background = getattr(self.kernel, "background_tasks", None)
             if background is not None:
                 background.start(text, result)
@@ -1467,7 +1476,25 @@ class AIModule(Module):
         if in_background:
             text += " Use the approval button, or say approve coding step or reject coding step."
         print(f"[AI] Approval required: {reason}", flush=True)
-        self._emit_assistant_text(text, spoken=self._spoken_approval(request, in_background) or None)
+        spoken = self._spoken_approval(request, in_background) or None
+        questions = getattr(self, "_approval_questions", None)
+        if questions is None:
+            questions = self._approval_questions = {}
+        questions[str(request.request_id)] = spoken or text
+        while len(questions) > 8:
+            questions.pop(next(iter(questions)))
+        self._emit_assistant_text(text, spoken=spoken)
+
+    def on_tool_confirmation_answered(self, request_id=None, approved=None, **_kwargs):
+        """Approved/rejected before the question was read out: don't ask it anymore.
+
+        Clicking Approve while A.S.T.A. was still speaking the previous line
+        used to leave the old question queued, so it was asked right before
+        "Done, it's open".
+        """
+        question = (getattr(self, "_approval_questions", None) or {}).pop(str(request_id), None)
+        if question:
+            self.event_bus.emit("speech_retract", text=question)
 
     @staticmethod
     def _spoken_approval(request, in_background) -> str:
