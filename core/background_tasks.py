@@ -10,6 +10,7 @@ import queue
 import re
 import threading
 from uuid import uuid4
+from core.phrasing import acknowledgement, say
 
 
 _TERMINAL = {"completed", "failed", "cancelled"}
@@ -98,7 +99,7 @@ class BackgroundTaskCoordinator:
         self._publish()
         self._say(
             "I’ve queued that project task in the background. We can keep talking while it runs.",
-            spoken="On it.",
+            spoken=acknowledgement(goal),
         )
         return True
 
@@ -206,7 +207,7 @@ class BackgroundTaskCoordinator:
         text += " Say cancel task to stop it."
         print(f"[Tasks] Paused: {reason or 'no reason recorded'}", flush=True)
         # The reason is shown in the chat; saying it aloud is too long.
-        self._say(text, spoken="I paused the project task. The reason is on screen.")
+        self._say(text, spoken=say("paused"))
 
     def on_workspace(self, workspace=None, **kwargs):
         if self.busy and self.workspace_identity is not None and isinstance(workspace, dict):

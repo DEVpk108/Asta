@@ -14,6 +14,7 @@ from chat_history import ChatHistoryStore
 
 from .llm_provider import create_llm_provider
 from .model_tool_calls import finish_model_response, speech_filter
+from core.phrasing import say
 
 
 
@@ -1457,9 +1458,9 @@ class AIModule(Module):
         """One short question; the chat card carries the details."""
         overwrite = str(request.metadata.get("confirm_overwrite") or "").strip()
         if overwrite and request.metadata.get("confirm_kind") == "test_edit":
-            question = f"Can I change the test file {overwrite}?"
+            question = say("approve_test_edit", path=overwrite)
         elif overwrite:
-            question = f"Can I replace {overwrite}?"
+            question = say("approve_replace", path=overwrite)
         elif request.tool == "system.run_command":
             target = str(request.arguments.get("target") or "").replace("\\", "/").rsplit("/", 1)[-1]
             target = re.sub(r"\.exe$", "", target, flags=re.IGNORECASE)
@@ -1467,10 +1468,10 @@ class AIModule(Module):
                 target = "python"  # say "python", not "python.exe" or "python3.13"
             arguments = [str(item) for item in (request.arguments.get("arguments") or [])][:3]
             command = " ".join([target, *arguments]).strip() or "the command"
-            question = f"Can I run {command}?"
+            question = say("approve_run", command=command)
         else:
             return ""  # keep the full sentence
-        return question + (" Say approve coding step." if in_background else "")
+        return question + (say("approve_suffix") if in_background else "")
 
     def on_tool_result(self, result):
         if not isinstance(result, ToolResult):

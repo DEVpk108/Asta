@@ -57,6 +57,7 @@ class SpeechModule(Module):
             self.on_incremental_voice_listening,
         )
         self.event_bus.subscribe("speech_interrupt", self.on_speech_interrupt)
+        self.event_bus.subscribe("speech_false_interrupt", self.on_speech_false_interrupt)
 
         self._speech_thread = threading.Thread(
             target=self._speech_loop,
@@ -71,6 +72,7 @@ class SpeechModule(Module):
         self._running = False
         self._interrupt_event.set()
         self._publish_audio_level(0.0, force=True)
+        self.event_bus.unsubscribe("speech_false_interrupt", self.on_speech_false_interrupt)
         self.event_bus.unsubscribe("assistant_sentence", self.on_assistant_sentence)
         self.event_bus.unsubscribe(
             "incremental_voice_listening",
@@ -260,7 +262,9 @@ class SpeechModule(Module):
             for text in deferred:
                 self.on_assistant_sentence(text)
 
-    def on_assistant_sentence(self, text, spoken=None):
+    def on_assistant_sentence(self, text, spoken=None, _replay=False):
+        if not _replay:
+            self._sentences_since_cut = getattr(self, "_sentences_since_cut", 0) + 1
         if spoken is not None:
             # The chat shows `text`; only the short `spoken` line is said.
             # An empty `spoken` means "show it, don't say it".
@@ -311,6 +315,7 @@ class SpeechModule(Module):
         print("[Speech] Interrupt requested.", flush=True)
         self._interrupt_event.set()
         self._publish_audio_level(0.0, force=True)
+        cut = [getattr(self, "_current_text", None), *self._deferred_sentences]
         self._deferred_sentences.clear()
 
         drained = 0
@@ -323,6 +328,12 @@ class SpeechModule(Module):
             self._queue.task_done()
             if item is not None:
                 drained += 1
+                cut.append(item)
+        # Kept for a short while in case the "interruption" was ASTA's own
+        # voice in the microphone (see on_speech_false_interrupt).
+        self._cut_lines = [str(line) for line in cut if line]
+        self._cut_at = time.monotonic()
+        self._sentences_since_cut = 0
 
         with self._state_lock:
             self._queued_text = 0
@@ -334,6 +345,28 @@ class SpeechModule(Module):
             print(f"[Speech] Discarded {drained} queued speech item(s).", flush=True)
         if was_active:
             self.event_bus.emit("speech_finished")
+
+    def on_speech_false_interrupt(self, *args, **kwargs):
+        """Say the cut lines again when nobody actually interrupted.
+
+        Only once per interruption, only within 15 seconds, and only when
+        nothing newer has been said since (newer speech wins).
+        """
+        lines = list(getattr(self, "_cut_lines", None) or [])
+        self._cut_lines = []
+        if not lines or getattr(self, "_sentences_since_cut", 0):
+            return
+        if time.monotonic() - getattr(self, "_cut_at", 0.0) > 15.0:
+            return
+        if getattr(self, "_replaying_cut", False):
+            return  # a replay was cut too: don't loop
+        print(f"[Speech] Repeating {len(lines)} interrupted line(s).", flush=True)
+        self._replaying_cut = True
+        try:
+            for line in lines:
+                self.on_assistant_sentence(line, _replay=True)
+        finally:
+            self._replaying_cut = False
 
     def _publish_audio_level(self, level, *, force=False):
         now = time.monotonic()
@@ -411,6 +444,7 @@ class SpeechModule(Module):
                 self._response_audio_started = True
 
                 print(f"[Speech] Synthesizing: {text}", flush=True)
+                self._current_text = text
                 try:
                     if self._running and not self._interrupt_event.is_set():
                         should_continue = lambda: (
@@ -450,6 +484,7 @@ class SpeechModule(Module):
                             idle()
                     with self._state_lock:
                         self._synthesis_inflight -= 1
+                        self._current_text = None
                     self._queue.task_done()
                     self._maybe_finish_speech()
             except Exception as exc:

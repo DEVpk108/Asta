@@ -22,6 +22,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
+from core.phrasing import say
 from core.tools.sandbox import (
     DEFAULT_SANDBOX_IMAGE,
     SandboxRuntimeError,
@@ -163,7 +164,7 @@ class SandboxSetupOperator:
                     "ASTA_DOCKER_DESKTOP_PATH to Docker Desktop.exe, then ask me again.",
                     fixable=False,
                 )
-            self.notify(f"{self._short_product} isn't open. I'm opening {self._short_product}.")
+            self.notify(say("docker_start", product=self._short_product))
             if not self._wait_for_engine():
                 return self._failed(
                     f"I started {self._product}, but it wasn't ready after "
@@ -183,7 +184,7 @@ class SandboxSetupOperator:
                     f"`{self.runtime_name} build --pull -t {self.image} -f sandbox/Dockerfile .`, "
                     "then ask me again."
                 )
-            self.notify("The sandbox image is missing. I'm building it; this takes a few minutes.")
+            self.notify(say("image_build"))
             built = self._call(
                 ["build", "--pull", "-t", self.image, "-f", str(dockerfile), str(self.repo_root)],
                 timeout=self.build_timeout,

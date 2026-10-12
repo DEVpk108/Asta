@@ -161,6 +161,52 @@ def mentioned_paths(text: Any) -> list[str]:
     return found
 
 
+_CLAUSE_BREAK = re.compile(
+    r"\s*(?:[,;]|\.(?=\s|$)|\b(?:so that|so|until|and then|then|and make|to make|making)\b)\s*",
+    re.IGNORECASE,
+)
+_EDIT_WORDS = re.compile(
+    r"\b(?:fix|edit|change|update|modify|rewrite|correct|repair|adjust|add|remove|delete|"
+    r"rename|refactor|write|replace|tweak|clean up|extend)\b|\b(?:is|are|looks?|seems?)\s+"
+    r"(?:wrong|broken|incorrect|outdated|out of date)\b|\btypo\b",
+    re.IGNORECASE,
+)
+_OBJECTIVE_WORDS = re.compile(r"\b(?:pass|passes|passing|green|succeed|succeeds|work|works)\b", re.IGNORECASE)
+
+
+def edit_requested(goal: Any, path: Any) -> bool:
+    """Did the user ask for this file to be changed, not just mention it?
+
+    "Fix the bug in calc.py so the tests in test_calc.py pass" names
+    test_calc.py only as the finish line; that is no permission to rewrite
+    it. "The assertion in test_calc.py is wrong, fix it" or "update
+    test_calc.py" is. Files other than tests count as requested when named.
+    """
+    target = str(path or "").replace("\\", "/").strip("/").lower()
+    if not target:
+        return False
+    names = {target, target.rsplit("/", 1)[-1]}
+    mentioned = {item.lower().strip("/") for item in mentioned_paths(goal)}
+    if not (names & mentioned):
+        return False
+    if not is_test_path(target):
+        return True
+    value = _SPOKEN_DOT.sub(lambda match: f"{match.group(1)}.{match.group(2).lower()}", str(goal or ""))
+    clauses = [part for part in _CLAUSE_BREAK.split(value) if part and part.strip()]
+    for index, clause in enumerate(clauses):
+        lowered = clause.lower()
+        if not any(name in lowered for name in names):
+            continue
+        if _OBJECTIVE_WORDS.search(clause):
+            continue  # "...the tests in test_calc.py pass"
+        if _EDIT_WORDS.search(clause):
+            return True
+        following = clauses[index + 1] if index + 1 < len(clauses) else ""
+        if re.match(r"\s*(?:please\s+)?(?:fix|change|update|correct|edit)\s+(?:it|that|this|them)\b", following, re.IGNORECASE):
+            return True  # "The assertion in test_calc.py is off, fix it"
+    return False
+
+
 def text_change_summary(before: str | None, after: str, path: str = "") -> dict[str, Any]:
     """Line-level change stats and a bounded unified diff for a text edit."""
     old_lines = (before or "").replace("\r\n", "\n").splitlines(keepends=True)
@@ -233,7 +279,9 @@ def planning_file_context(workspace_manager, goal: Any) -> dict[str, Any]:
         if len(matches) == 1 and matches[0] not in named:
             named.append(matches[0])
 
-    selected: list[tuple[str, bool]] = [(item, True) for item in named]
+    # A test file named only as the goal ("so test_calc.py passes") is read
+    # only; the user has to ask for it to change.
+    selected: list[tuple[str, bool]] = [(item, edit_requested(goal, item)) for item in named]
     if _TEST_WORDS.search(str(goal or "")) or named:
         for item in named:
             stem = Path(item).stem.lower()

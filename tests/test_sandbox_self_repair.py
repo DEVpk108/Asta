@@ -117,7 +117,9 @@ def test_starts_docker_desktop_waits_for_it_and_reports_what_it_did(tmp_path, mo
     assert docker.launched == [[str(tmp_path / "Docker Desktop.exe")]]
     assert result.metadata["actions"][0].startswith("started Docker Desktop")
     assert "docker engine is not running" in result.metadata["observed"]
-    assert notes[0] == "Docker isn't open. I'm opening Docker."
+    from core.phrasing import LINES
+
+    assert notes[0] in {line.format(product="Docker") for line in LINES["docker_start"]}
     assert "started Docker Desktop" in result.summary
 
 
@@ -205,7 +207,9 @@ def test_builds_the_missing_image_from_astas_own_dockerfile(tmp_path, monkeypatc
     [build] = [call for call in docker.calls if call[0] == "build"]
     assert build[:4] == ["build", "--pull", "-t", "asta-python-sandbox:1"]
     assert build[-2].endswith(str(Path("sandbox") / "Dockerfile"))
-    assert any("I'm building it" in note for note in notes)
+    from core.phrasing import LINES
+
+    assert any(note in LINES["image_build"] for note in notes)
 
 
 def test_failed_build_and_disabled_auto_build_say_what_to_run(tmp_path, monkeypatch):

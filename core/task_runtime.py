@@ -24,9 +24,9 @@ from .module import Module
 
 from core.tools.approval import APPROVAL_EXPIRED_ERROR
 from core.tools.workspace import (  # noqa: E402
+    edit_requested,
     existing_workspace_file,
     is_test_path,
-    mentioned_paths,
     text_change_summary,
 )
 from core.tools.sandbox import (  # noqa: E402
@@ -1485,34 +1485,27 @@ class TaskRuntimeModule(Module):
 
     @staticmethod
     def _spoken_report(changes, command, *, command_step_arguments, attempts, prefix_notes) -> str:
-        """The few words worth hearing; the chat keeps the full report."""
-        updated = [c["path"] for c in changes if not c.get("created") and not c.get("unchanged")]
-        created = [c["path"] for c in changes if c.get("created") and not c.get("unchanged")]
-        did = []
-        if updated:
-            did.append("I updated " + " and ".join(updated))
-        if created:
-            did.append("I created " + " and ".join(created))
-        outcome = ""
-        if command is not None:
-            words = " ".join(command_step_arguments).lower()
-            output = str(command.get("stdout") or "").strip()
-            if "test" in words or "pytest" in words:
-                outcome = "the tests passed"
-            elif output and "\n" not in output and len(output) <= 80:
-                outcome = f"it printed {output}"
-            else:
-                outcome = "it ran successfully"
-        if did and outcome:
-            text = f"Done. {', '.join(did)}, and {outcome}."
-        elif did:
-            text = f"Done. {', '.join(did)}."
-        elif outcome:
-            text = f"Done. {outcome[0].upper() + outcome[1:]}."
+        """A natural closing line; the chat keeps the full report.
+
+        Phrasing varies between runs (core/phrasing.py) so it doesn't sound
+        like a fixed script, e.g. "All done, sir. The tests pass now. Check it out."
+        """
+        from core.phrasing import say
+
+        changed = [c for c in changes if not c.get("unchanged")]
+        words = " ".join(command_step_arguments).lower()
+        ran_tests = command is not None and ("test" in words or "pytest" in words)
+        if ran_tests and not changed:
+            text = say("done_already_passing")
+        elif ran_tests:
+            text = say("done_tests")
         else:
-            text = "Done."
+            text = say("done")
+            output = str((command or {}).get("stdout") or "").strip()
+            if output and "\n" not in output and len(output) <= 60:
+                text += " " + say("printed", output=output)
         if attempts > 1:
-            text += f" It took {attempts} tries."
+            text += " " + say("tries", n=attempts)
         if prefix_notes:
             text = " ".join(prefix_notes) + " " + text
         return text
@@ -2764,8 +2757,7 @@ class TaskRuntimeModule(Module):
         if not path or not is_test_path(path):
             return None
         goal = str((task.metadata.get("intent_entities") or {}).get("goal") or task.goal or "")
-        named = {item.lower().strip("/") for item in mentioned_paths(goal)}
-        if path.lower() in named or path.rsplit("/", 1)[-1].lower() in named:
+        if edit_requested(goal, path):
             return None
         return path
 

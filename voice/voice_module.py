@@ -14,6 +14,7 @@ from .microphone_engine import MicrophoneEngine
 from .wakeword_engine import WakeWordEngine
 from core.transliteration import ends_unfinished
 from .vad_engine import VADEngine
+from .echo_gate import EchoGate, confirm_frames_from_env, voiced_fraction, warmup_seconds_from_env
 from .recognition_engine import RecognitionEngine
 from .incremental_command_engine import IncrementalCommandDetector
 from .incremental_speech_session import IncrementalSpeechSession
@@ -100,7 +101,13 @@ class VoiceModule(Module):
         self._barge_rms_ratio = 1.35
         self._barge_peak_ratio = 1.20
         self._barge_confirmation_frames = 2
-        self._barge_echo_warmup_seconds = 0.22
+        self._barge_echo_warmup_seconds = warmup_seconds_from_env()
+        self._barge_tts_confirmation_frames = confirm_frames_from_env(self._barge_check_interval)
+        # After an interruption, ASTA listens briefly: if the "voice" vanished
+        # the moment playback stopped, it was ASTA's own echo, and the cut
+        # sentence is said again (once). ASTA_BARGE_RESUME=0 turns this off.
+        self._barge_resume = os.getenv("ASTA_BARGE_RESUME", "1").strip().lower() not in {"0", "false", "off", "no"}
+        self._barge_resume_check_seconds = 0.9
         self._barge_echo_rms = None
         self._barge_echo_peak = None
         self._barge_tts_warmup_until = 0.0
@@ -391,9 +398,14 @@ class VoiceModule(Module):
         window_samples = max(1, int(sample_rate * self._barge_window_seconds))
         seed_samples = max(1, int(sample_rate * 0.35))
 
-        baseline_rms = None
-        baseline_peak = None
-        consecutive_hits = 0
+        gate = EchoGate(
+            min_rms=self._barge_min_rms,
+            min_peak=self._barge_min_peak,
+            idle_rms_ratio=self._barge_rms_ratio,
+            idle_peak_ratio=self._barge_peak_ratio,
+            idle_confirm_frames=self._barge_confirmation_frames,
+            tts_confirm_frames=getattr(self, "_barge_tts_confirmation_frames", 6),
+        )
         next_check = time.monotonic() + 0.10
 
         while self._running and not self._barge_stop.is_set():
@@ -425,53 +437,15 @@ class VoiceModule(Module):
                 else 0.0
             )
 
-            # During TTS, the microphone also hears the speaker output. Learn
-            # that playback/room baseline before declaring a user barge-in.
-            # A sudden rise well above the learned echo floor is much safer
-            # than treating raw microphone energy as user speech.
-            if self._tts_active:
-                if now < self._barge_tts_warmup_until:
-                    consecutive_hits = 0
-                    continue
-
-                if baseline_rms is None:
-                    baseline_rms = rms
-                    baseline_peak = peak
-                    consecutive_hits = 0
-                    continue
-
-                gate_rms = max(
-                    self._barge_min_rms,
-                    baseline_rms * 1.70,
-                )
-                gate_peak = max(
-                    self._barge_min_peak,
-                    baseline_peak * 1.45,
-                )
-
-                speech_onset = rms >= gate_rms and peak >= gate_peak
-
-                if not speech_onset:
-                    baseline_rms = 0.94 * baseline_rms + 0.06 * rms
-                    baseline_peak = 0.94 * baseline_peak + 0.06 * peak
-            else:
-                rms_gate = max(
-                    self._barge_min_rms,
-                    baseline_rms * self._barge_rms_ratio
-                    if baseline_rms is not None
-                    else 0.0,
-                )
-                peak_gate = max(
-                    self._barge_min_peak,
-                    baseline_peak * self._barge_peak_ratio
-                    if baseline_peak is not None
-                    else 0.0,
-                )
-                speech_onset = rms >= rms_gate and peak >= peak_gate
-
-            consecutive_hits = consecutive_hits + 1 if speech_onset else 0
-
-            if consecutive_hits < self._barge_confirmation_frames:
+            # During TTS, the microphone also hears the speaker output. The
+            # gate learns that echo and needs a sustained rise above it.
+            speech_onset = gate.update(
+                rms,
+                peak,
+                tts_active=self._tts_active,
+                warming=self._tts_active and now < self._barge_tts_warmup_until,
+            )
+            if not speech_onset:
                 continue
 
             seed = np.asarray(audio[-seed_samples:], dtype=np.float32).copy()
@@ -484,7 +458,42 @@ class VoiceModule(Module):
                 flush=True,
             )
             self.event_bus.emit("speech_interrupt")
+            if getattr(self, "_barge_resume", False):
+                threading.Thread(
+                    target=self._check_interrupt_was_echo,
+                    name="VoiceBargeInCheck",
+                    daemon=True,
+                ).start()
             break
+
+    def _check_interrupt_was_echo(self):
+        """Say the cut sentence again if nobody was actually talking.
+
+        ASTA's echo stops the instant playback stops; a person who barged in
+        keeps talking. Listen to the next moment of microphone audio and, if
+        it is (almost) silent, tell speech the interruption was a false alarm.
+        """
+        wait = self._barge_resume_check_seconds
+        time.sleep(wait)
+        if not self._running:
+            return
+        try:
+            audio = self.microphone.get_buffer()
+        except Exception:
+            return
+        sample_rate = self.microphone.sample_rate
+        # Skip the first 0.15 s: the output device may still be draining.
+        window = np.asarray(audio, dtype=np.float32)[-int(sample_rate * (wait - 0.15)):]
+        fraction = voiced_fraction(window, sample_rate, min_rms=self._barge_min_rms)
+        if fraction is None:
+            return
+        if fraction < 0.15:
+            print(
+                "[Interrupt] Nobody was talking (it was ASTA's own voice); "
+                "repeating the cut sentence.",
+                flush=True,
+            )
+            self.event_bus.emit("speech_false_interrupt")
 
     def _take_post_tts_seed(self):
         if not self._post_tts_seed_pending:
