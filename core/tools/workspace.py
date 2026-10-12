@@ -274,6 +274,13 @@ def planning_file_context(workspace_manager, goal: Any) -> dict[str, Any]:
             except UnicodeDecodeError:
                 continue
             entry["sha256"] = hashlib.sha256(raw).hexdigest()
+            if item.endswith(".py") and is_test_path(item):
+                # A script of bare asserts makes pytest report "no tests ran"
+                # (exit 5); say how this file is meant to be run.
+                has_tests = re.search(r"^\s*(?:async\s+)?def\s+test_|^\s*class\s+Test", entry["content"], re.M)
+                entry["runs_with"] = (
+                    f"pytest {item}" if has_tests else f"python {item}"
+                )
             total += len(raw)
         contents.append(entry)
 

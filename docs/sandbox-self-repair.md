@@ -13,12 +13,17 @@ the environment and continues the task instead of stopping.
    is the `docker`/`podman` CLI installed? does `docker info` answer?
    does `docker image inspect asta-python-sandbox:1` succeed?
 3. **Fix** – only fixed, vetted recipes:
-   - engine stopped → start Docker Desktop (Windows/macOS/Linux) or
-     `podman machine start`, then poll `docker info` (default 180 s);
+   - engine stopped → start Docker Desktop, trying in order: `docker desktop start`,
+     `Docker Desktop.exe` found by walking up from the `docker` CLI's folder, the
+     installed-programs registry entry, the default install folders, and the
+     Start-menu entry ASTA uses for "open <app>" (or `podman machine start`);
+     then poll `docker info` (default 180 s);
    - image missing → `docker build --pull -t asta-python-sandbox:1 -f sandbox/Dockerfile <ASTA>`
      from ASTA's own Dockerfile (default limit 20 min);
    - CLI missing → explain; ASTA never installs software.
 4. **Verify** – the engine and image checks must pass after the fix.
+   Test files also get a `runs_with` hint (`python test_x.py` for a script of
+   bare asserts, `pytest test_x.py` when it defines `test_` functions).
 5. **Resume** – the failed step is rerun. A command the user already approved
    reruns once without asking again (same tool, arguments, task and step,
    within 15 minutes). Repair is attempted once per task.

@@ -38,9 +38,10 @@ class CapabilitySetupEvent:
 class CapabilitySetupManager:
     """Run bounded environment-repair operators outside the task event thread."""
 
-    def __init__(self, media_manager, *, event_bus=None, operators=None):
+    def __init__(self, media_manager, *, event_bus=None, operators=None, application_manager=None):
         self.media_manager = media_manager
         self.event_bus = event_bus
+        self.application_manager = application_manager
         self._operators = dict(
             operators
             or {"spotify": self._spotify_operator, "sandbox": self._sandbox_operator}
@@ -179,7 +180,10 @@ class CapabilitySetupManager:
     def _sandbox_operator(self, context=None):
         from .sandbox_setup import SandboxSetupOperator
 
-        return SandboxSetupOperator(notify=self._notify).run(context)
+        return SandboxSetupOperator(
+            notify=self._notify,
+            application_manager=self.application_manager,
+        ).run(context)
 
     def _notify(self, message: str) -> None:
         if self.event_bus is None:

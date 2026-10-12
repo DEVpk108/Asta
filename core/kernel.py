@@ -58,6 +58,7 @@ class Kernel:
         self.capability_setup_manager = CapabilitySetupManager(
             self.media_manager,
             event_bus=self.event_bus,
+            application_manager=self.application_manager,
         )
         self.workspace_manager = WorkspaceManager(event_bus=self.event_bus)
         self.skill_manager = SkillManager(event_bus=self.event_bus)

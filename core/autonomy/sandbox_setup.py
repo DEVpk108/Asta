@@ -52,14 +52,51 @@ def _env_seconds(name: str, default: float) -> float:
         return default
 
 
-def _docker_desktop_candidates() -> list[Path]:
+DESKTOP_EXE = "Docker Desktop.exe"
+
+
+def _registry_install_locations() -> list[Path]:
+    """Docker Desktop's InstallLocation from the Windows uninstall registry."""
+    try:
+        import winreg  # type: ignore[import-not-found]
+    except ImportError:
+        return []
+    found = []
+    key_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop"
+    for hive in (getattr(winreg, "HKEY_LOCAL_MACHINE", None), getattr(winreg, "HKEY_CURRENT_USER", None)):
+        if hive is None:
+            continue
+        try:
+            with winreg.OpenKey(hive, key_path) as key:
+                value, _ = winreg.QueryValueEx(key, "InstallLocation")
+        except OSError:
+            continue
+        if value:
+            found.append(Path(str(value)) / DESKTOP_EXE)
+    return found
+
+
+def _docker_desktop_candidates(cli_path: str | None = None) -> list[Path]:
+    """Where Docker Desktop.exe may be, most specific first."""
     configured = os.getenv("ASTA_DOCKER_DESKTOP_PATH", "").strip()
     paths = [Path(configured)] if configured else []
+    if cli_path:
+        # docker.exe ships inside Docker Desktop (...\Docker\resources\bin),
+        # so walking up from the CLI finds custom install folders too.
+        for parent in list(Path(cli_path).resolve().parents)[:5]:
+            paths.append(parent / DESKTOP_EXE)
+    paths.extend(_registry_install_locations())
     for base in (os.getenv("ProgramFiles"), os.getenv("ProgramW6432"), os.getenv("LOCALAPPDATA")):
         if base:
-            paths.append(Path(base) / "Docker" / "Docker" / "Docker Desktop.exe")
-            paths.append(Path(base) / "Programs" / "Docker" / "Docker" / "Docker Desktop.exe")
-    return paths
+            paths.append(Path(base) / "Docker" / "Docker" / DESKTOP_EXE)
+            paths.append(Path(base) / "Programs" / "Docker" / "Docker" / DESKTOP_EXE)
+    unique, seen = [], set()
+    for path in paths:
+        key = str(path).lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
 
 
 class SandboxSetupOperator:
@@ -78,6 +115,8 @@ class SandboxSetupOperator:
         clock: Callable[[], float] = time.monotonic,
         platform: str | None = None,
         repo_root: Path | None = None,
+        application_manager=None,
+        open_target: Callable[[str], None] | None = None,
     ):
         self.notify = notify or (lambda message: None)
         self.runtime_name = (runtime_name or os.getenv("ASTA_CONTAINER_RUNTIME", "docker")).strip().lower()
@@ -89,6 +128,8 @@ class SandboxSetupOperator:
         self.clock = clock
         self.platform = platform or sys.platform
         self.repo_root = Path(repo_root or REPO_ROOT)
+        self.application_manager = application_manager
+        self._open_target = open_target or self._shell_open
         self.startup_timeout = _env_seconds("ASTA_SANDBOX_STARTUP_TIMEOUT", 180.0)
         self.build_timeout = _env_seconds("ASTA_SANDBOX_BUILD_TIMEOUT", 1200.0)
         self.auto_build = os.getenv("ASTA_SANDBOX_AUTO_BUILD", "1").strip().lower() not in {
@@ -116,8 +157,10 @@ class SandboxSetupOperator:
             started = self._start_engine()
             if not started:
                 return self._failed(
-                    f"{self._product} isn't running and I couldn't find it to start it. "
-                    f"Start {self._product}, then ask me again.",
+                    f"{self._product} isn't running and I couldn't find it to start it "
+                    "(I tried the docker desktop command, the folder of the docker CLI, the "
+                    "installed-programs list and the Start menu). Start it once yourself, or set "
+                    "ASTA_DOCKER_DESKTOP_PATH to Docker Desktop.exe, then ask me again.",
                     fixable=False,
                 )
             self.notify(
@@ -203,12 +246,25 @@ class SandboxSetupOperator:
             result = self._call(["machine", "start"], timeout=self.startup_timeout)
             self.actions.append("started the Podman machine")
             return result is not None
+        # 1. Docker's own command (Docker Desktop 4.37+): no path needed.
+        result = self._call(["desktop", "start", "--detach"], timeout=30.0)
+        if result is not None and not result.timed_out and result.returncode == 0:
+            self.actions.append("started Docker Desktop (docker desktop start)")
+            return True
+        self.observations.append("`docker desktop start` is unavailable")
         if self.platform.startswith("win"):
-            for path in _docker_desktop_candidates():
+            # 2. The executable, found next to the CLI / in the registry / defaults.
+            for path in _docker_desktop_candidates(getattr(self, "executable", None)):
                 if path.is_file():
                     self._launch([str(path)])
-                    self.actions.append("started Docker Desktop")
+                    self.actions.append(f"started Docker Desktop ({path})")
                     return True
+            # 3. The same Start-menu lookup ASTA uses for "open <app>".
+            target = self._installed_app_target("Docker Desktop")
+            if target:
+                self._open_target(target)
+                self.actions.append("started Docker Desktop (Start menu)")
+                return True
             return False
         if self.platform == "darwin":
             self._launch(["open", "-a", "Docker"])
@@ -225,6 +281,30 @@ class SandboxSetupOperator:
             if self._engine_ready():
                 return True
         return False
+
+    def _installed_app_target(self, name: str) -> str | None:
+        manager = self.application_manager
+        resolve = getattr(manager, "resolve", None)
+        if not callable(resolve):
+            return None
+        try:
+            record = resolve(name)
+        except Exception:
+            return None
+        target = str(getattr(record, "launch_target", "") or "").strip()
+        if not target or "docker" not in str(getattr(record, "name", "")).lower():
+            return None
+        return target
+
+    @staticmethod
+    def _shell_open(target: str) -> None:
+        if os.name == "nt":
+            try:
+                os.startfile(target)  # type: ignore[attr-defined]
+                return
+            except OSError:
+                pass
+        SandboxSetupOperator._detached_launch(["explorer.exe", target] if os.name == "nt" else [target])
 
     @staticmethod
     def _detached_launch(command: list[str]) -> None:

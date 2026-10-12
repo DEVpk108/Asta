@@ -1382,7 +1382,12 @@ class AIModule(Module):
         message = "Sorry, I couldn't finish that."
         from core.tools.sandbox import SANDBOX_SETUP_MESSAGE
 
-        if error == SANDBOX_SETUP_MESSAGE:
+        metadata = (task.get("metadata") if isinstance(task, dict) else getattr(task, "metadata", None)) or {}
+        setup = metadata.get("capability_setup") if isinstance(metadata, dict) else None
+        if error == SANDBOX_SETUP_MESSAGE or (
+            isinstance(setup, dict) and setup.get("capability") == "sandbox" and error
+        ):
+            # Sandbox repair results say what was checked and what to do.
             message = error
         print(f"[AI] Task failed: {goal or message}", flush=True)
         self._emit_assistant_text(message)

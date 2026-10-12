@@ -364,6 +364,18 @@ def test_planning_context_includes_named_files_and_their_tests_read_only(tmp_pat
     assert by_path["calc.py"]["content"] == BUGGY
     assert len(by_path["calc.py"]["sha256"]) == 64
     assert by_path["test_calc.py"]["read_only"] is True
+    assert by_path["test_calc.py"]["runs_with"] == "python test_calc.py"  # bare asserts, no test_ functions
+
+
+def test_pytest_style_test_file_runs_with_pytest(tmp_path):
+    workspace = _project(tmp_path)
+    (workspace / "test_calc.py").write_bytes(b"from calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n")
+    kernel = Kernel(authority_path=tmp_path / "authority.json")
+    kernel.workspace_manager.update_project(name="calc", path=str(workspace))
+
+    context = planning_file_context(kernel.workspace_manager, "fix calc.py")
+    by_path = {item["path"]: item for item in context["file_contents"]}
+    assert by_path["test_calc.py"]["runs_with"] == "pytest test_calc.py"
 
 
 def test_planning_context_skips_oversized_file_text(tmp_path):

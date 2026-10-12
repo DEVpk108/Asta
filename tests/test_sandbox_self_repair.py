@@ -41,7 +41,8 @@ ENGINE_DOWN = (
 # The operator: observe -> fix -> verify
 # ----------------------------------------------------------------------------
 class FakeDocker:
-    def __init__(self, *, engine=False, image=True, boots_after=2, build_ok=True):
+    def __init__(self, *, engine=False, image=True, boots_after=2, build_ok=True, desktop_cli=False):
+        self.desktop_cli = desktop_cli
         self.engine = engine
         self.image = image
         self.boots_after = boots_after
@@ -60,6 +61,11 @@ class FakeDocker:
             return SandboxProcessResult(0 if self.engine else 1, stdout="27.0\n" if self.engine else "")
         if args[:2] == ["image", "inspect"]:
             return SandboxProcessResult(0 if self.image else 1)
+        if args[:2] == ["desktop", "start"]:
+            if not self.desktop_cli:
+                return SandboxProcessResult(1, stderr="docker: 'desktop' is not a docker command.")
+            self.launched.append(["docker", *args])
+            return SandboxProcessResult(0)
         if args[0] == "build":
             self.image = self.build_ok
             return SandboxProcessResult(0 if self.build_ok else 1, stderr="" if self.build_ok else "network unreachable")
@@ -69,10 +75,19 @@ class FakeDocker:
         self.launched.append(command)
 
 
-def _operator(docker, tmp_path, monkeypatch, *, cli=True, notes=None, timeout="30"):
-    desktop = tmp_path / "Docker Desktop.exe"
-    desktop.write_bytes(b"")
-    monkeypatch.setenv("ASTA_DOCKER_DESKTOP_PATH", str(desktop))
+def _operator(
+    docker, tmp_path, monkeypatch, *, cli=True, notes=None, timeout="30",
+    desktop=True, cli_path="C:/docker.exe", apps=None, opened=None,
+):
+    if desktop:
+        exe = tmp_path / "Docker Desktop.exe"
+        exe.write_bytes(b"")
+        monkeypatch.setenv("ASTA_DOCKER_DESKTOP_PATH", str(exe))
+    else:
+        monkeypatch.delenv("ASTA_DOCKER_DESKTOP_PATH", raising=False)
+        for name in ("ProgramFiles", "ProgramW6432", "LOCALAPPDATA"):
+            monkeypatch.setenv(name, str(tmp_path / "nowhere"))
+        monkeypatch.setattr("core.autonomy.sandbox_setup._registry_install_locations", lambda: [])
     monkeypatch.setenv("ASTA_SANDBOX_STARTUP_TIMEOUT", timeout)
     repo = tmp_path / "repo"
     (repo / "sandbox").mkdir(parents=True)
@@ -81,13 +96,15 @@ def _operator(docker, tmp_path, monkeypatch, *, cli=True, notes=None, timeout="3
     return SandboxSetupOperator(
         notify=(notes.append if notes is not None else None),
         runtime_name="docker",
-        resolve=lambda name: "C:/docker.exe" if cli else None,
+        resolve=lambda name: cli_path if cli else None,
         run=docker.run,
         launch=docker.launch,
         sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
         clock=lambda: clock.now,
         platform="win32",
         repo_root=repo,
+        application_manager=apps,
+        open_target=(opened.append if opened is not None else None),
     )
 
 
@@ -98,10 +115,68 @@ def test_starts_docker_desktop_waits_for_it_and_reports_what_it_did(tmp_path, mo
 
     assert result.status is SandboxSetupStatus.COMPLETED
     assert docker.launched == [[str(tmp_path / "Docker Desktop.exe")]]
-    assert result.metadata["actions"] == ["started Docker Desktop"]
+    assert result.metadata["actions"][0].startswith("started Docker Desktop")
     assert "docker engine is not running" in result.metadata["observed"]
     assert "Docker Desktop, which isn't running. I'm starting it" in notes[0]
     assert "started Docker Desktop" in result.summary
+
+
+def test_prefers_dockers_own_start_command(tmp_path, monkeypatch):
+    docker = FakeDocker(engine=False, desktop_cli=True)
+    result = _operator(docker, tmp_path, monkeypatch, desktop=False).run()
+
+    assert result.status is SandboxSetupStatus.COMPLETED
+    assert docker.launched == [["docker", "desktop", "start", "--detach"]]
+
+
+def test_finds_a_custom_install_by_walking_up_from_the_docker_cli(tmp_path, monkeypatch):
+    install = tmp_path / "E-drive" / "Apps" / "Docker"
+    (install / "resources" / "bin").mkdir(parents=True)
+    (install / "resources" / "bin" / "docker.exe").write_bytes(b"")
+    (install / "Docker Desktop.exe").write_bytes(b"")
+    docker = FakeDocker(engine=False)
+    result = _operator(
+        docker, tmp_path, monkeypatch, desktop=False,
+        cli_path=str(install / "resources" / "bin" / "docker.exe"),
+    ).run()
+
+    assert result.status is SandboxSetupStatus.COMPLETED
+    assert docker.launched == [[str((install / "Docker Desktop.exe").resolve())]]
+
+
+def test_falls_back_to_the_start_menu_entry(tmp_path, monkeypatch):
+    apps = SimpleNamespace(resolve=lambda name: SimpleNamespace(
+        name="Docker Desktop", launch_target="C:/ProgramData/Start Menu/Docker Desktop.lnk",
+    ))
+    docker = FakeDocker(engine=False)
+    opened = docker.launched  # opening the shortcut boots the fake engine
+    result = _operator(docker, tmp_path, monkeypatch, desktop=False, apps=apps, opened=opened).run()
+
+    assert result.status is SandboxSetupStatus.COMPLETED
+    assert opened == ["C:/ProgramData/Start Menu/Docker Desktop.lnk"]
+    assert "Start menu" in result.metadata["actions"][0]
+
+
+def test_not_found_says_where_it_looked(tmp_path, monkeypatch):
+    result = _operator(FakeDocker(engine=False), tmp_path, monkeypatch, desktop=False).run()
+
+    assert result.status is SandboxSetupStatus.FAILED
+    assert "ASTA_DOCKER_DESKTOP_PATH" in result.summary and "Start menu" in result.summary
+
+
+def test_failed_repair_reason_is_spoken_not_a_generic_sorry():
+    from ai.ai_module import AIModule
+
+    kernel = Kernel()
+    ai = AIModule(kernel)
+    said = []
+    ai._emit_assistant_text = said.append
+    reason = "Docker Desktop isn't running and I couldn't find it to start it."
+    ai.on_task_failed(task={
+        "goal": GOAL, "error": reason,
+        "metadata": {"capability_setup": {"capability": "sandbox", "status": "failed"}},
+    })
+    assert said == [reason]
 
 
 def test_gives_up_when_docker_never_becomes_ready(tmp_path, monkeypatch):
@@ -237,7 +312,7 @@ def test_docker_down_is_repaired_and_the_approved_command_reruns_once(tmp_path):
         assert "ALL TESTS PASSED" in run.spoken[-1]
         assert not any("I paused the project task" in str(text) for text in run.spoken)
         repair = next(item for item in task.evidence if item.get("type") == "capability_setup")
-        assert repair["actions"] == ["started Docker Desktop"]
+        assert repair["actions"] == ["started Docker Desktop"]  # from the fake operator
     finally:
         for module in run.modules:
             module.shutdown()
