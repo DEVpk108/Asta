@@ -368,6 +368,24 @@ Laya is not a replacement for the main local LLM. It is intended as a System 1
 routing/classification layer that can later feed model selection, planning
 strategy, multilingual intent classification, and guardrails.
 
+## General/coding model services (opt-in)
+
+`ASTA_MODEL_ROUTER=1` enables kernel-owned conversation/coding profiles.
+`ASTA_MODEL_MODE=dual` keeps independent services resident; `on_demand` safely
+switches one resident text model for lower-memory operation. Task planning and
+agent decisions use the selected task profile. Interactive chat stays on general
+in dual mode. Only ASTA-owned servers are stopped; unavailable models never
+silently fall back to another profile. Client histories and prompts are separate.
+
+`ASTA_BACKGROUND_TASKS=1` runs one project task on a dedicated worker. Other
+new tool actions are held while it owns the existing single active-task slot.
+Existing sandbox restrictions and approvals remain authoritative. The HUD
+shows both services plus a project phase, separate from foreground voice state.
+
+Set both GGUF paths explicitly. Start with conservative 4K contexts and measure
+actual VRAM with speech/vision active. See [concurrent setup and acceptance
+checks](docs/concurrent-model-services.md), or [on-demand fallback](docs/model-router.md).
+
 ## Media control
 
 A.S.T.A. exposes media playback through a provider abstraction rather than
@@ -581,3 +599,16 @@ checkpoints and automatic resume are not implemented yet. The roadmap is
 staged; it does not imply that every planned capability is implemented or
 reliable today. `vision/face_recognition.py` remains a standalone OpenCV
 experiment and is not wired into the kernel.
+
+### Workspace interface
+
+The HUD has two views sharing one conversation: a voice-first homepage with
+a reactive 3D particle avatar, and a full-screen chat workspace with a compact
+live avatar, conversation history and copyable code. Project/tool-step states
+and local model status remain visible in both views. Pending sandbox commands
+have request-bound approve/reject controls; existing permissions and expiry
+checks remain authoritative. The interface supports light/dark themes, keyboard
+focus and reduced-motion preferences. Avatar motion follows runtime state and
+speech-output audio; its bounded renderer pauses when hidden or motion is
+disabled. See [interface contracts and validation](docs/hud-workspace-redesign.md)
+and [reactive avatar behavior](docs/reactive-avatar-ui.md).

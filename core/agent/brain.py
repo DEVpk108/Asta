@@ -101,7 +101,7 @@ class AgentBrain:
             else:
                 from ai.llm_provider import create_llm_provider
 
-                self._provider = create_llm_provider()
+                self._provider = create_llm_provider(kernel=self.kernel, purpose="agent")
 
             setter = getattr(self._provider, "set_system_prompt", None)
             if callable(setter):
@@ -138,11 +138,16 @@ class AgentBrain:
         prompt = self._build_prompt(goal, intent)
         provider = self.provider()
 
-        reset = getattr(provider, "reset_conversation", None)
-        if callable(reset):
-            reset()
-
-        response = provider.generate_response(prompt, context=None)
+        routed = getattr(provider, "generate_for_task", None)
+        if callable(routed):
+            response = routed(
+                prompt, goal=goal, coding_scope=intent.intent is IntentType.TASK,
+            )
+        else:
+            reset = getattr(provider, "reset_conversation", None)
+            if callable(reset):
+                reset()
+            response = provider.generate_response(prompt, context=None)
 
         proposal = self._parse_response(response)
         self._validate_proposal(proposal)
@@ -156,11 +161,17 @@ class AgentBrain:
         prompt = self._build_decision_prompt(task_state)
         provider = self.provider()
 
-        reset = getattr(provider, "reset_conversation", None)
-        if callable(reset):
-            reset()
-
-        response = provider.generate_response(prompt, context=None)
+        routed = getattr(provider, "generate_for_task", None)
+        if callable(routed):
+            response = routed(
+                prompt, goal=str(task_state.get("goal") or ""),
+                task_id=str(task_state.get("id") or "") or None,
+            )
+        else:
+            reset = getattr(provider, "reset_conversation", None)
+            if callable(reset):
+                reset()
+            response = provider.generate_response(prompt, context=None)
         decision = self._parse_decision(response)
         decision = self._normalize_visual_next_action(
             decision,
@@ -732,8 +743,26 @@ class AgentBrain:
                 "one is supplied. For a command-output check, include "
                 "verification='command.output', expected_returncode=0, "
                 "expected_stdout, and stdout_match='exact' or 'contains' on the "
-                "run step. Never infer success from a launched process alone."
+                "run step. Never infer success from a launched process alone. "
+                "Preserve case, punctuation and quoted literals from the original goal exactly. "
+                "Every filesystem.write_file MUST be followed by a separate filesystem.read_file "
+                "of the same path BEFORE executing code. Put verification='filesystem.file_content', "
+                "expected_path=<same path>, and expected_content=<exact written content> on that READ step. "
+                "A verification field on a write is not a readback. Do not use 'file_content' as an identifier. "
+                "JSON escaping is serialization only: after decoding, content and expected_content "
+                "must be exactly equal, with no extra backslashes. If planning_feedback is provided, "
+                "return a complete corrected proposal; the rejected proposal was never executed."
             ),
+            "project_contract_example": ([
+                {"action": "write_file", "tool": "filesystem.write_file", "path": "example.py",
+                 "content": 'print("EXAMPLE")\n'},
+                {"action": "read_file", "tool": "filesystem.read_file", "path": "example.py",
+                 "verification": "filesystem.file_content", "expected_path": "example.py",
+                 "expected_content": 'print("EXAMPLE")\n'},
+                {"action": "run", "tool": "system.run_command", "target": "python",
+                 "arguments": ["example.py"], "cwd": ".", "verification": "command.output",
+                 "expected_returncode": 0, "expected_stdout": "EXAMPLE", "stdout_match": "exact"},
+            ] if intent.intent is IntentType.TASK else []),
             "required_output": {
                 "goal_summary": "one sentence",
                 "success_conditions": ["1-3 observable conditions"],

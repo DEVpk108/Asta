@@ -1,4 +1,7 @@
 from pathlib import Path
+import os
+import subprocess
+from types import SimpleNamespace
 
 from ai.llama_server_manager import LlamaServerManager
 
@@ -16,6 +19,15 @@ class FakeProcess:
     def poll(self):
         return self.returncode
 
+    def terminate(self):
+        self.returncode = 0
+
+    def kill(self):
+        self.returncode = 0
+
+    def wait(self, timeout=None):
+        self.returncode = 0
+        return self.returncode
 
 def test_manager_starts_server_with_configured_model_and_waits_until_ready(
     monkeypatch,
@@ -94,7 +106,49 @@ def test_manager_starts_server_with_configured_model_and_waits_until_ready(
 
     assert manager.owned is False
     assert manager.process is None
-    assert kill_calls[0][0] == ["taskkill", "/PID", "4242", "/T", "/F"]
+    if os.name == "nt":
+        assert kill_calls[0][0] == ["taskkill", "/PID", "4242", "/T", "/F"]
+    else:
+        assert not kill_calls
+
+
+def test_stop_waits_for_windows_child_and_retains_ownership_on_failure(monkeypatch):
+    manager = LlamaServerManager(base_url="http://127.0.0.1:8080/v1")
+    process = FakeProcess()
+    calls = []
+    manager.process = process
+    manager.owned = True
+    monkeypatch.setattr("ai.llama_server_manager.os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(
+        "ai.llama_server_manager.subprocess.run",
+        lambda *args, **kwargs: calls.append(args[0]),
+    )
+    def never_exits(timeout=None):
+        raise subprocess.TimeoutExpired("llama-server", timeout)
+    def cannot_kill():
+        raise OSError("permission denied")
+    process.wait = never_exits
+    process.kill = cannot_kill
+    assert manager.stop() is False
+    assert manager.owned and manager.process is process
+    assert calls[0] == ["taskkill", "/PID", "4242", "/T", "/F"]
+
+
+def test_coding_namespace_never_discovers_general_model(monkeypatch, tmp_path):
+    monkeypatch.setenv("ASTA_LLM_MODEL_PATH", str(tmp_path / "general.gguf"))
+    server = tmp_path / "llama-server.exe"
+    server.write_text("")
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "general.gguf").write_text("")
+    manager = LlamaServerManager(
+        base_url="http://127.0.0.1:8081/v1", server_path=str(server),
+        env_prefix="ASTA_CODING_LLM",
+    )
+    assert not manager.model_path
+    assert manager._resolve_model_path(str(server)) is None
+    assert manager.context_size == 4096
+    assert manager.batch_size == 256
+    assert manager.ubatch_size == 128
 
 
 def test_manager_does_not_own_already_running_server(monkeypatch):
@@ -180,3 +234,29 @@ def test_manager_emits_memory_friendly_server_tuning_flags(monkeypatch, tmp_path
     assert "-ctk" in command and "q8_0" in command
     assert "-ctv" in command and "q8_0" in command
 
+
+
+def test_unready_owned_process_is_not_replaced_after_failed_stop(monkeypatch):
+    manager = LlamaServerManager(base_url="http://127.0.0.1:8080/v1")
+    process = FakeProcess()
+    manager.process = process
+    manager.owned = True
+    monkeypatch.setattr(manager, "_server_is_ready", lambda: False)
+    monkeypatch.setattr(manager, "_wait_until_ready", lambda: False)
+    monkeypatch.setattr(manager, "stop", lambda: False)
+    def forbidden_spawn(*args, **kwargs):
+        raise AssertionError("must retain the existing child handle")
+    monkeypatch.setattr("ai.llama_server_manager.subprocess.Popen", forbidden_spawn)
+    assert not manager.ensure_running()
+    assert manager.process is process and manager.owned
+
+
+def test_dead_child_does_not_claim_ownership_of_replacement_endpoint(monkeypatch):
+    manager = LlamaServerManager(base_url="http://127.0.0.1:8080/v1")
+    process = FakeProcess()
+    process.returncode = 0
+    manager.process = process
+    manager.owned = True
+    monkeypatch.setattr(manager, "_server_is_ready", lambda: True)
+    assert manager.ensure_running()
+    assert manager.process is None and not manager.owned

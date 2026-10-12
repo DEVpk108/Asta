@@ -1,0 +1,1465 @@
+diff --git a/README.md b/README.md
+index 8890470..6502a20 100644
+--- a/README.md
++++ b/README.md
+@@ -245,6 +245,8 @@ already set in the environment take precedence.
+ | `ASTA_ENABLE_TEXT_INPUT` | `0` | Enable the legacy terminal text adapter |
+ | `ASTA_AGENT_MODE` | `0` | Enable the cognitive planner for scoped, open-ended project tasks |
+ | `ASTA_WORKSPACE_PATH` | Git root, otherwise current directory | Active project root for workspace file tools and command working directories |
++| `ASTA_SANDBOX_IMAGE` | `asta-python-sandbox:1` | Already-built local image for Python/pytest task execution; runtime pulls are disabled |
++| `ASTA_CONTAINER_RUNTIME` | `docker` | Local Docker or Podman CLI used for sandboxed project commands |
+ | `ASTA_LLM_PROVIDER` | `llama_cpp` | Local LLM provider |
+ | `ASTA_LLM_BASE_URL` | `http://127.0.0.1:8080/v1` | llama-server OpenAI-compatible base URL |
+ | `ASTA_LLM_MODEL` | auto-discovered | llama-server model id/alias |
+@@ -438,10 +440,12 @@ The initial project-file surface is intentionally small:
+ - `filesystem.write_file` creates or atomically updates a UTF-8 file up to
+   512 KiB. Existing files must first be read and updated with that read's
+   SHA-256 digest, so stale content is not silently overwritten.
+-- `system.run_command` accepts an executable and argument list (no shell),
+-  uses a workspace-relative `cwd`, and applies the tool request timeout.
+-  It remains **critical risk** and requires confirmation under the default
+-  policy.
++- `system.run_command` runs Python or pytest in a local Docker/Podman
++  container against a sanitized, read-only workspace snapshot. Networking is
++  disabled, the container has resource limits, and it remains **critical risk**
++  and requires confirmation under the default policy. It never falls back to
++  host execution. See [Sandboxed project commands](docs/sandboxed-command-runner.md)
++  for image setup and the isolation contract.
+ 
+ The project planner requires a verified read-back after a file write and
+ checks the command's observed return code and stdout when a project plan runs
+@@ -452,11 +456,10 @@ verified. Tests use deterministic plans and temporary workspaces:
+ pytest -q tests/test_workspace_project_task.py
+ ```
+ 
+-**Important:** Workspace-rooted paths and working directories are not an
+-operating-system sandbox. An approved executable can still access other local
+-files or the network. Do not treat `system.run_command` as safe for untrusted
+-code; a true restricted runner/container remains future work. The first file
+-tools also do not delete, move, or patch files.
++**Important:** The initial sandbox supports Python and pytest only. It executes
++a sanitized snapshot rather than the live project, so command-side file changes
++are discarded; make intended source changes through workspace file tools.
++The first file tools also do not delete, move, or patch files.
+ 
+ ### HUD transport security
+ 
+@@ -514,7 +517,7 @@ sake.
+ | Stage | Focus | Completion signal |
+ | --- | --- | --- |
+ | Stabilize the foundation | Preserve the voice, AI, HUD, conversation-history, and tool flow; keep startup and shutdown predictable; document event contracts and add useful runtime traces. | A repeatable baseline works across a normal session, shutdown, and restart. |
+-| Prove the general agent loop — next major milestone | Use generic, permission-aware tools to inspect a small project, create or modify a file, run a controlled command or test, inspect the result, and recover from a bounded, safe failure. | A.S.T.A. completes a small multi-step project task without a special hard-coded script for that exact request, then reports what it changed and what it verified. |
++| Prove the general agent loop — next major milestone | Use generic, permission-aware tools to inspect a small project, create or modify a file, run Python/pytest in a constrained container, inspect the result, and recover from a bounded, safe failure. | A.S.T.A. completes a small multi-step project task without a special hard-coded script for that exact request, then reports what it changed and what it verified. |
+ | Build project/workspace continuity | Track project identity, root, repository and branch, current task, important files, and recent changes so a request can resume in the right environment. | A project follow-up is grounded in the registered workspace and its current state. |
+ | Grow memory in deliberate layers | Keep chat history separate from useful episodic, project, semantic, user, and procedural memory. Preserve source and confidence where useful; support summarizing and forgetting instead of treating every old statement as permanently true. | A.S.T.A. retrieves relevant project knowledge without indiscriminately storing every conversation. |
+ | Improve planning, reflection, and proactivity | Decompose larger goals, checkpoint progress, observe results, replan within explicit limits, and save only useful lessons. Make proactive suggestions only when supported by relevant context. | Failures are diagnosed and handled safely; the assistant knows when to stop or ask the user. |
+diff --git a/core/task_runtime.py b/core/task_runtime.py
+index 3159322..7cd39b8 100644
+--- a/core/task_runtime.py
++++ b/core/task_runtime.py
+@@ -2010,6 +2010,12 @@ class TaskRuntimeModule(Module):
+                 f"Waiting {max(0.0, seconds):.1f} seconds "
+                 "for the interface to settle."
+             )
++        if tool == "system.run_command":
++            return (
++                "Running Python in an isolated container. "
++                "Only a sanitized, read-only workspace snapshot is mounted; "
++                "network access is disabled."
++            )
+ 
+         return f"Working with {request.tool}."
+ 
+diff --git a/core/tools/__init__.py b/core/tools/__init__.py
+index 1c60c9f..558af03 100644
+--- a/core/tools/__init__.py
++++ b/core/tools/__init__.py
+@@ -6,11 +6,11 @@ from .builtin import (
+     AudioControlTool,
+     CloseApplicationTool,
+     LaunchApplicationTool,
+-    RunCommandTool,
+     ScreenshotTool,
+     StartProcessTool,
+     StopProcessTool,
+ )
++from .sandbox import RunCommandTool
+ from .dispatcher import ToolDispatcher
+ from .module import ToolRuntimeModule
+ from .policy import (
+diff --git a/core/tools/builtin.py b/core/tools/builtin.py
+index af18509..ee74c29 100644
+--- a/core/tools/builtin.py
++++ b/core/tools/builtin.py
+@@ -9,11 +9,6 @@ from typing import Callable
+ from core.applications import ApplicationManager, ApplicationResolutionError
+ from core.contracts import ToolDefinition, ToolRequest, ToolResult
+ from core.tools.base import Tool
+-from core.tools.workspace import (
+-    WorkspacePathError,
+-    resolve_workspace_path,
+-    resolve_workspace_root,
+-)
+ 
+ 
+ def _result(request: ToolRequest, success: bool, *, output=None, error=None, start: float) -> ToolResult:
+@@ -85,85 +80,6 @@ class StartProcessTool(Tool):
+         return _result(request, True, output={"target": target, "pid": process.pid}, start=start)
+ 
+ 
+-class RunCommandTool(Tool):
+-    def __init__(self, workspace_manager=None):
+-        self.workspace_manager = workspace_manager
+-
+-    @property
+-    def definition(self) -> ToolDefinition:
+-        return ToolDefinition(
+-            name="system.run_command", description="Run an explicitly supplied local executable without invoking a shell.",
+-            input_schema={
+-                "type": "object",
+-                "properties": {
+-                    "target": {"type": "string", "minLength": 1},
+-                    "arguments": {"type": "array", "items": {"type": "string"}},
+-                    "cwd": {
+-                        "type": "string",
+-                        "description": "Optional directory relative to the active workspace.",
+-                    },
+-                },
+-                "required": ["target"],
+-                "additionalProperties": False,
+-            },
+-            risk_level="critical", metadata={"actions": ["run"], "category": "system"},
+-        )
+-
+-    def execute(self, request: ToolRequest) -> ToolResult:
+-        start = time.perf_counter()
+-        target = _validated_target(request)
+-        args = request.arguments.get("arguments", [])
+-        if target is None:
+-            return _result(request, False, error="Argument 'target' must be a non-empty string.", start=start)
+-        if not isinstance(args, list) or not all(isinstance(item, str) for item in args):
+-            return _result(request, False, error="Argument 'arguments' must be a list of strings.", start=start)
+-        executable = shutil.which(target)
+-        if not executable:
+-            return _result(request, False, error=f"Command not found on PATH: {target}", start=start)
+-        working_directory = None
+-        requested_cwd = request.arguments.get("cwd")
+-        if self.workspace_manager is not None:
+-            try:
+-                root = resolve_workspace_root(self.workspace_manager)
+-                working_directory = (
+-                    root
+-                    if requested_cwd is None or requested_cwd == ""
+-                    else resolve_workspace_path(root, requested_cwd, allow_root=True)
+-                )
+-                if not working_directory.is_dir():
+-                    return _result(
+-                        request,
+-                        False,
+-                        error="The requested workspace working directory is not a directory.",
+-                        start=start,
+-                    )
+-            except (OSError, WorkspacePathError) as exc:
+-                return _result(request, False, error=str(exc), start=start)
+-        elif requested_cwd is not None:
+-            return _result(
+-                request,
+-                False,
+-                error="A workspace manager is required to set a working directory.",
+-                start=start,
+-            )
+-        try:
+-            completed = subprocess.run(
+-                [executable, *args],
+-                capture_output=True,
+-                text=True,
+-                timeout=request.timeout_seconds,
+-                check=False,
+-                cwd=str(working_directory) if working_directory is not None else None,
+-            )
+-        except subprocess.TimeoutExpired:
+-            return _result(request, False, error=f"Command timed out after {request.timeout_seconds:.1f}s.", start=start)
+-        except Exception as exc:
+-            return _result(request, False, error=f"Failed to run '{target}': {type(exc).__name__}: {exc}", start=start)
+-        return _result(request, completed.returncode == 0,
+-                       output={"returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr},
+-                       error=None if completed.returncode == 0 else f"Command exited with code {completed.returncode}.", start=start)
+-
+-
+ class StopProcessTool(Tool):
+     @property
+     def definition(self) -> ToolDefinition:
+diff --git a/core/tools/sandbox.py b/core/tools/sandbox.py
+new file mode 100644
+index 0000000..5702799
+--- /dev/null
++++ b/core/tools/sandbox.py
+@@ -0,0 +1,591 @@
++"""Fail-closed Python command execution in an isolated container snapshot."""
++
++from __future__ import annotations
++
++import math
++import os
++import shutil
++import stat
++import subprocess
++import tempfile
++import threading
++import time
++from dataclasses import dataclass
++from pathlib import Path
++from uuid import uuid4
++
++from core.contracts import ToolDefinition, ToolRequest, ToolResult
++from core.tools.base import Tool
++from core.tools.workspace import (
++    WorkspacePathError,
++    _is_sensitive_parts,
++    resolve_workspace_path,
++    resolve_workspace_root,
++)
++
++
++DEFAULT_SANDBOX_IMAGE = "asta-python-sandbox:1"
++MAX_COMMAND_ARGUMENTS = 256
++MAX_COMMAND_ARGUMENT_BYTES = 32 * 1024
++MAX_OUTPUT_BYTES_PER_STREAM = 128 * 1024
++MAX_SNAPSHOT_FILES = 10_000
++MAX_SNAPSHOT_DIRECTORIES = 20_000
++MAX_SNAPSHOT_FILE_BYTES = 16 * 1024 * 1024
++MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
++MAX_COMMAND_TIMEOUT_SECONDS = 300.0
++
++
++@dataclass(frozen=True, slots=True)
++class SandboxProcessResult:
++    returncode: int
++    stdout: str = ""
++    stderr: str = ""
++    timed_out: bool = False
++    stdout_truncated: bool = False
++    stderr_truncated: bool = False
++
++
++class SandboxRuntimeError(RuntimeError):
++    """The local container runtime is missing or could not be started."""
++
++
++def _bounded_process(
++    command: list[str],
++    *,
++    timeout: float,
++    output_limit: int,
++) -> SandboxProcessResult:
++    """Run one container-runtime CLI call without buffering unbounded output."""
++    try:
++        process = subprocess.Popen(
++            command,
++            stdin=subprocess.DEVNULL,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.PIPE,
++            shell=False,
++            close_fds=True,
++        )
++    except OSError as exc:
++        raise SandboxRuntimeError(
++            f"Could not start the container runtime: {type(exc).__name__}: {exc}"
++        ) from exc
++
++    buffers = [bytearray(), bytearray()]
++    truncated = [False, False]
++
++    def drain(index: int, stream) -> None:
++        while True:
++            chunk = stream.read(8192)
++            if not chunk:
++                return
++            remaining = output_limit - len(buffers[index])
++            if remaining > 0:
++                buffers[index].extend(chunk[:remaining])
++            if len(chunk) > max(0, remaining):
++                truncated[index] = True
++
++    readers = [
++        threading.Thread(target=drain, args=(0, process.stdout), daemon=True),
++        threading.Thread(target=drain, args=(1, process.stderr), daemon=True),
++    ]
++    for reader in readers:
++        reader.start()
++
++    timed_out = False
++    try:
++        returncode = process.wait(timeout=timeout)
++    except subprocess.TimeoutExpired:
++        timed_out = True
++        process.kill()
++        returncode = process.wait()
++    finally:
++        for reader in readers:
++            reader.join(timeout=5)
++        for stream in (process.stdout, process.stderr):
++            if stream is not None:
++                stream.close()
++
++    return SandboxProcessResult(
++        returncode=int(returncode),
++        stdout=bytes(buffers[0]).decode("utf-8", errors="replace"),
++        stderr=bytes(buffers[1]).decode("utf-8", errors="replace"),
++        timed_out=timed_out,
++        stdout_truncated=truncated[0],
++        stderr_truncated=truncated[1],
++    )
++
++
++class ContainerRuntime:
++    """Small Docker/Podman CLI adapter with bounded output capture."""
++
++    def __init__(self, runtime_name: str | None = None):
++        selected = (runtime_name or os.getenv("ASTA_CONTAINER_RUNTIME", "docker")).strip().lower()
++        if selected not in {"docker", "podman"}:
++            raise ValueError("ASTA_CONTAINER_RUNTIME must be either 'docker' or 'podman'.")
++        self.runtime_name = selected
++
++    def run(
++        self,
++        arguments: list[str],
++        *,
++        timeout: float,
++        output_limit: int = MAX_OUTPUT_BYTES_PER_STREAM,
++    ) -> SandboxProcessResult:
++        executable = shutil.which(self.runtime_name)
++        if not executable:
++            raise SandboxRuntimeError(
++                f"{self.runtime_name} was not found on PATH. Install and start Docker or Podman."
++            )
++        return _bounded_process(
++            [executable, *arguments],
++            timeout=timeout,
++            output_limit=output_limit,
++        )
++
++
++def _safe_target(value: object) -> tuple[str, list[str]] | None:
++    if not isinstance(value, str) or not value.strip():
++        return None
++    target = value.strip()
++    # Older planners sometimes provide a host interpreter path. Only its
++    # basename is considered; the path is never executed on the host.
++    basename = target.replace("\\", "/").rsplit("/", 1)[-1].lower()
++    if basename in {"python", "python3", "python.exe", "python3.exe"}:
++        return "python", ["/usr/local/bin/python"]
++    if basename in {"pytest", "pytest.exe"}:
++        return "pytest", ["/usr/local/bin/python", "-m", "pytest"]
++    return None
++
++
++def _safe_arguments(value: object) -> list[str] | None:
++    if not isinstance(value, list) or len(value) > MAX_COMMAND_ARGUMENTS:
++        return None
++    if not all(isinstance(item, str) and "\x00" not in item for item in value):
++        return None
++    if any(len(item) > 8192 for item in value):
++        return None
++    if sum(len(item.encode("utf-8", errors="replace")) for item in value) > MAX_COMMAND_ARGUMENT_BYTES:
++        return None
++    return value
++
++
++def _copy_workspace_snapshot(root: Path, destination: Path) -> tuple[int, int]:
++    """Copy only ordinary, non-sensitive project files into a bounded snapshot."""
++    copied_files = 0
++    copied_bytes = 0
++    visited_directories = 0
++    traversal_errors: list[OSError] = []
++
++    def on_walk_error(error: OSError) -> None:
++        traversal_errors.append(error)
++
++    for current, directories, filenames in os.walk(
++        root,
++        topdown=True,
++        followlinks=False,
++        onerror=on_walk_error,
++    ):
++        source_dir = Path(current)
++        visited_directories += 1
++        if visited_directories > MAX_SNAPSHOT_DIRECTORIES:
++            raise WorkspacePathError("Sandbox snapshot exceeds its directory-count limit.")
++        relative_dir = source_dir.relative_to(root)
++        destination_dir = destination / relative_dir
++        destination_dir.mkdir(parents=True, exist_ok=True)
++        try:
++            destination_dir.chmod(0o755)
++        except OSError:
++            pass
++
++        allowed_directories = []
++        for name in sorted(directories):
++            source_child = source_dir / name
++            relative_parts = (*relative_dir.parts, name)
++            try:
++                if (
++                    source_child.is_symlink()
++                    or source_child.is_mount()
++                    or _is_sensitive_parts(relative_parts)
++                ):
++                    continue
++            except OSError:
++                continue
++            allowed_directories.append(name)
++        directories[:] = allowed_directories
++
++        for filename in sorted(filenames):
++            source_file = source_dir / filename
++            relative_file = source_file.relative_to(root)
++            if _is_sensitive_parts(relative_file.parts) or source_file.is_symlink():
++                continue
++            try:
++                info = source_file.lstat()
++            except OSError:
++                continue
++            if not stat.S_ISREG(info.st_mode):
++                continue
++            if info.st_size > MAX_SNAPSHOT_FILE_BYTES:
++                raise WorkspacePathError(
++                    f"Sandbox snapshot refused an oversized file: {relative_file.as_posix()}"
++                )
++            copied_files += 1
++            if (
++                copied_files > MAX_SNAPSHOT_FILES
++                or copied_bytes + info.st_size > MAX_SNAPSHOT_BYTES
++            ):
++                raise WorkspacePathError(
++                    "Sandbox snapshot exceeds its file-count or size limit."
++                )
++            destination_file = destination / relative_file
++            destination_file.parent.mkdir(parents=True, exist_ok=True)
++            try:
++                no_follow = getattr(os, "O_NOFOLLOW", 0)
++                descriptor = os.open(source_file, os.O_RDONLY | no_follow)
++                with os.fdopen(descriptor, "rb") as source_stream:
++                    opened_info = os.fstat(source_stream.fileno())
++                    if (
++                        not stat.S_ISREG(opened_info.st_mode)
++                        or opened_info.st_dev != info.st_dev
++                        or opened_info.st_ino != info.st_ino
++                    ):
++                        continue
++                    file_bytes = 0
++                    with destination_file.open("xb") as destination_stream:
++                        while True:
++                            chunk = source_stream.read(64 * 1024)
++                            if not chunk:
++                                break
++                            file_bytes += len(chunk)
++                            if (
++                                file_bytes > MAX_SNAPSHOT_FILE_BYTES
++                                or copied_bytes + file_bytes > MAX_SNAPSHOT_BYTES
++                            ):
++                                raise WorkspacePathError(
++                                    "Sandbox snapshot exceeded its file-size or total-size limit."
++                                )
++                            destination_stream.write(chunk)
++                    copied_bytes += file_bytes
++                destination_file.chmod(0o644)
++            except WorkspacePathError:
++                raise
++            except OSError as exc:
++                raise WorkspacePathError(
++                    f"Could not copy workspace file into the sandbox snapshot: "
++                    f"{relative_file.as_posix()}"
++                ) from exc
++
++    if traversal_errors:
++        raise WorkspacePathError(
++            "The active workspace could not be completely read for a safe sandbox snapshot."
++        ) from traversal_errors[0]
++    return copied_files, copied_bytes
++
++
++def _docker_mount_source(path: Path) -> str:
++    source = path.resolve(strict=True).as_posix()
++    # Docker's --mount syntax uses commas as option separators.
++    if "," in source:
++        raise WorkspacePathError(
++            "The temporary sandbox path contains a comma and cannot be mounted safely."
++        )
++    return source
++
++
++def _tool_result(
++    request: ToolRequest,
++    *,
++    success: bool,
++    output=None,
++    error: str | None = None,
++    start: float,
++) -> ToolResult:
++    return ToolResult(
++        success=success,
++        tool=request.tool,
++        output=output,
++        error=error,
++        duration_seconds=time.perf_counter() - start,
++        metadata={"request_id": request.request_id},
++    )
++
++
++class RunCommandTool(Tool):
++    """Run Python/pytest against a sanitized, read-only project snapshot."""
++
++    def __init__(self, workspace_manager=None, *, runtime=None, image: str | None = None):
++        self.workspace_manager = workspace_manager
++        self.runtime = runtime or ContainerRuntime()
++        self.image = (image or os.getenv("ASTA_SANDBOX_IMAGE", DEFAULT_SANDBOX_IMAGE)).strip()
++
++    @property
++    def definition(self) -> ToolDefinition:
++        return ToolDefinition(
++            name="system.run_command",
++            description=(
++                "Run an explicitly supplied Python or pytest command in a local "
++                "network-disabled container against a sanitized, read-only snapshot "
++                "of the active project workspace. Workspace changes are discarded; "
++                "the host executable, commonly named secrets, virtual environments, "
++                "and VCS metadata are not mounted."
++            ),
++            input_schema={
++                "type": "object",
++                "properties": {
++                    "target": {
++                        "type": "string",
++                        "minLength": 1,
++                        "description": "Python or pytest only; host interpreter paths are reduced to their basename.",
++                    },
++                    "arguments": {
++                        "type": "array",
++                        "items": {"type": "string"},
++                        "maxItems": MAX_COMMAND_ARGUMENTS,
++                    },
++                    "cwd": {
++                        "type": "string",
++                        "description": "Optional directory relative to the active workspace.",
++                    },
++                },
++                "required": ["target"],
++                "additionalProperties": False,
++            },
++            risk_level="critical",
++            timeout_seconds=MAX_COMMAND_TIMEOUT_SECONDS,
++            metadata={"actions": ["run"], "category": "system", "workspace_scoped": True},
++        )
++
++    def execute(self, request: ToolRequest) -> ToolResult:
++        start = time.perf_counter()
++        target = _safe_target(request.arguments.get("target"))
++        arguments = _safe_arguments(request.arguments.get("arguments", []))
++        if target is None:
++            return _tool_result(
++                request,
++                success=False,
++                error="Only Python and pytest commands are available in the command sandbox.",
++                start=start,
++            )
++        if arguments is None:
++            return _tool_result(
++                request,
++                success=False,
++                error="Command arguments must be a bounded list of strings without NUL bytes.",
++                start=start,
++            )
++        if not self.image or len(self.image) > 200 or self.image.startswith("-") or any(
++            char.isspace() or char == "," for char in self.image
++        ):
++            return _tool_result(
++                request,
++                success=False,
++                error="ASTA_SANDBOX_IMAGE is invalid.",
++                start=start,
++            )
++
++        try:
++            root = resolve_workspace_root(self.workspace_manager)
++            requested_cwd = request.arguments.get("cwd", ".")
++            if requested_cwd is None or requested_cwd == "":
++                requested_cwd = "."
++            working_directory = resolve_workspace_path(
++                root,
++                requested_cwd,
++                allow_root=True,
++            )
++            if not working_directory.is_dir():
++                raise WorkspacePathError("The requested workspace working directory is not a directory.")
++            working_relative = working_directory.relative_to(root)
++            if _is_sensitive_parts(working_relative.parts):
++                raise WorkspacePathError(
++                    "The requested workspace directory is not available in a sandbox snapshot."
++                )
++            relative_cwd = working_relative.as_posix()
++            if relative_cwd == ".":
++                relative_cwd = ""
++        except (OSError, RuntimeError, WorkspacePathError, ValueError) as exc:
++            return _tool_result(request, success=False, error=str(exc), start=start)
++
++        raw_timeout = request.timeout_seconds
++        if isinstance(raw_timeout, bool):
++            return _tool_result(
++                request,
++                success=False,
++                error="Command timeout must be a finite positive number.",
++                start=start,
++            )
++        try:
++            timeout = float(raw_timeout)
++        except (TypeError, ValueError):
++            timeout = 0.0
++        if not math.isfinite(timeout) or timeout <= 0:
++            return _tool_result(
++                request,
++                success=False,
++                error="Command timeout must be a finite positive number.",
++                start=start,
++            )
++        timeout = min(timeout, MAX_COMMAND_TIMEOUT_SECONDS)
++
++        container_name = f"asta-sandbox-{uuid4().hex}"
++        snapshot_path = None
++        created = False
++        cleanup_needed = False
++        timed_out = False
++        cleanup_error = None
++        result = None
++        try:
++            snapshot_path = Path(tempfile.mkdtemp(prefix="asta-sandbox-"))
++            _copy_workspace_snapshot(root, snapshot_path)
++            snapshot_cwd = snapshot_path / relative_cwd
++            if not snapshot_cwd.is_dir():
++                raise WorkspacePathError(
++                    "The requested working directory was omitted from the safe sandbox snapshot."
++                )
++            container_cwd = "/workspace" + (f"/{relative_cwd}" if relative_cwd else "")
++            source = _docker_mount_source(snapshot_path)
++            canonical_target, executable = target
++            container_entrypoint = executable[0]
++            container_command = [*executable[1:], *arguments]
++
++            create_arguments = [
++                "create",
++                "--pull=never",
++                "--name",
++                container_name,
++                "--network=none",
++                "--read-only",
++                "--cap-drop=ALL",
++                "--security-opt=no-new-privileges",
++                "--pids-limit=64",
++                "--memory=1g",
++                "--memory-swap=1g",
++                "--cpus=1",
++                "--ulimit",
++                "core=0",
++                "--tmpfs",
++                "/tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001",
++                "--mount",
++                f"type=bind,source={source},target=/workspace,readonly",
++                "--workdir",
++                container_cwd,
++                "--user=10001:10001",
++                "--env",
++                "PYTHONDONTWRITEBYTECODE=1",
++                "--env",
++                "PYTEST_ADDOPTS=-p no:cacheprovider",
++                "--entrypoint",
++                container_entrypoint,
++                self.image,
++                *container_command,
++            ]
++            create_result = self.runtime.run(
++                create_arguments,
++                timeout=10.0,
++                output_limit=4096,
++            )
++            created = create_result.returncode == 0
++            cleanup_needed = created or create_result.timed_out
++            if create_result.timed_out or not created:
++                detail = (create_result.stderr or create_result.stdout).strip()[:700]
++                error = (
++                    "Sandbox container creation timed out."
++                    if create_result.timed_out
++                    else (
++                        "Sandbox container creation failed. Confirm Docker or Podman is running "
++                        "and the image is already built locally; ASTA never pulls images at runtime."
++                    )
++                )
++                if detail:
++                    error += f" Runtime: {detail}"
++                result = _tool_result(request, success=False, error=error, start=start)
++            else:
++                start_result = self.runtime.run(
++                    ["start", "--attach", container_name],
++                    timeout=timeout,
++                    output_limit=MAX_OUTPUT_BYTES_PER_STREAM,
++                )
++                timed_out = start_result.timed_out
++                output = {
++                    "target": canonical_target,
++                    "returncode": start_result.returncode,
++                    "stdout": start_result.stdout,
++                    "stderr": start_result.stderr,
++                    "sandbox": {
++                        "runtime": getattr(self.runtime, "runtime_name", "injected"),
++                        "network": "none",
++                        "workspace_snapshot": "read-only",
++                        "output_truncated": (
++                            start_result.stdout_truncated or start_result.stderr_truncated
++                        ),
++                    },
++                }
++                if start_result.stdout_truncated:
++                    output["stdout"] += "\n[stdout truncated at the configured safety limit]"
++                if start_result.stderr_truncated:
++                    output["stderr"] += "\n[stderr truncated at the configured safety limit]"
++                result = _tool_result(
++                    request,
++                    output=output,
++                    success=(
++                        not timed_out
++                        and start_result.returncode == 0
++                    ),
++                    error=(
++                        f"Command timed out after {timeout:.1f}s; sandbox cleanup was requested."
++                        if timed_out
++                        else (
++                            None
++                            if start_result.returncode == 0
++                            else f"Sandbox command exited with code {start_result.returncode}."
++                        )
++                    ),
++                    start=start,
++                )
++        except (WorkspacePathError, OSError, SandboxRuntimeError, ValueError) as exc:
++            result = _tool_result(
++                request,
++                success=False,
++                error=f"Sandbox unavailable: {type(exc).__name__}: {exc}",
++                start=start,
++            )
++        finally:
++            if cleanup_needed:
++                if timed_out:
++                    try:
++                        self.runtime.run(
++                            ["kill", container_name],
++                            timeout=10.0,
++                            output_limit=4096,
++                        )
++                    except Exception:
++                        pass
++                try:
++                    cleanup = self.runtime.run(
++                        ["rm", "--force", container_name],
++                        timeout=10.0,
++                        output_limit=4096,
++                    )
++                    if cleanup.timed_out or cleanup.returncode != 0:
++                        cleanup_error = "The sandbox container could not be confirmed removed."
++                except Exception:
++                    cleanup_error = "The sandbox container could not be confirmed removed."
++            if snapshot_path is not None:
++                shutil.rmtree(snapshot_path, ignore_errors=True)
++        if result is None:
++            result = _tool_result(
++                request,
++                success=False,
++                error="Sandbox execution ended without a result.",
++                start=start,
++            )
++        if cleanup_error:
++            result = ToolResult(
++                success=False,
++                tool=result.tool,
++                output=result.output,
++                error=cleanup_error,
++                duration_seconds=result.duration_seconds,
++                metadata=result.metadata,
++            )
++            print(f"[Sandbox] {cleanup_error} ({container_name})", flush=True)
++        return result
+\ No newline at end of file
+diff --git a/docs/sandboxed-command-runner.md b/docs/sandboxed-command-runner.md
+new file mode 100644
+index 0000000..dc20819
+--- /dev/null
++++ b/docs/sandboxed-command-runner.md
+@@ -0,0 +1,75 @@
++# Sandboxed project commands
++
++`system.run_command` is the project-task verification runner. It accepts only
++Python and pytest, and it never executes the requested program on the host.
++Every invocation requires the existing critical-risk confirmation.
++
++## One-time setup
++
++Install and start Docker Desktop (Windows) or Docker Engine/Podman (Linux), then
++build the local image from the repository root. Pulling the base image happens
++only during this explicit setup step; ASTA does not pull images while a task is
++running.
++
++```powershell
++docker build --pull -t asta-python-sandbox:1 -f sandbox/Dockerfile .
++```
++
++Set these optional environment variables before launching ASTA if needed:
++
++```powershell
++$env:ASTA_SANDBOX_IMAGE = "asta-python-sandbox:1"
++$env:ASTA_CONTAINER_RUNTIME = "docker" # or "podman"
++```
++
++The defaults match the image built above and Docker. If the runtime or image is
++unavailable, the tool fails closed; it never falls back to host execution.
++
++## Isolation contract
++
++- The active workspace is copied to a temporary snapshot. Common secret names,
++  credential directories, `.git`, virtual environments, dependency folders,
++  symlinks, and non-regular files are omitted.
++- The snapshot is mounted read-only at `/workspace`; no changes made by the
++  command are written back to the project.
++- The container has no network, a read-only root filesystem, no Linux
++  capabilities, `no-new-privileges`, a non-root UID, process/memory/CPU limits,
++  and a small temporary filesystem.
++- Only the local prebuilt image is used (`--pull=never`). Standard output and
++  standard error are bounded. Containers are removed after completion and
++  force-removed after a timeout.
++- The default limits are 20,000 directories, 10,000 files, 256 MiB total
++  snapshot data, 16 MiB per file, 300 seconds, 128 KiB each for stdout/stderr,
++  1 GiB memory/swap, and 64 processes.
++
++The initial image provides Python and pytest, not ASTA's complete optional
++runtime dependency set. To use another local image, build it intentionally and
++set `ASTA_SANDBOX_IMAGE`; keep it Python-compatible and trusted. Runtime pulls
++remain disabled. This meaningfully reduces host access, but containers are not
++an absolute security guarantee against container-runtime or kernel
++vulnerabilities; keep Docker/Podman and the chosen base image current.
++
++Because execution uses a sanitized read-only snapshot, use workspace file
++tools to make changes. Build tools that need to write should direct temporary
++artifacts to `/tmp`; installing packages during task execution is intentionally
++unsupported because networking is disabled.
++
++## HUD status
++
++The HUD shows the visible task stage, approval state, and whether Python/pytest
++is running against a read-only snapshot with network access disabled. It uses
++an indeterminate progress indicator because the current task contract does not
++provide trustworthy completion percentages. It shows concise status and
++verification evidence, not hidden chain-of-thought.
++
++## Manual smoke check
++
++With Docker running and the image built, choose a project containing a simple
++`main.py`, approve the critical tool request, and ask ASTA to run it. Expected
++tool evidence includes the return code, bounded output, `network: none`, and
++`workspace_snapshot: read-only`. For the automated unit tests, the runtime is
++faked so tests do not require Docker:
++
++```powershell
++.venv\Scripts\python -m pytest -q tests/test_sandbox_runner.py tests/test_workspace_project_task.py
++```
+diff --git a/hud/hud_module.py b/hud/hud_module.py
+index f282b34..19b63c7 100644
+--- a/hud/hud_module.py
++++ b/hud/hud_module.py
+@@ -290,6 +290,7 @@ class HUDModule(Module):
+     def on_task_progress(self, task_id=None, phase="working", text="", *args, **kwargs):
+         phase_value = str(phase or "working").strip().lower()
+         activity = str(text or "working").strip() or "working"
++        sandbox_run = "isolated container" in activity.lower()
+ 
+         if phase_value in {"planning", "replanning", "recovery"}:
+             self.set_state(
+@@ -303,9 +304,17 @@ class HUDModule(Module):
+             self.set_state(
+                 mode="executing",
+                 intensity="high",
+-                status="EXECUTING" if phase_value == "executing" else "READY",
++                status=(
++                    "SANDBOX RUN"
++                    if sandbox_run
++                    else ("EXECUTING" if phase_value == "executing" else "READY")
++                ),
+                 progress=None,
+-                activity=activity,
++                activity=(
++                    "Python/pytest · workspace snapshot is read-only · network off"
++                    if sandbox_run
++                    else activity
++                ),
+             )
+         else:
+             self.set_state(
+@@ -371,8 +380,19 @@ class HUDModule(Module):
+     })
+ 
+     def on_tool_request(self, request):
+-        self.set_state(mode="executing", intensity="high", status="EXECUTING", progress=None, activity=getattr(request, "tool", None) or "tool")
+         tool = str(getattr(request, "tool", "") or "")
++        sandbox_run = tool == "system.run_command"
++        self.set_state(
++            mode="executing",
++            intensity="high",
++            status="SANDBOX RUN" if sandbox_run else "EXECUTING",
++            progress=None,
++            activity=(
++                "Python/pytest · workspace snapshot is read-only · network off"
++                if sandbox_run
++                else (tool or "tool")
++            ),
++        )
+         if tool in self._SCREEN_TOOLS:
+             self._step_aside()
+ 
+diff --git a/hud/renderer/chat_history.css b/hud/renderer/chat_history.css
+index 2434923..55c8ccb 100644
+--- a/hud/renderer/chat_history.css
++++ b/hud/renderer/chat_history.css
+@@ -16,6 +16,27 @@
+   width: 0;
+ }
+ 
++.task-status {
++  flex: 0 0 auto;
++  margin: 10px 12px 0;
++  padding: 10px 12px 9px;
++  border: 1px solid rgba(0, 229, 255, 0.18);
++  border-radius: 4px;
++  background: linear-gradient(110deg, rgba(0, 229, 255, 0.075), rgba(0, 12, 18, 0.42));
++}
++.task-status[hidden] { display: none !important; }
++.task-status-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
++.task-status-kicker { color: rgba(190, 220, 235, 0.48); font-size: 8px; letter-spacing: 0.16em; }
++.task-status-stage { color: var(--cyan); font-size: 9px; letter-spacing: 0.14em; }
++.task-status-detail { margin-top: 6px; color: rgba(225, 245, 255, 0.76); font-size: 10px; line-height: 1.45; }
++.task-status-track { height: 2px; margin-top: 9px; overflow: hidden; background: rgba(0, 229, 255, 0.10); }
++.task-status-track span { display: block; width: 36%; height: 100%; background: var(--cyan); box-shadow: 0 0 8px rgba(0, 229, 255, 0.60); animation: task-status-sweep 1.8s ease-in-out infinite; }
++.task-status[data-stage="approval"] { border-color: rgba(255, 190, 90, 0.36); background: rgba(255, 155, 30, 0.07); }
++.task-status[data-stage="approval"] .task-status-stage { color: #ffc46b; }
++.task-status[data-stage="approval"] .task-status-track span { background: #ffc46b; box-shadow: 0 0 8px rgba(255, 190, 90, 0.5); }
++@keyframes task-status-sweep { 0% { transform: translateX(-110%); } 100% { transform: translateX(290%); } }
++@media (prefers-reduced-motion: reduce) { .task-status-track span { animation: none; width: 100%; opacity: 0.65; } }
++
+ .chat-main .chat-messages {
+   flex: 1 1 auto;
+   min-height: 0;
+diff --git a/hud/renderer/hud_state_bridge.js b/hud/renderer/hud_state_bridge.js
+index 22dec35..fc649b4 100644
+--- a/hud/renderer/hud_state_bridge.js
++++ b/hud/renderer/hud_state_bridge.js
+@@ -45,6 +45,44 @@
+     }
+   }
+ 
++  function renderTaskStatus (state) {
++    var card = document.getElementById('taskStatus')
++    var stageNode = document.getElementById('taskStatusStage')
++    var detailNode = document.getElementById('taskStatusDetail')
++    if (!card || !stageNode || !detailNode) return
++
++    var mode = String((state && state.mode) || '').toLowerCase()
++    var status = String((state && state.status) || '').trim()
++    var active = mode === 'executing' || mode === 'approval' ||
++      (mode === 'thinking' && /^(planning|planned|replanning|recovery)$/i.test(status))
++    card.hidden = !active
++    if (!active) return
++
++    var activity = String((state && state.activity) || '').trim()
++    var sandboxRun = status.toUpperCase() === 'SANDBOX RUN'
++    if (mode === 'approval') {
++      stageNode.textContent = 'APPROVAL REQUIRED'
++      detailNode.textContent = activity || 'Review the requested action before it runs.'
++      card.dataset.stage = 'approval'
++      return
++    }
++
++    card.dataset.stage = 'active'
++    if (sandboxRun) {
++      stageNode.textContent = 'RUNNING IN SANDBOX'
++      detailNode.textContent = 'Python/pytest · read-only project snapshot · network disabled'
++    } else if (mode === 'thinking' && /^(planning|planned)$/i.test(status)) {
++      stageNode.textContent = 'PLANNING'
++      detailNode.textContent = 'Preparing a bounded sequence of actions and checks.'
++    } else if (mode === 'thinking') {
++      stageNode.textContent = status ? status.replace(/_/g, ' ').toUpperCase() : 'RECOVERING'
++      detailNode.textContent = activity || 'Choosing a safe next step.'
++    } else {
++      stageNode.textContent = status ? status.replace(/_/g, ' ').toUpperCase() : 'EXECUTING'
++      detailNode.textContent = activity || 'Working through the current step.'
++    }
++  }
++
+   /* Start the visual runtime as soon as the HUD is loaded. Python/kernel
+      readiness remains authoritative for canonical state, but the visual
+      assembly should not wait for the AI stack to finish initializing. */
+@@ -89,6 +127,7 @@
+         if (window.AstaHUD && window.AstaHUD.applyCanonicalState) {
+           window.AstaHUD.applyCanonicalState(state)
+         }
++        renderTaskStatus(state)
+ 
+         document.body.dataset.hudMode = String(state.mode || 'idle').toLowerCase()
+         document.body.dataset.hudActivity = state.activity || ''
+diff --git a/hud/renderer/index.html b/hud/renderer/index.html
+index 0173710..ca15d6b 100644
+--- a/hud/renderer/index.html
++++ b/hud/renderer/index.html
+@@ -63,6 +63,16 @@
+           </aside>
+ 
+           <div class="chat-main">
++            <section class="task-status" id="taskStatus" hidden role="status" aria-live="polite">
++              <div class="task-status-heading">
++                <span class="task-status-kicker">TASK STATUS</span>
++                <span class="task-status-stage" id="taskStatusStage">WORKING</span>
++              </div>
++              <div class="task-status-detail" id="taskStatusDetail"></div>
++              <div class="task-status-track" role="progressbar" aria-label="Task is in progress">
++                <span></span>
++              </div>
++            </section>
+             <div class="chat-messages" id="chatMessages" aria-live="polite">
+               <div class="chat-empty" id="chatEmpty">TEXT CHANNEL READY</div>
+             </div>
+diff --git a/sandbox/Dockerfile b/sandbox/Dockerfile
+new file mode 100644
+index 0000000..fca2727
+--- /dev/null
++++ b/sandbox/Dockerfile
+@@ -0,0 +1,9 @@
++FROM python:3.12-slim
++
++RUN python -m pip install --no-cache-dir pytest==8.3.5
++
++WORKDIR /workspace
++USER 10001:10001
++
++ENV PYTHONDONTWRITEBYTECODE=1
++ENV PYTEST_ADDOPTS="-p no:cacheprovider"
+diff --git a/tests/test_builtin_tools.py b/tests/test_builtin_tools.py
+index 4ecc348..18f126f 100644
+--- a/tests/test_builtin_tools.py
++++ b/tests/test_builtin_tools.py
+@@ -1,4 +1,5 @@
+ from core.contracts import ToolRequest
++from core import Kernel
+ from core.tools import (
+     AudioControlTool,
+     CloseApplicationTool,
+@@ -8,6 +9,7 @@ from core.tools import (
+     StartProcessTool,
+     StopProcessTool,
+ )
++from core.tools.sandbox import SandboxProcessResult
+ 
+ 
+ def request(tool, arguments=None, request_id="test"):
+@@ -28,29 +30,42 @@ def test_start_process_rejects_non_string_arguments():
+     assert "list of strings" in result.error
+ 
+ 
+-def test_run_command_uses_argument_vector_without_shell(monkeypatch):
++def test_run_command_uses_argument_vector_inside_sandbox(tmp_path):
+     calls = []
+ 
+-    def fake_run(command, **kwargs):
+-        calls.append((command, kwargs))
+-
+-        class Result:
+-            returncode = 0
+-            stdout = "ok"
+-            stderr = ""
+-
+-        return Result()
+-
+-    monkeypatch.setattr("core.tools.builtin.shutil.which", lambda _: "tool")
+-    monkeypatch.setattr("core.tools.builtin.subprocess.run", fake_run)
+-
+-    result = RunCommandTool().execute(
+-        request("system.run_command", {"target": "echo", "arguments": ["hello"]})
++    class FakeRuntime:
++        runtime_name = "docker"
++
++        def run(self, arguments, *, timeout, output_limit):
++            calls.append((list(arguments), timeout, output_limit))
++            if arguments[0] == "create":
++                return SandboxProcessResult(0)
++            if arguments[0] == "start":
++                return SandboxProcessResult(0, stdout="ok")
++            return SandboxProcessResult(0)
++
++    workspace = tmp_path / "project"
++    workspace.mkdir()
++    kernel = Kernel()
++    kernel.workspace_manager.update_project(path=str(workspace))
++
++    result = RunCommandTool(
++        kernel.workspace_manager,
++        runtime=FakeRuntime(),
++    ).execute(
++        request("system.run_command", {"target": "python", "arguments": ["-c", "print('hello')"]})
+     )
+ 
+     assert result.success
+-    assert calls[0][0] == ["tool", "hello"]
+-    assert calls[0][1].get("shell", False) is False
++    create = calls[0][0]
++    assert create[0] == "create"
++    assert create[-3:] == [
++        "asta-python-sandbox:1",
++        "-c",
++        "print('hello')",
++    ]
++    assert "--network=none" in create
++    assert calls[1][0][:2] == ["start", "--attach"]
+ 
+ 
+ def test_stop_process_rejects_invalid_pid():
+diff --git a/tests/test_hud_module.py b/tests/test_hud_module.py
+index e487946..754b34f 100644
+--- a/tests/test_hud_module.py
++++ b/tests/test_hud_module.py
+@@ -77,6 +77,35 @@ def test_tool_and_approval_events_update_hud_state():
+     hud.shutdown()
+ 
+ 
++def test_workspace_command_is_labeled_as_sandbox_execution():
++    kernel, hud = build_hud()
++
++    kernel.event_bus.emit(
++        "tool_request",
++        request=SimpleNamespace(tool="system.run_command"),
++    )
++    assert hud.get_state().status == "SANDBOX RUN"
++    assert "read-only" in hud.get_state().activity
++    assert "network off" in hud.get_state().activity
++
++    kernel.event_bus.emit(
++        "task_progress",
++        task_id="task-1",
++        phase="executing",
++        text=(
++            "Running Python in an isolated container. "
++            "Only a sanitized, read-only workspace snapshot is mounted; "
++            "network access is disabled."
++        ),
++    )
++    assert hud.get_state().status == "SANDBOX RUN"
++    assert hud.get_state().activity == (
++        "Python/pytest · workspace snapshot is read-only · network off"
++    )
++
++    hud.shutdown()
++
++
+ def test_user_message_enters_thinking_without_overwriting_speech():
+     kernel, hud = build_hud()
+ 
+diff --git a/tests/test_sandbox_runner.py b/tests/test_sandbox_runner.py
+new file mode 100644
+index 0000000..b243aed
+--- /dev/null
++++ b/tests/test_sandbox_runner.py
+@@ -0,0 +1,202 @@
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++from core import Kernel
++from core.contracts import ToolRequest
++from core.tools import RunCommandTool
++from core.tools.sandbox import SandboxProcessResult, _bounded_process
++
++
++class FakeRuntime:
++    runtime_name = "docker"
++
++    def __init__(self, *, start_result=None, create_result=None):
++        self.calls = []
++        self.start_result = start_result or SandboxProcessResult(0, stdout="ASTA_OK\n")
++        self.create_result = create_result or SandboxProcessResult(0, stdout="container-id\n")
++        self.snapshot_at_create = None
++        self.snapshot_files = {}
++
++    def run(self, arguments, *, timeout, output_limit):
++        args = list(arguments)
++        self.calls.append((args, timeout, output_limit))
++        if args[0] == "create":
++            mount = args[args.index("--mount") + 1]
++            source = mount.split("source=", 1)[1].split(",target=", 1)[0]
++            self.snapshot_at_create = Path(source)
++            self.snapshot_files = {
++                path.relative_to(self.snapshot_at_create).as_posix(): path.read_text(
++                    encoding="utf-8",
++                    errors="replace",
++                )
++                for path in self.snapshot_at_create.rglob("*")
++                if path.is_file()
++            }
++            return self.create_result
++        if args[0] == "start":
++            return self.start_result
++        return SandboxProcessResult(0)
++
++
++def _request(target, arguments=None, *, cwd=".", timeout=30.0):
++    return ToolRequest(
++        tool="system.run_command",
++        arguments={"target": target, "arguments": arguments or [], "cwd": cwd},
++        request_id="sandbox-test",
++        timeout_seconds=timeout,
++    )
++
++
++def _tool(tmp_path, runtime):
++    workspace = tmp_path / "project"
++    workspace.mkdir()
++    kernel = Kernel()
++    kernel.workspace_manager.update_project(path=str(workspace))
++    return workspace, RunCommandTool(kernel.workspace_manager, runtime=runtime)
++
++
++def test_runs_python_only_in_a_sanitized_readonly_networkless_snapshot(tmp_path):
++    runtime = FakeRuntime()
++    workspace, tool = _tool(tmp_path, runtime)
++    (workspace / "main.py").write_text('print("ASTA_OK")\n', encoding="utf-8")
++    (workspace / ".env").write_text("SECRET=value\n", encoding="utf-8")
++    (workspace / ".env.example").write_text("TEMPLATE=value\n", encoding="utf-8")
++    (workspace / ".git").mkdir()
++    (workspace / ".git" / "config").write_text("private metadata\n", encoding="utf-8")
++    (workspace / ".venv").mkdir()
++    (workspace / ".venv" / "marker").write_text("dependency data\n", encoding="utf-8")
++    outside_file = tmp_path / "outside.txt"
++    outside_file.write_text("outside data\n", encoding="utf-8")
++    try:
++        (workspace / "outside-link.txt").symlink_to(outside_file)
++    except (NotImplementedError, OSError):
++        pass
++
++    result = tool.execute(_request(sys.executable, ["main.py"]))
++
++    assert result.success
++    assert result.output["returncode"] == 0
++    assert result.output["stdout"] == "ASTA_OK\n"
++    assert result.output["sandbox"] == {
++        "runtime": "docker",
++        "network": "none",
++        "workspace_snapshot": "read-only",
++        "output_truncated": False,
++    }
++    assert tool.definition.risk_level == "critical"
++    create = runtime.calls[0][0]
++    assert create[0] == "create"
++    assert "--pull=never" in create
++    assert "--network=none" in create
++    assert "--read-only" in create
++    assert "--cap-drop=ALL" in create
++    assert "--security-opt=no-new-privileges" in create
++    assert "--memory=1g" in create
++    assert "--memory-swap=1g" in create
++    assert "--pids-limit=64" in create
++    assert create[create.index("--mount") + 1].endswith(",readonly")
++    assert create[-2:] == ["asta-python-sandbox:1", "main.py"]
++    snapshot = runtime.snapshot_at_create
++    assert snapshot is not None
++    assert "main.py" in runtime.snapshot_files
++    assert ".env.example" in runtime.snapshot_files
++    assert ".env" not in runtime.snapshot_files
++    assert "outside-link.txt" not in runtime.snapshot_files
++    assert not any(path.startswith(".git/") for path in runtime.snapshot_files)
++    assert not any(path.startswith(".venv/") for path in runtime.snapshot_files)
++    assert not snapshot.exists()
++    assert runtime.calls[-1][0] == ["rm", "--force", runtime.calls[0][0][runtime.calls[0][0].index("--name") + 1]]
++
++
++def test_rejects_unsupported_target_and_workspace_escape_before_runtime(tmp_path):
++    runtime = FakeRuntime()
++    workspace, tool = _tool(tmp_path, runtime)
++
++    unsupported = tool.execute(_request("bash", ["-c", "echo unsafe"]))
++    escaped = tool.execute(_request("python", ["main.py"], cwd="../"))
++
++    assert not unsupported.success
++    assert "Python and pytest" in unsupported.error
++    assert not escaped.success
++    assert "traversal" in escaped.error.lower()
++    assert runtime.calls == []
++
++
++def test_requires_an_active_workspace_and_never_runs_on_host():
++    runtime = FakeRuntime()
++    kernel = Kernel()
++    tool = RunCommandTool(kernel.workspace_manager, runtime=runtime)
++
++    result = tool.execute(_request("python", ["-c", "print('unsafe')"]))
++
++    assert not result.success
++    assert "No active project workspace" in result.error
++    assert runtime.calls == []
++
++
++def test_timeout_force_removes_container_and_never_falls_back(tmp_path):
++    runtime = FakeRuntime(
++        start_result=SandboxProcessResult(137, stderr="timeout", timed_out=True)
++    )
++    workspace, tool = _tool(tmp_path, runtime)
++    (workspace / "main.py").write_text("pass\n", encoding="utf-8")
++
++    result = tool.execute(_request("python", ["main.py"], timeout=0.05))
++
++    assert not result.success
++    assert "timed out" in result.error.lower()
++    assert any(call[0][:2] == ["kill", runtime.calls[0][0][runtime.calls[0][0].index("--name") + 1]] for call in runtime.calls)
++    assert runtime.calls[-1][0][0:2] == ["rm", "--force"]
++
++
++def test_fails_closed_when_local_image_cannot_be_created(tmp_path):
++    runtime = FakeRuntime(create_result=SandboxProcessResult(1, stderr="image missing"))
++    workspace, tool = _tool(tmp_path, runtime)
++    (workspace / "main.py").write_text("pass\n", encoding="utf-8")
++
++    result = tool.execute(_request("python", ["main.py"]))
++
++    assert not result.success
++    assert "never pulls images" in result.error
++    assert all(call[0][0] != "start" for call in runtime.calls)
++
++
++def test_runtime_output_is_bounded_and_marked(tmp_path):
++    runtime = FakeRuntime(
++        start_result=SandboxProcessResult(
++            0,
++            stdout="x" * (128 * 1024),
++            stderr="y" * (128 * 1024),
++            stdout_truncated=True,
++            stderr_truncated=True,
++        )
++    )
++    workspace, tool = _tool(tmp_path, runtime)
++    (workspace / "main.py").write_text("pass\n", encoding="utf-8")
++
++    result = tool.execute(_request("python", ["main.py"]))
++
++    assert result.success
++    assert result.output["sandbox"]["output_truncated"] is True
++    assert "stdout truncated" in result.output["stdout"]
++    assert "stderr truncated" in result.output["stderr"]
++
++
++def test_runtime_adapter_bounds_output_and_kills_timed_out_cli():
++    noisy = _bounded_process(
++        [sys.executable, "-c", "print('x' * 100000)"],
++        timeout=5,
++        output_limit=32,
++    )
++    sleeper = _bounded_process(
++        [sys.executable, "-c", "import time; time.sleep(5)"],
++        timeout=0.05,
++        output_limit=32,
++    )
++
++    assert noisy.returncode == 0
++    assert len(noisy.stdout.encode("utf-8")) <= 32
++    assert noisy.stdout_truncated
++    assert sleeper.timed_out
+\ No newline at end of file
+diff --git a/tests/test_workspace_project_task.py b/tests/test_workspace_project_task.py
+index 537920f..293850a 100644
+--- a/tests/test_workspace_project_task.py
++++ b/tests/test_workspace_project_task.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import copy
+ import sys
++from pathlib import Path
+ 
+ from core import Kernel, Planner
+ from core.agent import AgentPlanProposal
+@@ -21,6 +22,7 @@ from core.tools import (
+     ToolRuntimeModule,
+     WriteWorkspaceFileTool,
+ )
++from core.tools.sandbox import SandboxProcessResult
+ 
+ 
+ GOAL = (
+@@ -30,6 +32,35 @@ GOAL = (
+ FILE_CONTENT = 'print("ASTA_OK")\n'
+ 
+ 
++class FakeSandboxRuntime:
++    runtime_name = "test-container-runtime"
++
++    def __init__(self, *, timeout_on_start=False):
++        self.calls = []
++        self.timeout_on_start = timeout_on_start
++        self.snapshot_main = ""
++
++    def run(self, arguments, *, timeout, output_limit):
++        arguments = list(arguments)
++        self.calls.append(arguments)
++        if arguments[0] == "create":
++            mount = arguments[arguments.index("--mount") + 1]
++            source = mount.split("source=", 1)[1].split(",target=", 1)[0]
++            main_file = Path(source) / "main.py"
++            self.snapshot_main = (
++                main_file.read_text(encoding="utf-8")
++                if main_file.is_file()
++                else ""
++            )
++            return SandboxProcessResult(0, stdout="test-container\n")
++        if arguments[0] == "start":
++            if self.timeout_on_start:
++                return SandboxProcessResult(137, timed_out=True)
++            stdout = "ASTA_OK\n" if "ASTA_OK" in self.snapshot_main else "WRONG\n"
++            return SandboxProcessResult(0, stdout=stdout)
++        return SandboxProcessResult(0)
++
++
+ class FixedPlanBrain:
+     """Deterministic planner fixture; the live executor remains ASTA's runtime."""
+ 
+@@ -200,7 +231,12 @@ def _build_runtime(
+     kernel.register_tool(ListWorkspaceFilesTool(kernel.workspace_manager))
+     kernel.register_tool(ReadWorkspaceFileTool(kernel.workspace_manager))
+     kernel.register_tool(WriteWorkspaceFileTool(kernel.workspace_manager))
+-    kernel.register_tool(RunCommandTool(kernel.workspace_manager))
++    kernel.register_tool(
++        RunCommandTool(
++            kernel.workspace_manager,
++            runtime=FakeSandboxRuntime(),
++        )
++    )
+ 
+     brain = FixedPlanBrain(plan, replanned_steps=replanned_plan)
+     kernel.agent_brain = brain
+@@ -427,7 +463,8 @@ def test_run_command_is_workspace_rooted_and_times_out(tmp_path):
+     workspace.mkdir()
+     kernel = Kernel()
+     kernel.workspace_manager.update_project(path=str(workspace))
+-    tool = RunCommandTool(kernel.workspace_manager)
++    runtime = FakeSandboxRuntime(timeout_on_start=True)
++    tool = RunCommandTool(kernel.workspace_manager, runtime=runtime)
+ 
+     escaped = tool.execute(
+         ToolRequest(
+@@ -457,6 +494,8 @@ def test_run_command_is_workspace_rooted_and_times_out(tmp_path):
+     )
+     assert not timed_out.success
+     assert "timed out" in timed_out.error.lower()
++    assert any(call[0] == "kill" for call in runtime.calls)
++    assert runtime.calls[-1][:2] == ["rm", "--force"]
+ 
+ 
+ def test_write_waits_for_explicit_authorization_before_touching_file(tmp_path):

@@ -1,0 +1,570 @@
+diff --git a/README.md b/README.md
+index cb7431d..03ac038 100644
+--- a/README.md
++++ b/README.md
+@@ -493,6 +493,13 @@ send `{"type": "hud.hello", "token": "<ASTA_HUD_TOKEN>"}`; unauthenticated
+ clients, and anything that is not a JSON line (for example an HTTP request sent
+ by a web page), are disconnected before they can send commands or read state.
+ 
++The conversation panel also shows the current project, repository/branch, and
++up to four recent safe relative file names. The renderer receives a dedicated
++workspace-context message containing only those display fields; the local
++project root, file contents, environment, and hardware details are not sent to
++the HUD. Recent-file chips are informational only and do not open or modify
++files.
++
+ ## Layout
+ 
+ | Path | Contents |
+diff --git a/hud/hud_module.py b/hud/hud_module.py
+index 19b63c7..0b5903e 100644
+--- a/hud/hud_module.py
++++ b/hud/hud_module.py
+@@ -26,6 +26,7 @@ class HUDModule(Module):
+         self._runtime_ready = False
+ 
+     def initialize(self):
++        self.event_bus.subscribe("workspace_updated", self.on_workspace_updated)
+         self.event_bus.subscribe("voice_ready", self.on_voice_ready)
+         self.event_bus.subscribe("assistant_sentence", self.on_assistant_sentence)
+         self.event_bus.subscribe("command_acknowledged", self.on_command_acknowledged)
+@@ -63,6 +64,7 @@ class HUDModule(Module):
+             self.chat_history.initialize()
+             self.transport.start()
+             self.transport.publish_lifecycle("starting")
++            self._publish_workspace_context()
+             self._publish_chat_context()
+             self._publish_state()
+             self.transport.publish_audio_level(0.0)
+@@ -82,6 +84,21 @@ class HUDModule(Module):
+     def _publish_chat_index(self):
+         self.transport.publish_chat_sessions(self.chat_history.sessions())
+ 
++    def _publish_workspace_context(self, workspace=None):
++        if not isinstance(workspace, dict):
++            manager = getattr(self.kernel, "workspace_manager", None)
++            workspace = manager.snapshot() if manager is not None else {}
++        try:
++            self.transport.publish_workspace_context(workspace)
++        except (OSError, TypeError, ValueError) as exc:
++            print(
++                f"[HUD] Workspace context publish failed: {type(exc).__name__}: {exc}",
++                flush=True,
++            )
++
++    def on_workspace_updated(self, workspace=None, **kwargs):
++        self._publish_workspace_context(workspace)
++
+     def get_state(self):
+         return self.state
+ 
+@@ -471,6 +488,7 @@ class HUDModule(Module):
+ 
+     def shutdown(self):
+         for event_name, callback in (
++            ("workspace_updated", self.on_workspace_updated),
+             ("voice_ready", self.on_voice_ready),
+             ("assistant_sentence", self.on_assistant_sentence),
+             ("command_acknowledged", self.on_command_acknowledged),
+diff --git a/hud/main.js b/hud/main.js
+index a0ce8e0..8ef89d4 100644
+--- a/hud/main.js
++++ b/hud/main.js
+@@ -22,6 +22,7 @@ let rendererReady = false
+ let runtimeReady = false
+ let latestHudLifecycle = null
+ let latestHudState = null
++let latestHudWorkspace = null
+ let latestHudAudio = null
+ let latestHudChatHistory = null
+ let latestHudChatSessions = null
+@@ -44,6 +45,12 @@ function sendHudState (state) {
+   win.webContents.send('asta:hud-state', state)
+ }
+ 
++function sendHudWorkspace (workspace) {
++  latestHudWorkspace = workspace
++  if (!rendererReady || !win || win.isDestroyed()) return
++  win.webContents.send('asta:hud-workspace', workspace)
++}
++
+ function sendHudAudio (audio) {
+   latestHudAudio = audio
+   if (!rendererReady || !win || win.isDestroyed()) return
+@@ -76,6 +83,7 @@ function flushRendererTelemetry () {
+   if (!rendererReady || !win || win.isDestroyed()) return
+   if (latestHudLifecycle) win.webContents.send('asta:hud-lifecycle', latestHudLifecycle)
+   if (latestHudState) win.webContents.send('asta:hud-state', latestHudState)
++  if (latestHudWorkspace) win.webContents.send('asta:hud-workspace', latestHudWorkspace)
+   if (latestHudAudio) win.webContents.send('asta:hud-audio', latestHudAudio)
+   if (latestHudChatHistory) win.webContents.send('asta:hud-chat-history', latestHudChatHistory)
+   if (latestHudChatSessions) win.webContents.send('asta:hud-chat-sessions', latestHudChatSessions)
+@@ -137,6 +145,10 @@ function handleHudMessage (message) {
+     sendHudState(message.state || {})
+     return
+   }
++  if (message.type === 'hud.workspace') {
++    sendHudWorkspace(message.workspace || {})
++    return
++  }
+   if (message.type === 'hud.audio') {
+     sendHudAudio(message.audio || {})
+     return
+diff --git a/hud/preload.js b/hud/preload.js
+index 5e4e40f..f145817 100644
+--- a/hud/preload.js
++++ b/hud/preload.js
+@@ -28,6 +28,11 @@ contextBridge.exposeInMainWorld('asta', {
+       try { fn(state) } catch (e) { /* ignore */ }
+     })
+   },
++  onHudWorkspace: (fn) => {
++    ipcRenderer.on('asta:hud-workspace', (_event, workspace) => {
++      try { fn(workspace) } catch (e) { /* ignore */ }
++    })
++  },
+   onHudAudio: (fn) => {
+     ipcRenderer.on('asta:hud-audio', (_event, audio) => {
+       try { fn(audio) } catch (e) { /* ignore */ }
+diff --git a/hud/renderer/chat_fullscreen_fix.css b/hud/renderer/chat_fullscreen_fix.css
+index 97c072a..2d6402e 100644
+--- a/hud/renderer/chat_fullscreen_fix.css
++++ b/hud/renderer/chat_fullscreen_fix.css
+@@ -32,6 +32,7 @@
+ }
+ 
+ .chat.chat-fullscreen .chat-header,
++.chat.chat-fullscreen .workspace-context,
+ .chat.chat-fullscreen .chat-messages,
+ .chat.chat-fullscreen .chat-input,
+ .chat.chat-fullscreen .chat-recent {
+@@ -39,6 +40,11 @@
+   z-index: 30;
+ }
+ 
++.chat.chat-fullscreen .workspace-context {
++  margin-right: 22px;
++  margin-left: 22px;
++}
++
+ .chat.chat-fullscreen .chat-recent {
+   background: linear-gradient(180deg, rgba(0, 12, 18, 0.44), rgba(0, 5, 8, 0.28));
+   backdrop-filter: blur(5px);
+diff --git a/hud/renderer/chat_history.css b/hud/renderer/chat_history.css
+index 55c8ccb..6403d43 100644
+--- a/hud/renderer/chat_history.css
++++ b/hud/renderer/chat_history.css
+@@ -16,6 +16,30 @@
+   width: 0;
+ }
+ 
++.workspace-context {
++  flex: 0 0 auto;
++  margin: 8px 10px 0;
++  padding: 8px 9px 7px;
++  border: 1px solid rgba(0, 229, 255, 0.13);
++  border-radius: 4px;
++  background: linear-gradient(105deg, rgba(0, 229, 255, 0.055), rgba(0, 8, 12, 0.30));
++}
++.workspace-context[hidden],
++.workspace-branch[hidden],
++.workspace-repository[hidden],
++.workspace-recent-row[hidden] { display: none !important; }
++.workspace-context-identity { display: flex; align-items: center; gap: 8px; min-width: 0; }
++.workspace-context-mark { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 8px rgba(0, 229, 255, 0.65); }
++.workspace-context-title { display: flex; flex: 1 1 auto; flex-direction: column; gap: 3px; min-width: 0; }
++.workspace-context-kicker { color: rgba(190, 220, 235, 0.38); font-size: 7px; letter-spacing: 0.17em; }
++.workspace-context-title strong { overflow: hidden; color: rgba(235, 248, 255, 0.92); font-size: 10px; font-weight: 500; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
++.workspace-branch { flex: 0 1 auto; max-width: 45%; overflow: hidden; padding: 4px 6px; border: 1px solid rgba(0, 229, 255, 0.13); border-radius: 3px; color: rgba(115, 224, 239, 0.78); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
++.workspace-repository { margin: 5px 0 0 14px; overflow: hidden; color: rgba(190, 220, 235, 0.44); font-size: 8px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
++.workspace-recent-row { display: flex; align-items: center; gap: 7px; min-width: 0; margin: 7px 0 0 14px; }
++.workspace-recent-label { flex: 0 0 auto; color: rgba(190, 220, 235, 0.34); font-size: 7px; letter-spacing: 0.13em; }
++.workspace-file-list { display: flex; flex: 1 1 auto; gap: 4px; min-width: 0; overflow: hidden; }
++.workspace-file { max-width: 47%; overflow: hidden; padding: 3px 5px; border: 1px solid rgba(0, 229, 255, 0.10); border-radius: 3px; background: rgba(0, 229, 255, 0.035); color: rgba(213, 237, 247, 0.61); font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
++
+ .task-status {
+   flex: 0 0 auto;
+   margin: 10px 12px 0;
+diff --git a/hud/renderer/hud_state_bridge.js b/hud/renderer/hud_state_bridge.js
+index fc649b4..bc914c7 100644
+--- a/hud/renderer/hud_state_bridge.js
++++ b/hud/renderer/hud_state_bridge.js
+@@ -45,6 +45,42 @@
+     }
+   }
+ 
++  function renderWorkspaceContext (workspace) {
++    var card = document.getElementById('workspaceContext')
++    var nameNode = document.getElementById('workspaceProjectName')
++    var branchNode = document.getElementById('workspaceBranch')
++    var repositoryNode = document.getElementById('workspaceRepository')
++    var recentRow = document.getElementById('workspaceRecentRow')
++    var recentList = document.getElementById('workspaceRecentFiles')
++    if (!card || !nameNode || !branchNode || !repositoryNode || !recentRow || !recentList) return
++
++    workspace = workspace || {}
++    var projectName = String(workspace.project_name || '').trim().slice(0, 96)
++    var branch = String(workspace.branch || '').trim().slice(0, 72)
++    var repository = String(workspace.repository || '').trim().slice(0, 180)
++    var files = Array.isArray(workspace.recent_files) ? workspace.recent_files.slice(0, 4) : []
++
++    card.hidden = !projectName
++    if (!projectName) return
++
++    nameNode.textContent = projectName
++    branchNode.textContent = branch
++    branchNode.hidden = !branch
++    repositoryNode.textContent = repository
++    repositoryNode.hidden = !repository
++
++    while (recentList.firstChild) recentList.removeChild(recentList.firstChild)
++    files.forEach(function (file) {
++      if (typeof file !== 'string' || !file.trim()) return
++      var item = document.createElement('span')
++      item.className = 'workspace-file'
++      item.textContent = file.trim().slice(0, 160)
++      item.title = item.textContent
++      recentList.appendChild(item)
++    })
++    recentRow.hidden = recentList.childNodes.length === 0
++  }
++
+   function renderTaskStatus (state) {
+     var card = document.getElementById('taskStatus')
+     var stageNode = document.getElementById('taskStatusStage')
+@@ -145,6 +181,18 @@
+     })
+   }
+ 
++  if (bridge.onHudWorkspace) {
++    bridge.onHudWorkspace(function (workspace) {
++      try {
++        renderWorkspaceContext(workspace)
++      } catch (error) {
++        if (window.console) {
++          console.warn('[ASTA HUD] Invalid workspace context:', error)
++        }
++      }
++    })
++  }
++
+   if (bridge.onHudAudio) {
+     bridge.onHudAudio(function (audio) {
+       try {
+diff --git a/hud/renderer/index.html b/hud/renderer/index.html
+index ca15d6b..0fab1e5 100644
+--- a/hud/renderer/index.html
++++ b/hud/renderer/index.html
+@@ -52,6 +52,22 @@
+           </button>
+         </div>
+ 
++        <section class="workspace-context" id="workspaceContext" aria-label="Current project" hidden>
++          <div class="workspace-context-identity">
++            <span class="workspace-context-mark" aria-hidden="true"></span>
++            <div class="workspace-context-title">
++              <span class="workspace-context-kicker">CURRENT PROJECT</span>
++              <strong id="workspaceProjectName"></strong>
++            </div>
++            <span class="workspace-branch" id="workspaceBranch" hidden></span>
++          </div>
++          <div class="workspace-repository" id="workspaceRepository" hidden></div>
++          <div class="workspace-recent-row" id="workspaceRecentRow" hidden>
++            <span class="workspace-recent-label">RECENT</span>
++            <div class="workspace-file-list" id="workspaceRecentFiles"></div>
++          </div>
++        </section>
++
+         <div class="chat-workspace">
+           <aside class="chat-recent" id="chatRecent" aria-label="Recent conversations">
+             <div class="chat-recent-header">
+diff --git a/hud/transport.py b/hud/transport.py
+index 9a5f27e..d9a8f70 100644
+--- a/hud/transport.py
++++ b/hud/transport.py
+@@ -10,11 +10,14 @@ from __future__ import annotations
+ import hmac
+ import json
+ import os
++import re
+ import socket
+ import threading
+ import time
+ from dataclasses import asdict
++from pathlib import PureWindowsPath
+ from typing import Any, Callable
++from urllib.parse import urlsplit
+ 
+ 
+ DEFAULT_HOST = "127.0.0.1"
+@@ -25,6 +28,21 @@ TOKEN_ENV = "ASTA_HUD_TOKEN"
+ _AUTH_TIMEOUT_SECONDS = 5.0
+ # Reject clients that stream data without line breaks (memory exhaustion).
+ _MAX_BUFFER_BYTES = 256 * 1024
++_SECRET_FILE_PART = re.compile(
++    r"(?:^|[._-])(?:secrets?|credentials?|tokens?)(?:[._-]|$)",
++    re.IGNORECASE,
++)
++_PRIVATE_PATH_PARTS = {
++    ".git",
++    ".ssh",
++    ".aws",
++    ".azure",
++    ".venv",
++    "venv",
++    "node_modules",
++    "credentials",
++    "secrets",
++}
+ 
+ 
+ class HUDTransport:
+@@ -50,6 +68,7 @@ class HUDTransport:
+         self._clients_lock = threading.Lock()
+         self._stop = threading.Event()
+         self._last_state_message: dict[str, Any] | None = None
++        self._last_workspace_message: dict[str, Any] | None = None
+         self._last_audio_message: dict[str, Any] | None = None
+         self._last_lifecycle_message: dict[str, Any] | None = None
+         self._last_chat_history_message: dict[str, Any] | None = None
+@@ -78,6 +97,20 @@ class HUDTransport:
+         self._last_state_message = message
+         self._broadcast(message)
+ 
++    def publish_workspace_context(self, workspace: dict[str, Any] | None) -> None:
++        """Publish only display-safe project identity, never the full workspace."""
++        value = workspace if isinstance(workspace, dict) else {}
++        recent_files = self._safe_recent_files(value.get("recent_files"))
++        display = {
++            "project_name": self._safe_text(value.get("project_name"), 96),
++            "repository": self._repository_label(value.get("repository")),
++            "branch": self._safe_text(value.get("branch"), 72),
++            "recent_files": recent_files,
++        }
++        message = {"type": "hud.workspace", "version": 1, "workspace": display}
++        self._last_workspace_message = message
++        self._broadcast(message)
++
+     def publish_audio_level(self, level: float) -> None:
+         try:
+             value = float(level)
+@@ -202,6 +235,7 @@ class HUDTransport:
+             self._clients.add(client)
+         for cached in (
+             self._last_state_message,
++            self._last_workspace_message,
+             self._last_audio_message,
+             self._last_lifecycle_message,
+             self._last_chat_history_message,
+@@ -210,6 +244,93 @@ class HUDTransport:
+             if cached is not None:
+                 self._send_to_client(client, cached)
+ 
++    @staticmethod
++    def _safe_text(value: object, limit: int) -> str:
++        if not isinstance(value, str):
++            return ""
++        text = "".join(
++            character for character in value
++            if character.isprintable()
++        )
++        return text.strip()[:limit]
++
++    @classmethod
++    def _repository_label(cls, value: object) -> str:
++        """Return a non-clickable host/path label with credentials removed."""
++        raw = cls._safe_text(value, 2048)
++        if not raw:
++            return ""
++        try:
++            parsed = urlsplit(raw)
++        except ValueError:
++            return ""
++
++        if parsed.scheme and parsed.netloc:
++            if parsed.scheme.lower() not in {"http", "https", "ssh", "git"}:
++                return ""
++            host = parsed.hostname or ""
++            path = parsed.path
++        elif ":" in raw:
++            host_part, path = raw.split(":", 1)
++            host = host_part.rsplit("@", 1)[-1]
++        else:
++            return ""
++
++        if not host or not re.fullmatch(r"[A-Za-z0-9.-]+", host):
++            return ""
++        path = path.split("?", 1)[0].split("#", 1)[0].strip("/")
++        parts = [part for part in path.split("/") if part]
++        if not parts or any(part == ".." for part in parts):
++            return ""
++        label = "/".join(parts)
++        if label.lower().endswith(".git"):
++            label = label[:-4]
++        return f"{host}/{label}"[:180]
++
++    @staticmethod
++    def _safe_recent_files(value: object) -> list[str]:
++        if not isinstance(value, (list, tuple)):
++            return []
++        files: list[str] = []
++        for raw in value:
++            if not isinstance(raw, str):
++                continue
++            normalized = raw.strip().replace("\\", "/")
++            windows = PureWindowsPath(raw.strip())
++            if (
++                not normalized
++                or "\x00" in normalized
++                or normalized.startswith("/")
++                or windows.is_absolute()
++                or windows.drive
++            ):
++                continue
++            parts = [part for part in normalized.split("/") if part not in {"", "."}]
++            if (
++                not parts
++                or any(part == ".." for part in parts)
++                or any(not part.isprintable() for part in parts)
++            ):
++                continue
++            lower_parts = [part.lower() for part in parts]
++            if any(part in _PRIVATE_PATH_PARTS for part in lower_parts):
++                continue
++            if any(
++                part == ".env"
++                or (part.startswith(".env.") and part != ".env.example")
++                or PureWindowsPath(part).suffix.lower() in {".key", ".pem", ".p12", ".pfx"}
++                or _SECRET_FILE_PART.search(part)
++                for part in lower_parts
++            ):
++                continue
++            path = "/".join(parts)
++            if len(path) > 160 or path in files:
++                continue
++            files.append(path)
++            if len(files) >= 4:
++                break
++        return files
++
+     def _is_valid_hello(self, message: Any) -> bool:
+         if not isinstance(message, dict) or message.get("type") != "hud.hello":
+             return False
+diff --git a/tests/test_hud_module.py b/tests/test_hud_module.py
+index 754b34f..70110af 100644
+--- a/tests/test_hud_module.py
++++ b/tests/test_hud_module.py
+@@ -1,13 +1,27 @@
+ from types import SimpleNamespace
+ 
+ from core.event_bus import EventBus
++from core.workspace_manager import WorkspaceManager
+ from hud.hud_module import HUDModule
++from hud.transport import HUDTransport
+ 
+ 
+ class DummyRequest:
+     tool = "run_command"
+ 
+ 
++class RecordingHUDTransport(HUDTransport):
++    def __init__(self):
++        super().__init__(host="127.0.0.1", port=0, token="")
++        self.messages = []
++
++    def start(self):
++        return None
++
++    def _broadcast(self, message):
++        self.messages.append(message)
++
++
+ def build_hud():
+     kernel = SimpleNamespace(event_bus=EventBus())
+     hud = HUDModule(kernel)
+@@ -15,6 +29,85 @@ def build_hud():
+     return kernel, hud
+ 
+ 
++def test_hud_shows_only_safe_project_context_and_tracks_updates():
++    event_bus = EventBus()
++    manager = WorkspaceManager(event_bus=event_bus)
++    manager.update_project(
++        name="<ASTA & Project>",
++        path=r"C:\Users\Private\Projects\ASTA",
++        repository=(
++            "https://bot:TOPSECRET@github.com/DEVpk108/Asta.git"
++            "?access_token=also-secret#fragment"
++        ),
++        branch="feat/hud-context",
++    )
++    manager.set_recent_files(
++        [
++            "README.md",
++            ".env",
++            "../outside.py",
++            r"C:\Users\Private\secret.py",
++            "src/token.json",
++            "docs/overview.md",
++        ]
++    )
++    hud = HUDModule(SimpleNamespace(event_bus=event_bus, workspace_manager=manager))
++    transport = RecordingHUDTransport()
++    hud.transport = transport
++
++    hud.initialize()
++    messages = [item for item in transport.messages if item["type"] == "hud.workspace"]
++    assert messages
++    initial = messages[-1]["workspace"]
++    assert initial == {
++        "project_name": "<ASTA & Project>",
++        "repository": "github.com/DEVpk108/Asta",
++        "branch": "feat/hud-context",
++        "recent_files": ["README.md", "docs/overview.md"],
++    }
++    assert "project_path" not in initial
++    assert "TOPSECRET" not in str(initial)
++    assert "also-secret" not in str(initial)
++
++    manager.add_recent_file("core/agent/brain.py")
++    updated = [
++        item for item in transport.messages if item["type"] == "hud.workspace"
++    ][-1]["workspace"]
++    assert updated["recent_files"][0] == "core/agent/brain.py"
++
++    hud.shutdown()
++    count_after_shutdown = len(transport.messages)
++    manager.add_recent_file("after/shutdown.py")
++    assert len(transport.messages) == count_after_shutdown
++
++
++def test_authenticated_hud_client_receives_cached_workspace_context():
++    transport = RecordingHUDTransport()
++    transport.publish_workspace_context(
++        {
++            "project_name": "ASTA",
++            "project_path": r"C:\Users\Private\ASTA",
++            "branch": "main",
++            "recent_files": ["README.md"],
++        }
++    )
++    sent = []
++    transport._send_to_client = lambda client, message: sent.append(message)
++    client = object()
++
++    transport._register_authenticated_client(client)
++
++    assert any(
++        message["type"] == "hud.workspace"
++        and message["workspace"]["project_name"] == "ASTA"
++        for message in sent
++    )
++    assert all("project_path" not in message for message in sent)
++    with transport._clients_lock:
++        transport._clients.discard(client)
++        transport._authenticated.discard(client)
++
++
+ def test_speech_lifecycle_updates_hud_state():
+     kernel, hud = build_hud()
+ 

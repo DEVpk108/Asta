@@ -215,7 +215,10 @@ function connectToAstaHud () {
   })
   socket.on('error', (error) => console.warn(`[HUD] A.S.T.A. transport unavailable: ${error.message}`))
   socket.on('close', () => {
-    if (hudSocket === socket) hudSocket = null
+    if (hudSocket !== socket) return
+    hudSocket = null
+    runtimeReady = false
+    sendHudLifecycle({ status: 'disconnected' })
     if (!hudClosing) scheduleHudReconnect()
   })
   socket.connect(HUD_PORT, HUD_HOST)
@@ -225,9 +228,10 @@ function createWindow () {
   win = new BrowserWindow({
     width: 1320,
     height: 860,
-    minWidth: 760,
+    minWidth: 390,
     minHeight: 560,
-    backgroundColor: '#000000',
+    backgroundColor: '#f5f5f7',
+    icon: path.join(__dirname, 'assets', 'asta-icon.png'),
     show: false,
     frame: isMac,
     titleBarStyle: isMac ? 'hiddenInset' : 'default',
@@ -325,3 +329,9 @@ ipcMain.on('hud:select-chat', (_event, sessionId) => { selectChatSession(session
 ipcMain.on('hud:delete-chat', (_event, sessionId) => { deleteChatSession(sessionId) })
 ipcMain.on('hud:new-chat', () => { startNewChat() })
 ipcMain.on('hud:conversation-mode', (_event, enabled) => { setConversationMode(enabled) })
+
+// Explicit approval is bound to an existing request; Python rechecks TTL/ownership.
+ipcMain.on('hud:approval', (_event, value) => {
+  if (!value || typeof value.requestId !== 'string' || typeof value.approved !== 'boolean') return
+  writeHudMessage({ type: 'hud.approval', version: 1, request_id: value.requestId, approved: value.approved })
+})

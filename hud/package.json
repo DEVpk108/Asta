@@ -24,6 +24,7 @@
       "main.js",
       "preload.js",
       "renderer/**/*",
+      "assets/**/*",
       "package.json"
     ],
     "mac": {
@@ -31,11 +32,13 @@
       "category": "public.app-category.utilities"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "assets/asta-icon.png"
     },
     "linux": {
       "target": "AppImage",
-      "category": "Utility"
+      "category": "Utility",
+      "icon": "assets/asta-icon.png"
     }
   }
 }

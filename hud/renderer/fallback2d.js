@@ -3,7 +3,8 @@
 'use strict'
 
 ;(function (global) {
-  function create (canvas) {
+  function create (canvas, options) {
+    options = options || {}
     var ctx = canvas.getContext('2d')
     if (!ctx) return null
 
@@ -31,9 +32,13 @@
     var dpr = 1, W = 1, H = 1
 
     function resize () {
-      dpr = Math.min(global.devicePixelRatio || 1, 2)
-      W = Math.max(1, canvas.clientWidth)
-      H = Math.max(1, canvas.clientHeight)
+      var nextDpr = Math.min(global.devicePixelRatio || 1, Number(options.maxDpr) || 2)
+      var nextW = Math.max(1, canvas.clientWidth)
+      var nextH = Math.max(1, canvas.clientHeight)
+      var ratio = Math.min(1, (Number(options.maxDimension) || 2048) / Math.max(nextW * nextDpr, nextH * nextDpr))
+      nextDpr *= ratio
+      if (W === nextW && H === nextH && dpr === nextDpr && canvas.width > 1) return
+      dpr = nextDpr; W = nextW; H = nextH
       canvas.width = Math.round(W * dpr)
       canvas.height = Math.round(H * dpr)
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -70,7 +75,7 @@
         ctx.lineTo(circleCx + Math.cos(spokeAngle) * outer, circleCy + Math.sin(spokeAngle) * outer)
         ctx.stroke()
       }
-      var coreRadius = circleR * (0.16 + 0.03 * Math.sin(s.time * 2.2))
+      var coreRadius = circleR * (0.16 + 0.03 * Math.sin(s.time * 2.2) + 0.13 * Math.max(0, Math.min(1, s.amp || 0)))
       ctx.fillStyle = 'rgba(255,145,0,' + (0.45 * s.progress) + ')'
       ctx.shadowColor = 'rgba(255,145,0,0.9)'
       ctx.beginPath()

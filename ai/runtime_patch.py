@@ -2,6 +2,7 @@ import re
 import time
 
 from core.contracts import IntentResult, IntentType, ToolResult
+from ai.model_tool_calls import finish_model_response, speech_filter
 
 
 _POST_RESPONSE_SCREENSHOT_PATTERN = re.compile(
@@ -381,7 +382,7 @@ def apply_ai_runtime_patch():
 
         response = self.engine.generate_response(
             text,
-            on_sentence=on_sentence,
+            on_sentence=speech_filter(on_sentence),
             context=runtime_context,
         )
         if not response:
@@ -390,6 +391,10 @@ def apply_ai_runtime_patch():
 
         # Speech has already received sentence chunks during generation.
         # Emit the completed response separately for chat/HUD consumers.
+        # Tool-call markup is routed (allowlisted) or dropped, never shown.
+        response = finish_model_response(self, response)
+        if not response:
+            return
         self.event_bus.emit("assistant_response", text=response)
 
     def patched_voice_on_conversation_mode_set(self, enabled):

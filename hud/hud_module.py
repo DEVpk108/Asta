@@ -1,3 +1,7 @@
+import json
+import time
+from threading import RLock
+
 from core.module import Module
 
 from chat_history import ChatHistoryStore
@@ -20,12 +24,15 @@ class HUDModule(Module):
     def __init__(self, kernel):
         super().__init__(name="HUD", event_bus=kernel.event_bus, kernel=kernel)
         self.state = HUDState()
+        self._model_state_lock = RLock()
         self.transport = HUDTransport()
         self.chat_history = ChatHistoryStore()
         self._conversation_active = False
         self._runtime_ready = False
 
     def initialize(self):
+        self.event_bus.subscribe("model_route_changed", self.on_model_route_changed)
+        self.event_bus.subscribe("background_task_changed", self.on_background_task_changed)
         self.event_bus.subscribe("workspace_updated", self.on_workspace_updated)
         self.event_bus.subscribe("voice_ready", self.on_voice_ready)
         self.event_bus.subscribe("assistant_sentence", self.on_assistant_sentence)
@@ -45,6 +52,7 @@ class HUDModule(Module):
             self.on_voice_action_committed,
         )
         self.event_bus.subscribe("conversation_mode_set", self.on_conversation_mode_set)
+        self.event_bus.subscribe("conversation_state_changed", self.on_conversation_state_changed)
         self.event_bus.subscribe("speech_started", self.on_speech_started)
         self.event_bus.subscribe("speech_finished", self.on_speech_finished)
         self.event_bus.subscribe("speech_interrupt", self.on_speech_interrupt)
@@ -99,6 +107,30 @@ class HUDModule(Module):
     def on_workspace_updated(self, workspace=None, **kwargs):
         self._publish_workspace_context(workspace)
 
+    def on_model_route_changed(self, profile="", status="", model="", **kwargs):
+        if profile not in {"general", "coding"} or status not in {"loading", "ready", "error", "generating", "stopped"}:
+            return
+        # Model loading must not overwrite approval or task-execution state.
+        with self._model_state_lock:
+            self.state.model_services = dict(self.state.model_services)
+            self.state.model_services[profile] = {"status": status, "model": str(model or "").replace("\\", "/").rsplit("/", 1)[-1][:160]}
+            self.state.model_profile = profile
+            self.state.model_status = status
+            self.state.model_name = str(model or "").replace("\\", "/").rsplit("/", 1)[-1][:160]
+            self._publish_state()
+
+    def on_background_task_changed(self, task=None, **kwargs):
+        if not isinstance(task, dict):
+            return
+        # No file content, model reasoning or absolute workspace paths in status.
+        self.state.background_task = {key: str(task.get(key) or "")[:200]
+            for key in ("job_id", "task_id", "phase")}
+        self._publish_state()
+
+    def _background_owns(self, task_id=None):
+        background = getattr(getattr(self, "kernel", None), "background_tasks", None)
+        return background is not None and (background.owns(task_id) if task_id else background.in_worker())
+
     def get_state(self):
         return self.state
 
@@ -129,10 +161,48 @@ class HUDModule(Module):
         return self.state
 
     def _publish_state(self):
+        self._sync_action_display()
         try:
             self.transport.publish_state(self.state)
         except OSError as exc:
             print(f"[HUD] State publish failed: {type(exc).__name__}: {exc}", flush=True)
+
+    def _sync_action_display(self):
+        """Whitelist observable steps and exact approval requests, never plan content."""
+        kernel = getattr(self, "kernel", None)
+        runtime = getattr(kernel, "model_runtime", None)
+        self.state.model_mode = getattr(runtime, "mode", None)
+        background = getattr(kernel, "background_tasks", None)
+        manager = getattr(kernel, "task_manager", None)
+        snapshot = getattr(background, "snapshot", None)
+        state = snapshot() if callable(snapshot) else None
+        task_id = state.get("task_id") if state else None
+        task = manager.get(task_id) if manager is not None and task_id else None
+        self.state.project_steps = []
+        if task is not None and task.plan is not None:
+            for step in task.plan.steps:
+                # Labels are built from registered tools, not model rationale/code.
+                tool = str(step.metadata.get("tool") or "")
+                paths = HUDTransport._safe_recent_files([step.metadata.get("path")])
+                self.state.project_steps.append({"id": step.id, "tool": tool[:100],
+                    "status": step.status.value, "path": paths[0] if paths else "",
+                    "verification": str(step.metadata.get("verification") or "")[:80]})
+        self.state.approvals = []
+        approval_manager = getattr(kernel, "approval_manager", None)
+        if approval_manager is not None:
+            for pending in approval_manager.list_pending():
+                request = pending.request
+                preview = "Review the requested tool before approving."
+                if request.tool == "system.run_command":
+                    args = request.arguments
+                    preview = json.dumps({"target": args.get("target"),
+                        "arguments": args.get("arguments", []), "cwd": args.get("cwd", ".")}, ensure_ascii=False)
+                ttl = approval_manager.ttl_seconds
+                remaining = max(0, ttl - (time.monotonic() - pending.created_at))
+                self.state.approvals.append({"request_id": request.request_id,
+                    "tool": request.tool, "preview": preview,
+                    "can_approve": request.tool == "system.run_command",
+                    "expires_at": time.time() + remaining if ttl > 0 else None})
 
     def reset_state(self):
         self.state = HUDState()
@@ -157,10 +227,28 @@ class HUDModule(Module):
         else:
             self.set_state(mode="idle", intensity="low", status="IDLE", progress=None, activity=None)
 
+    def on_conversation_state_changed(self, active=False, *args, **kwargs):
+        """Wake-word follow-up window opened or closed (no manual toggle)."""
+        self._conversation_active = bool(active)
+        if not self._conversation_active and self.state.mode == "listening":
+            self.set_state(mode="idle", intensity="low", status="IDLE", progress=None, activity=None)
+
     def on_transport_message(self, message):
         if not isinstance(message, dict):
             return
         message_type = message.get("type")
+        if message_type == "hud.approval":
+            request_id = message.get("request_id")
+            approved = message.get("approved")
+            manager = getattr(self.kernel, "approval_manager", None)
+            pending = manager.get(request_id) if manager is not None and isinstance(request_id, str) else None
+            if (isinstance(request_id, str) and isinstance(approved, bool)
+                    and manager is not None and pending is not None and manager.contains(request_id)
+                    and (not approved or pending.request.tool == "system.run_command")):
+                self.event_bus.emit("tool_confirmation_response", request_id=request_id, approved=approved)
+            self._publish_state()
+            return
+
         if message_type == "hud.shutdown":
             print("[HUD] Shutdown requested by Electron HUD.", flush=True)
             try:
@@ -305,6 +393,9 @@ class HUDModule(Module):
         )
 
     def on_task_progress(self, task_id=None, phase="working", text="", *args, **kwargs):
+        if self._background_owns(task_id):
+            self._publish_state()
+            return  # The background row does not replace foreground voice state.
         phase_value = str(phase or "working").strip().lower()
         activity = str(text or "working").strip() or "working"
         sandbox_run = "isolated container" in activity.lower()
@@ -350,7 +441,7 @@ class HUDModule(Module):
         task = getattr(self.kernel, "task_manager", None)
         current = task.current() if task is not None else None
         status = getattr(current, "status", None)
-        if getattr(status, "value", "") == "active":
+        if getattr(status, "value", "") == "active" and not self._background_owns(getattr(current, "id", None)):
             self.set_state(
                 mode="executing",
                 intensity="high",
@@ -366,7 +457,7 @@ class HUDModule(Module):
                 progress=None,
                 activity="waiting",
             )
-        else:
+        elif self._conversation_active:
             self.set_state(
                 mode="listening",
                 intensity="medium",
@@ -374,6 +465,9 @@ class HUDModule(Module):
                 progress=None,
                 activity="command",
             )
+        else:
+            # Conversation mode is off: only the wake word is being watched.
+            self.set_state(mode="idle", intensity="low", status="IDLE", progress=None, activity=None)
         self.transport.publish_audio_level(0.0)
 
     def on_speech_interrupt(self, *args, **kwargs):
@@ -397,6 +491,8 @@ class HUDModule(Module):
     })
 
     def on_tool_request(self, request):
+        if self._background_owns(getattr(request, "metadata", {}).get("task_id")):
+            return
         tool = str(getattr(request, "tool", "") or "")
         sandbox_run = tool == "system.run_command"
         self.set_state(
@@ -440,6 +536,8 @@ class HUDModule(Module):
             pass
 
     def on_agent_thinking_started(self, *args, **kwargs):
+        if self._background_owns():
+            return
         self.set_state(
             mode="thinking",
             intensity="high",
@@ -457,6 +555,9 @@ class HUDModule(Module):
         return None
 
     def on_task_finished(self, *args, **kwargs):
+        task = kwargs.get("task") or (args[0] if args else None)
+        if isinstance(task, dict) and self._background_owns(task.get("id")):
+            return
         self._restore_window()
         self.set_state(
             mode="idle",
@@ -488,6 +589,8 @@ class HUDModule(Module):
 
     def shutdown(self):
         for event_name, callback in (
+            ("model_route_changed", self.on_model_route_changed),
+            ("background_task_changed", self.on_background_task_changed),
             ("workspace_updated", self.on_workspace_updated),
             ("voice_ready", self.on_voice_ready),
             ("assistant_sentence", self.on_assistant_sentence),
@@ -495,6 +598,7 @@ class HUDModule(Module):
             ("task_progress", self.on_task_progress),
             ("user_message", self.on_user_message),
             ("conversation_mode_set", self.on_conversation_mode_set),
+            ("conversation_state_changed", self.on_conversation_state_changed),
             ("speech_started", self.on_speech_started),
             ("speech_finished", self.on_speech_finished),
             ("speech_interrupt", self.on_speech_interrupt),

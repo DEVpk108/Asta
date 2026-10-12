@@ -6,7 +6,10 @@ from dataclasses import dataclass, field
 from core.contracts import ToolRequest
 
 
-DEFAULT_APPROVAL_TTL_SECONDS = 30.0
+# Long enough to hear the spoken prompt and react; override with
+# ASTA_APPROVAL_TTL_SECONDS.
+DEFAULT_APPROVAL_TTL_SECONDS = 90.0
+APPROVAL_EXPIRED_ERROR = "Approval expired before a response; the step was not run."
 
 
 def _default_ttl_seconds() -> float:

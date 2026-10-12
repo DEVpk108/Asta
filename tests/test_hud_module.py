@@ -110,6 +110,7 @@ def test_authenticated_hud_client_receives_cached_workspace_context():
 
 def test_speech_lifecycle_updates_hud_state():
     kernel, hud = build_hud()
+    kernel.event_bus.emit("conversation_state_changed", active=True)
 
     kernel.event_bus.emit("speech_started")
     assert hud.get_state().mode == "speaking"
@@ -121,6 +122,28 @@ def test_speech_lifecycle_updates_hud_state():
     assert hud.get_state().intensity == "medium"
     assert hud.get_state().activity == "command"
 
+    hud.shutdown()
+
+
+def test_reply_after_conversation_off_returns_to_idle():
+    kernel, hud = build_hud()
+    kernel.event_bus.emit("conversation_mode_set", enabled=True)
+    kernel.event_bus.emit("conversation_mode_set", enabled=False)
+    # ASTA then says "Conversation mode is off..."; finishing must not re-listen.
+    kernel.event_bus.emit("speech_started")
+    kernel.event_bus.emit("speech_finished")
+    assert hud.get_state().mode == "idle"
+    hud.shutdown()
+
+
+def test_follow_up_window_closing_returns_to_idle():
+    kernel, hud = build_hud()
+    kernel.event_bus.emit("conversation_state_changed", active=True)
+    kernel.event_bus.emit("speech_started")
+    kernel.event_bus.emit("speech_finished")
+    assert hud.get_state().mode == "listening"
+    kernel.event_bus.emit("conversation_state_changed", active=False)
+    assert hud.get_state().mode == "idle"
     hud.shutdown()
 
 
@@ -226,3 +249,37 @@ def test_hud_text_input_uses_normal_user_message_event():
     assert hud.get_state().activity == "reasoning"
 
     hud.shutdown()
+
+
+def test_model_loading_status_preserves_tool_approval_state():
+    kernel, hud = build_hud()
+    try:
+        hud.on_tool_confirmation_required(reason="critical command")
+        kernel.event_bus.emit(
+            "model_route_changed", profile="coding", status="loading",
+            model=r"E:\Projects\llama\models\coder.gguf",
+        )
+        assert hud.state.mode == "approval"
+        assert hud.state.activity == "critical command"
+        assert hud.state.model_profile == "coding"
+        assert hud.state.model_status == "loading"
+        assert hud.state.model_name == "coder.gguf"
+    finally:
+        hud.shutdown()
+
+
+def test_hud_separates_background_status_and_both_model_services():
+    kernel = SimpleNamespace(event_bus=EventBus(), background_tasks=SimpleNamespace(
+        owns=lambda task_id: task_id == 'background', in_worker=lambda: False))
+    hud = HUDModule(kernel)
+    hud.transport = RecordingHUDTransport()
+    hud.set_state(mode='listening', status='LISTENING')
+    hud.on_model_route_changed(profile='general', status='ready', model='conversation.gguf')
+    hud.on_model_route_changed(profile='coding', status='generating', model='coder.gguf')
+    hud.on_background_task_changed(task={'job_id':'job', 'task_id':'background', 'phase':'testing',
+        'goal':'private data', 'message':'private path'})
+    hud.on_task_progress(task_id='background', phase='executing', text='private content')
+    assert hud.state.mode == 'listening'
+    assert hud.state.model_services['general']['status'] == 'ready'
+    assert hud.state.model_services['coding']['status'] == 'generating'
+    assert hud.state.background_task == {'job_id':'job','task_id':'background','phase':'testing'}

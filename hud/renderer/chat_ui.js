@@ -26,19 +26,49 @@
     empty = null
   }
 
-  function progressiveReveal (body, text) {
-    var chars = Array.from(String(text || ''))
-    if (!chars.length) return
-    body.textContent = ''
-    var index = 0
-    var chunk = chars.length > 600 ? 10 : chars.length > 300 ? 7 : 4
-    var timer = window.setInterval(function () {
-      var end = Math.min(chars.length, index + chunk)
-      body.textContent += chars.slice(index, end).join('')
-      messages.scrollTop = messages.scrollHeight
-      index = end
-      if (index >= chars.length) window.clearInterval(timer)
-    }, 9)
+  function inlineText (node, value) {
+    // Small, deliberately safe Markdown subset: no model-generated HTML/URLs.
+    var pattern = /(\*\*([^*]+)\*\*|`([^`]+)`)/g
+    var previous = 0, match
+    while ((match = pattern.exec(value))) {
+      node.appendChild(document.createTextNode(value.slice(previous, match.index)))
+      var element = document.createElement(match[2] ? 'strong' : 'code')
+      element.textContent = match[2] || match[3]
+      node.appendChild(element); previous = pattern.lastIndex
+    }
+    node.appendChild(document.createTextNode(value.slice(previous)))
+  }
+  function renderText (body, text) {
+    var parts = String(text).split(/```([^\n]*)\n([\s\S]*?)(?:```|$)/g)
+    for (var index = 0; index < parts.length; index += 3) {
+      var plain = parts[index]
+      if (plain) {
+        plain.split(/\n\n+/).forEach(function (paragraph) {
+          if (!paragraph.trim()) return
+          var heading = paragraph.match(/^#{1,3}\s+(.+)$/)
+          var node = document.createElement(heading ? 'h3' : 'p')
+          inlineText(node, heading ? heading[1] : paragraph)
+          body.appendChild(node)
+        })
+      }
+      if (index + 2 < parts.length) {
+        var block = document.createElement('section'); block.className = 'code-block'
+        var toolbar = document.createElement('div'); toolbar.className = 'code-toolbar'
+        var language = document.createElement('span'); language.textContent = parts[index + 1].trim() || 'Code'
+        var button = document.createElement('button'); button.type = 'button'; button.textContent = 'Copy code'
+        button.setAttribute('aria-label', 'Copy code block')
+        ;(function (content, control) {
+          control.addEventListener('click', function () {
+            if (!navigator.clipboard || !navigator.clipboard.writeText) { control.textContent = 'Select to copy'; return }
+            navigator.clipboard.writeText(content).then(function () { control.textContent = 'Copied' }, function () { control.textContent = 'Select to copy' })
+          })
+        })(parts[index + 2], button)
+        toolbar.append(language, button)
+        var pre = document.createElement('pre'); var code = document.createElement('code')
+        code.textContent = parts[index + 2]; pre.appendChild(code)
+        block.append(toolbar, pre); body.appendChild(block)
+      }
+    }
   }
 
   function appendMessage (role, text, animate) {
@@ -49,15 +79,16 @@
     item.className = 'chat-message ' + (role === 'user' ? 'user' : 'assistant')
     var label = document.createElement('div')
     label.className = 'chat-role'
-    label.textContent = role === 'user' ? 'YOU' : 'A.S.T.A.'
+    label.textContent = role === 'user' ? 'You' : 'ASTA'
     var body = document.createElement('div')
     body.className = 'chat-text'
     item.appendChild(label)
     item.appendChild(body)
     messages.appendChild(item)
     messages.scrollTop = messages.scrollHeight
-    if (animate && role === 'assistant' && document.body.classList.contains('text-chat-fullscreen')) progressiveReveal(body, value)
+    if (role === 'assistant') renderText(body, value)
     else body.textContent = value
+    messages.scrollTop = messages.scrollHeight
   }
 
   function loadHistory (history) {
@@ -76,7 +107,7 @@
       empty = document.createElement('div')
       empty.className = 'chat-empty'
       empty.id = 'chatEmpty'
-      empty.textContent = 'NEW CONVERSATION'
+      empty.textContent = 'A new conversation. What would you like to work on?'
       messages.appendChild(empty)
     }
     messages.scrollTop = messages.scrollHeight
@@ -93,24 +124,10 @@
       item.className = 'chat-recent-item' + (session.id === currentSessionId ? ' active' : '')
       item.dataset.sessionId = session.id
       item.title = session.preview || session.title || 'Conversation'
-      item.style.position = 'relative'
-      item.style.paddingRight = '48px'
 
       var selectButton = document.createElement('button')
       selectButton.type = 'button'
       selectButton.className = 'chat-recent-select'
-      selectButton.style.display = 'flex'
-      selectButton.style.flexDirection = 'column'
-      selectButton.style.width = '100%'
-      selectButton.style.gap = '5px'
-      selectButton.style.padding = '0'
-      selectButton.style.margin = '0'
-      selectButton.style.border = '0'
-      selectButton.style.background = 'transparent'
-      selectButton.style.color = 'inherit'
-      selectButton.style.textAlign = 'left'
-      selectButton.style.font = 'inherit'
-      selectButton.style.cursor = 'pointer'
 
       var title = document.createElement('span')
       title.className = 'chat-recent-title'
@@ -118,7 +135,7 @@
       var meta = document.createElement('span')
       meta.className = 'chat-recent-meta'
       var count = Number(session.message_count || 0)
-      meta.textContent = count ? count + (count === 1 ? ' MESSAGE' : ' MESSAGES') : 'NEW'
+      meta.textContent = count ? count + (count === 1 ? ' message' : ' messages') : 'New'
       selectButton.appendChild(title)
       selectButton.appendChild(meta)
       selectButton.addEventListener('click', function () {
@@ -129,34 +146,9 @@
       var deleteButton = document.createElement('button')
       deleteButton.type = 'button'
       deleteButton.className = 'chat-recent-delete'
-      deleteButton.textContent = 'DEL'
+      deleteButton.textContent = '×'
       deleteButton.title = 'Delete conversation'
       deleteButton.setAttribute('aria-label', 'Delete conversation')
-      deleteButton.style.position = 'absolute'
-      deleteButton.style.top = '50%'
-      deleteButton.style.right = '8px'
-      deleteButton.style.transform = 'translateY(-50%)'
-      deleteButton.style.width = '30px'
-      deleteButton.style.height = '24px'
-      deleteButton.style.padding = '0'
-      deleteButton.style.border = '1px solid rgba(255, 92, 92, 0.18)'
-      deleteButton.style.borderRadius = '4px'
-      deleteButton.style.background = 'rgba(255, 92, 92, 0.03)'
-      deleteButton.style.color = 'rgba(255, 170, 170, 0.62)'
-      deleteButton.style.font = 'inherit'
-      deleteButton.style.fontSize = '7px'
-      deleteButton.style.letterSpacing = '0.08em'
-      deleteButton.style.cursor = 'pointer'
-      deleteButton.addEventListener('mouseenter', function () {
-        this.style.borderColor = 'rgba(255, 92, 92, 0.45)'
-        this.style.background = 'rgba(255, 92, 92, 0.10)'
-        this.style.color = 'rgba(255, 220, 220, 0.96)'
-      })
-      deleteButton.addEventListener('mouseleave', function () {
-        this.style.borderColor = 'rgba(255, 92, 92, 0.18)'
-        this.style.background = 'rgba(255, 92, 92, 0.03)'
-        this.style.color = 'rgba(255, 170, 170, 0.62)'
-      })
       deleteButton.addEventListener('click', function (event) {
         event.preventDefault()
         event.stopPropagation()
@@ -195,20 +187,23 @@
     if (historyButton) {
       historyButton.classList.toggle('active', recentVisible)
       historyButton.setAttribute('aria-pressed', recentVisible ? 'true' : 'false')
+      historyButton.setAttribute('aria-expanded', recentVisible ? 'true' : 'false')
+      document.getElementById('chatRecent').setAttribute('aria-hidden', recentVisible ? 'false' : 'true')
     }
   }
 
   function toggleRecents () { setRecents(!recentVisible) }
 
   function setFullscreen (enabled) {
+    if (window.AstaViews) window.AstaViews.show('chat', false)
     chatPanel.classList.toggle('chat-fullscreen', enabled)
     document.body.classList.toggle('text-chat-fullscreen', enabled)
     if (fullscreenButton) {
       fullscreenButton.title = enabled ? 'Exit fullscreen chat' : 'Expand conversation'
       fullscreenButton.setAttribute('aria-label', enabled ? 'Exit fullscreen chat' : 'Expand conversation')
     }
-    if (fullscreenLabel) fullscreenLabel.textContent = enabled ? 'EXIT' : 'FULLSCREEN'
-    setRecents(enabled ? true : recentVisible)
+    if (fullscreenLabel) fullscreenLabel.textContent = enabled ? 'Exit focus' : 'Focus'
+    setRecents(enabled ? false : window.innerWidth > 900)
     window.requestAnimationFrame(function () {
       window.dispatchEvent(new Event('resize'))
       messages.scrollTop = messages.scrollHeight
@@ -241,6 +236,13 @@
   })
 
   window.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && recentVisible && !chatPanel.classList.contains('chat-fullscreen')) {
+      setRecents(false); historyButton.focus(); return
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); input.focus() }
+    if (event.key === 'Escape' && window.AstaViews && window.AstaViews.current() === 'chat' && !chatPanel.classList.contains('chat-fullscreen')) {
+      event.preventDefault(); window.AstaViews.show('home'); return
+    }
     if (event.key === 'Escape' && chatPanel.classList.contains('chat-fullscreen')) {
       event.preventDefault()
       setFullscreen(false)
@@ -285,6 +287,14 @@
     })
   }
 
+  window.addEventListener('asta:view-change', function (event) {
+    if (!event.detail) return
+    setRecents(event.detail.view === 'chat' && window.innerWidth > 900)
+    if (event.detail.view === 'home') {
+      chatPanel.classList.remove('chat-fullscreen'); document.body.classList.remove('text-chat-fullscreen')
+      if (fullscreenLabel) fullscreenLabel.textContent = 'Focus'
+    }
+  })
   setConversationMode(false)
   setRecents(false)
 })()

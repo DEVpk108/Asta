@@ -7,12 +7,13 @@ from core.agent import intent_resolver, work_awareness
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from core.module import Module
-from core.contracts import ActionType, IntentType, IntentResult, ToolResult
+from core.contracts import ActionType, IntentType, IntentResult, ToolRequest, ToolResult
 from core.tools import ToolRequestBuilder
 
 from chat_history import ChatHistoryStore
 
 from .llm_provider import create_llm_provider
+from .model_tool_calls import finish_model_response, speech_filter
 
 
 
@@ -48,6 +49,9 @@ class AIModule(Module):
     }
 
     _REJECTED_ERROR = "Tool execution rejected by user."
+    _APPROVAL_EXPIRED_MESSAGE = (
+        "The approval timed out, so I stopped the task before that step."
+    )
 
     _APPROVAL_REJECTIONS = {
         "no", "nope", "nah", "cancel", "reject", "decline",
@@ -72,6 +76,14 @@ class AIModule(Module):
         "stop conversation mode",
         "exit conversation mode",
     }
+
+    # Speech often hears "turn off" as "then of" / "done of" / "turn of".
+    _CONVERSATION_MODE_OFF_HEARD = re.compile(
+        r"(?:turn|then|than|done|tern|turned|ten|den|switch|shut)\s+(?:off|of)\s+"
+        r"(?:the\s+)?conversations?\s+mode"
+        r"|(?:turn|switch)\s+(?:the\s+)?conversations?\s+mode\s+(?:off|of)"
+        r"|conversations?\s+mode\s+of"
+    )
 
     _CONVERSATION_MODE_LEADS = (
         "okay ",
@@ -123,7 +135,7 @@ class AIModule(Module):
             kernel=kernel,
         )
 
-        self.engine = create_llm_provider()
+        self.engine = create_llm_provider(kernel=kernel, purpose="chat")
         self.tool_request_builder = ToolRequestBuilder(kernel.tool_registry)
         self.chat_history = ChatHistoryStore()
 
@@ -277,6 +289,19 @@ class AIModule(Module):
         if self._handle_approval_response(text):
             return
 
+        background = getattr(self.kernel, "background_tasks", None)
+        if background is not None and background.handle_control(text):
+            return
+        if background is not None and background.busy:
+            hint = self.kernel.intent_router.analyze(text)
+            if self._background_media_control(hint):
+                return
+            if hint.intent in {IntentType.COMMAND, IntentType.TASK} or re.match(
+                r"^(?:(?:please|can you|could you|would you)\s+)*(?:open|launch|start|close|run|stop|play|pause|resume|press|type|switch|fix|write|create|modify|delete)\b",
+                str(text).strip(), re.I):
+                self._emit_assistant_text("A project task is still active. I can keep chatting, but please cancel it or wait before starting another action.")
+                return
+
         if self._handle_conversation_mode_command(text):
             return
 
@@ -352,6 +377,10 @@ class AIModule(Module):
                 self._emit_assistant_text(
                     "I can't start a project task because the task runtime is unavailable."
                 )
+                return
+            background = getattr(self.kernel, "background_tasks", None)
+            if background is not None:
+                background.start(text, result)
                 return
             task = starter(text, result)
             if task is None:
@@ -963,7 +992,10 @@ class AIModule(Module):
             )
             return True
 
-        if normalized in self._CONVERSATION_MODE_OFF:
+        if (
+            normalized in self._CONVERSATION_MODE_OFF
+            or self._CONVERSATION_MODE_OFF_HEARD.fullmatch(normalized)
+        ):
             self.event_bus.emit("conversation_mode_set", enabled=False)
             self._emit_assistant_text(
                 "Conversation mode is off. Say the wake word when you need me."
@@ -1021,6 +1053,23 @@ class AIModule(Module):
 
         pending = manager.list_pending()
         if not pending:
+            return False
+
+        background = getattr(self.kernel, "background_tasks", None)
+        background_pending = [item for item in pending
+            if background is not None and background.owns(item.request.metadata.get("task_id"))]
+        if background_pending:
+            compact = self._normalize_question(text).rstrip(" .!?;:")
+            explicit = {"approve coding step": True, "approve project step": True,
+                        "reject coding step": False, "reject project step": False}
+            if compact in explicit and len(pending) == 1:
+                self.event_bus.emit("tool_confirmation_response",
+                    request_id=pending[0].request.request_id, approved=explicit[compact])
+                return True
+            if compact in self._APPROVAL_CONFIRMATIONS or compact in self._APPROVAL_REJECTIONS:
+                self._emit_assistant_text("For the background task, use the approval button or say approve coding step or reject coding step.")
+                return True
+            # Other chat does not silently approve or cancel background work.
             return False
 
         normalized = self._normalize_question(text)
@@ -1324,21 +1373,71 @@ class AIModule(Module):
         # a task failure.
         if error == self._REJECTED_ERROR:
             return
+        if error.startswith("The approval expired"):
+            # Same text as the tool-result message, so it is said only once.
+            self._emit_assistant_text(self._APPROVAL_EXPIRED_MESSAGE)
+            return
 
         # The failed step explains why; don't read the whole request back.
         message = "Sorry, I couldn't finish that."
+        from core.tools.sandbox import SANDBOX_SETUP_MESSAGE
+
+        if error == SANDBOX_SETUP_MESSAGE:
+            message = error
         print(f"[AI] Task failed: {goal or message}", flush=True)
         self._emit_assistant_text(message)
+
+    _SIDE_MEDIA_OPERATIONS = frozenset({"pause", "play", "toggle", "next", "previous", "stop"})
+
+    def _background_media_control(self, intent) -> bool:
+        """Pause/resume/skip music while a project task runs in the background.
+
+        These don't touch the project, so they need not wait for it. Only
+        bare transport controls qualify; "play <song>" still waits.
+        """
+        entities = getattr(intent, "entities", None) or {}
+        if getattr(intent, "intent", None) is not IntentType.COMMAND:
+            return False
+        if str(entities.get("action") or "").lower() != "media" or entities.get("commands"):
+            return False
+        operation = str(entities.get("operation") or "").lower()
+        if operation not in self._SIDE_MEDIA_OPERATIONS or entities.get("query"):
+            return False
+        import uuid
+
+        request = ToolRequest(
+            tool="media.control",
+            arguments={"operation": operation},
+            request_id=f"side-media-{uuid.uuid4().hex[:12]}",
+            metadata={"action": "media", "side_action": True},
+        )
+        result = self.kernel.tool_dispatcher.dispatch(request)
+        print(
+            f"[AI] Media control during project task: {operation} -> "
+            f"{'ok' if result.success else result.error}",
+            flush=True,
+        )
+        if result.success:
+            self._emit_assistant_text(self._format_tool_success(result))
+        else:
+            self._emit_assistant_text("I couldn't control media playback.")
+        return True
 
     def on_tool_confirmation_required(self, request, reason):
         action = request.metadata.get("action")
         target = request.arguments.get("target")
-        if action and target:
+        overwrite = str(request.metadata.get("confirm_overwrite") or "").strip()
+        if overwrite:
+            text = f"{overwrite} already exists with different content. Should I replace it?"
+        elif action and target:
             text = f"I need your confirmation before I {action} {target}."
         elif target:
             text = f"I need your confirmation before acting on {target}."
         else:
             text = "I need your confirmation before performing that action."
+        background = getattr(self.kernel, "background_tasks", None)
+        if background is not None and background.owns(request.metadata.get("task_id")):
+            text += " Use the approval button, or say approve coding step or reject coding step."
         print(f"[AI] Approval required: {reason}", flush=True)
         self._emit_assistant_text(text)
 
@@ -1424,6 +1523,8 @@ class AIModule(Module):
                 summary = str(output.get("summary") or "").strip()
                 if output.get("question") and summary:
                     return summary
+                if output.get("source") == "media_session" and output.get("track"):
+                    return f"Now playing {output['track']}."
                 if bool(output.get("verified")):
                     return "I checked the screen. The requested visual condition is confirmed."
                 if bool(output.get("visual_match")):
@@ -1462,6 +1563,9 @@ class AIModule(Module):
 
         if str(result.error or "") == AIModule._REJECTED_ERROR:
             return "Okay, I cancelled that."
+
+        if str(result.error or "").startswith("Approval expired"):
+            return AIModule._APPROVAL_EXPIRED_MESSAGE
 
         if result.tool == "system.close_application":
             target = output.get("target") or output.get("resolved_target")
@@ -1528,10 +1632,14 @@ class AIModule(Module):
 
         response = self.engine.generate_response(
             text,
-            on_sentence=on_sentence,
+            on_sentence=speech_filter(on_sentence),
             context=runtime_context,
         )
         if not response:
             print("[AI] No response generated.", flush=True)
+            return
+        # Tool-call markup is routed (allowlisted) or dropped, never shown.
+        response = finish_model_response(self, response)
+        if not response:
             return
         self.event_bus.emit("assistant_response", text=response)

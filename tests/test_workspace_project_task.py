@@ -650,3 +650,164 @@ def test_denied_critical_command_is_not_retried_or_executed(tmp_path):
         assert (workspace / "main.py").read_text(encoding="utf-8") == FILE_CONTENT
     finally:
         _shutdown(tasks, ai, tools)
+
+def test_missing_docker_sandbox_stops_once_and_says_how_to_fix_it(tmp_path):
+    from core.tools.sandbox import SANDBOX_SETUP_MESSAGE, SandboxRuntimeError
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    kernel, tasks, ai, tools = _build_runtime(
+        workspace,
+        tmp_path / "authority.json",
+        _happy_plan(),
+        authorize_run=False,
+    )
+
+    class NoDocker:
+        runtime_name = "docker"
+        calls = 0
+
+        def run(self, arguments, *, timeout, output_limit):
+            NoDocker.calls += 1
+            raise SandboxRuntimeError("A native docker CLI executable was not found on PATH.")
+
+    kernel.tool_registry.unregister("system.run_command")
+    kernel.register_tool(RunCommandTool(kernel.workspace_manager, runtime=NoDocker()))
+    confirmations = []
+    spoken = []
+    kernel.event_bus.subscribe(
+        "tool_confirmation_required",
+        lambda request=None, **kwargs: confirmations.append(request),
+    )
+    kernel.event_bus.subscribe("assistant_sentence", lambda text=None, **kw: spoken.append(text))
+    kernel.event_bus.subscribe("assistant_response", lambda text=None, **kw: spoken.append(text))
+    try:
+        kernel.event_bus.emit("user_message", GOAL)
+        assert len(confirmations) == 1
+        kernel.event_bus.emit(
+            "tool_confirmation_response",
+            request_id=confirmations[0].request_id,
+            approved=True,
+        )
+
+        task = kernel.task_manager.list()[0]
+        assert NoDocker.calls == 1
+        assert len(confirmations) == 1  # no second approval for an identical re-run
+        assert task.status is TaskStatus.FAILED
+        assert task.error == SANDBOX_SETUP_MESSAGE
+        assert any(SANDBOX_SETUP_MESSAGE in str(text) for text in spoken)
+        assert (workspace / "main.py").read_text(encoding="utf-8") == FILE_CONTENT
+    finally:
+        _shutdown(tasks, ai, tools)
+
+
+def test_failed_sandbox_command_is_diagnosed_not_rerun_identically():
+    from core.autonomy.recovery import RecoveryManager
+
+    failure = ToolResult(success=False, tool="system.run_command", error="Sandbox command exited with code 1.")
+    decision = RecoveryManager().decide(type("T", (), {"id": "t", "evidence": []})(), failure, step_id="step-4")
+
+    assert decision.action.value == "replan"
+
+
+def test_existing_file_with_the_same_content_is_not_rewritten(tmp_path):
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "main.py").write_bytes(FILE_CONTENT.encode("utf-8"))  # from an earlier run
+    kernel, tasks, ai, tools = _build_runtime(workspace, tmp_path / "authority.json", _happy_plan())
+    confirmations = []
+    kernel.event_bus.subscribe(
+        "tool_confirmation_required",
+        lambda request=None, **kwargs: confirmations.append(request),
+    )
+    try:
+        kernel.event_bus.emit("user_message", GOAL)
+
+        task = kernel.task_manager.list()[0]
+        assert task.status is TaskStatus.COMPLETED
+        assert confirmations == []
+        assert task.result["command"]["stdout"].strip() == "ASTA_OK"
+        write = next(item for item in task.evidence if item.get("tool") == "filesystem.write_file")
+        assert write["success"] is True and write["output"]["unchanged"] is True
+    finally:
+        _shutdown(tasks, ai, tools)
+
+
+def test_existing_file_with_other_content_is_replaced_only_after_approval(tmp_path):
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "main.py").write_text('print("old work")\n', encoding="utf-8")
+    kernel, tasks, ai, tools = _build_runtime(workspace, tmp_path / "authority.json", _happy_plan())
+    confirmations = []
+    spoken = []
+    kernel.event_bus.subscribe(
+        "tool_confirmation_required",
+        lambda request=None, **kwargs: confirmations.append(request),
+    )
+    kernel.event_bus.subscribe("assistant_sentence", lambda text=None, **kw: spoken.append(text))
+    try:
+        kernel.event_bus.emit("user_message", GOAL)
+
+        assert len(confirmations) == 1
+        assert confirmations[0].metadata["confirm_overwrite"] == "main.py"
+        assert (workspace / "main.py").read_text(encoding="utf-8") == 'print("old work")\n'
+        assert any("main.py already exists with different content" in str(t) for t in spoken)
+
+        kernel.event_bus.emit(
+            "tool_confirmation_response",
+            request_id=confirmations[0].request_id,
+            approved=True,
+        )
+
+        task = kernel.task_manager.list()[0]
+        assert task.status is TaskStatus.COMPLETED
+        assert (workspace / "main.py").read_text(encoding="utf-8") == FILE_CONTENT
+    finally:
+        _shutdown(tasks, ai, tools)
+
+
+def test_rejected_overwrite_keeps_the_users_file(tmp_path):
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "main.py").write_text('print("old work")\n', encoding="utf-8")
+    kernel, tasks, ai, tools = _build_runtime(workspace, tmp_path / "authority.json", _happy_plan())
+    confirmations = []
+    kernel.event_bus.subscribe(
+        "tool_confirmation_required",
+        lambda request=None, **kwargs: confirmations.append(request),
+    )
+    try:
+        kernel.event_bus.emit("user_message", GOAL)
+        kernel.event_bus.emit(
+            "tool_confirmation_response",
+            request_id=confirmations[0].request_id,
+            approved=False,
+        )
+
+        task = kernel.task_manager.list()[0]
+        assert task.status is TaskStatus.FAILED
+        assert len(confirmations) == 1
+        assert (workspace / "main.py").read_text(encoding="utf-8") == 'print("old work")\n'
+    finally:
+        _shutdown(tasks, ai, tools)
+
+
+def test_existing_file_differing_only_in_line_endings_is_rewritten_without_asking(tmp_path):
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "main.py").write_bytes(FILE_CONTENT.replace("\n", "\r\n").encode("utf-8"))
+    kernel, tasks, ai, tools = _build_runtime(workspace, tmp_path / "authority.json", _happy_plan())
+    confirmations = []
+    kernel.event_bus.subscribe(
+        "tool_confirmation_required",
+        lambda request=None, **kwargs: confirmations.append(request),
+    )
+    try:
+        kernel.event_bus.emit("user_message", GOAL)
+
+        task = kernel.task_manager.list()[0]
+        assert confirmations == []
+        assert task.status is TaskStatus.COMPLETED
+        assert (workspace / "main.py").read_bytes() == FILE_CONTENT.encode("utf-8")
+    finally:
+        _shutdown(tasks, ai, tools)

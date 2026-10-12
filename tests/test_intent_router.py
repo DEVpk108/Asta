@@ -402,3 +402,51 @@ def test_scroll_command_is_actionable():
         "action": "scroll",
         "amount": -5,
     }
+
+
+MIXED_REQUEST = (
+    "Okay open Spotify and play \u201cbaithi hai.\u201d After that I would like you "
+    "to write a Python file, main.py. In that file just print \u201chello from ASTA\u201d "
+    "and then after that run that file."
+)
+
+
+def test_app_then_project_request_becomes_scoped_task_with_prefix_commands():
+    result = IntentRouter().analyze(MIXED_REQUEST)
+
+    assert result.intent is IntentType.TASK
+    assert result.entities["prefix_commands"] == [
+        {"action": "open", "target": "spotify"},
+        {"action": "media", "operation": "play", "query": "baithi hai"},
+    ]
+    # The project part keeps its exact case and quoted output text.
+    assert result.entities["goal"].startswith("I would like you to write a Python file")
+    assert "\u201chello from ASTA\u201d" in result.entities["goal"]
+    assert "system.run_command" in result.entities["capability_scope"]
+
+
+def test_whole_sentence_is_never_used_as_an_app_name():
+    result = IntentRouter().analyze(
+        "open spotify and play \u201cbaithi hai.\u201d After that I would like to know the weather."
+    )
+
+    assert not (
+        result.intent is IntentType.COMMAND
+        and result.entities.get("action") == "open"
+    )
+
+
+def test_quoted_song_title_is_cleaned():
+    result = IntentRouter().analyze("open spotify and play \u201cbaithi hai.\u201d after that open notepad")
+
+    assert result.entities["commands"] == [
+        {"action": "open", "target": "spotify"},
+        {"action": "media", "operation": "play", "query": "baithi hai"},
+        {"action": "open", "target": "notepad"},
+    ]
+
+
+def test_simple_multi_word_app_names_still_open():
+    result = IntentRouter().analyze("open visual studio code")
+
+    assert result.entities == {"action": "open", "target": "visual studio code"}

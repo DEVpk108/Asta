@@ -39,6 +39,8 @@ class Kernel:
         authority_path=None,
     ):
         self.event_bus = EventBus()
+        self.model_runtime = None
+        self.background_tasks = None
         self.media_manager = MediaManager()
         self.intent_router = IntentRouter(
             media_providers=self.media_manager.providers(),
@@ -149,6 +151,7 @@ class Kernel:
                     module.shutdown()
                 except Exception as exc:
                     print(f"[Kernel] Error shutting down {module.name}: {exc}")
+            self._shutdown_model_runtime()
             vision_shutdown = getattr(self.vision_engine, "shutdown", None)
             if callable(vision_shutdown):
                 try:
@@ -210,6 +213,8 @@ class Kernel:
         try:
             print("[Kernel] Shutting down...")
 
+            if self.background_tasks is not None:
+                self.background_tasks.shutdown()
             self.approval_manager.clear()
 
             for module in reversed(self.modules):
@@ -218,6 +223,7 @@ class Kernel:
                 except Exception as exc:
                     print(f"[Kernel] Error shutting down {module.name}: {exc}")
 
+            self._shutdown_model_runtime()
             vision_shutdown = getattr(self.vision_engine, "shutdown", None)
             if callable(vision_shutdown):
                 try:
@@ -230,3 +236,13 @@ class Kernel:
             with self._shutdown_lock:
                 self._shutdown_owner = None
                 self._shutdown_complete.set()
+
+    def _shutdown_model_runtime(self):
+        if self.background_tasks is not None:
+            self.background_tasks.shutdown()
+        runtime = self.model_runtime
+        if runtime is not None:
+            try:
+                runtime.shutdown()
+            except Exception as exc:
+                print(f"[Kernel] Error shutting down model runtime: {exc}")

@@ -30,6 +30,28 @@ def _text_contains_required_phrase(text: str, required: str) -> bool:
     return wanted in haystack
 
 
+def _extract_playback_app(prompt: str) -> str:
+    match = re.search(
+        r"is actually playing in (.+?)\.(?:\s|$)",
+        str(prompt or ""),
+        flags=re.IGNORECASE,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _default_media_session_reader():
+    import os
+    import platform
+
+    if platform.system() != "Windows":
+        return None
+    if os.getenv("ASTA_MEDIA_SESSION", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return None
+    from core.media.smtc import media_session
+
+    return media_session
+
+
 def _format_seconds(value) -> str:
     if value is None:
         return "n/a"
@@ -47,9 +69,38 @@ class VisionInspectTool(Tool):
         vision_engine,
         *,
         capture: Callable[[], str | Path] | None = None,
+        media_session_reader: Callable[..., dict] | None = None,
     ):
         self.vision_engine = vision_engine
         self.capture = capture
+        # Reads the OS "now playing" session (Windows SMTC). Injected in tests.
+        self.media_session_reader = (
+            media_session_reader
+            if media_session_reader is not None
+            else _default_media_session_reader()
+        )
+
+    def _media_session_playback(self, title: str, app: str) -> dict | None:
+        """Confirm playback from the OS media session, if it clearly matches."""
+        reader = self.media_session_reader
+        if reader is None or not title:
+            return None
+        hint = app.lower().replace(" ", "").replace("_", "")
+        for attempt in range(2):
+            try:
+                info = reader("", hint) or {}
+            except Exception:
+                info = {}
+            session_title = str(info.get("title") or "")
+            playing = str(info.get("status") or "").strip().lower() == "playing"
+            if playing and (
+                _text_contains_required_phrase(session_title, title)
+                or _text_contains_required_phrase(title, session_title)
+            ):
+                return info
+            if attempt == 0:
+                time.sleep(1.0)
+        return None
 
     @property
     def definition(self) -> ToolDefinition:
@@ -89,6 +140,36 @@ class VisionInspectTool(Tool):
                 duration_seconds=time.perf_counter() - start,
                 metadata={"request_id": request.request_id},
             )
+
+        required_title = _extract_required_playback_text(prompt)
+        if required_title:
+            # Ask the OS what is playing first: exact, ~1s, and it avoids a slow
+            # vision call that often cannot read the player bar reliably.
+            session = self._media_session_playback(
+                required_title, _extract_playback_app(prompt)
+            )
+            if session is not None:
+                artist = str(session.get("artist") or "").strip()
+                track = str(session.get("title") or required_title)
+                track = f"{track} by {artist}" if artist else track
+                print(f"[Vision] Inspect: media session confirms '{track}' is playing.", flush=True)
+                return ToolResult(
+                    success=True,
+                    tool=request.tool,
+                    output={
+                        "summary": f"{track} is playing.",
+                        "visual_match": True,
+                        "verified": True,
+                        "confidence": 1.0,
+                        "source": "media_session",
+                        "track": track,
+                        "session_app": session.get("app"),
+                        "required_playback_text": required_title,
+                        "question": False,
+                    },
+                    duration_seconds=time.perf_counter() - start,
+                    metadata={"request_id": request.request_id},
+                )
 
         if self.capture is None:
             return ToolResult(
