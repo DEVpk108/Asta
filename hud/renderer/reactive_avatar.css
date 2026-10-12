@@ -1,3 +1,64 @@
+/* Homepage palette. The avatar stage stays dark in both themes (it is a
+   display surface); everything around it follows the selected theme. */
+:root {
+  --home-bg: #f4f6fa;
+  --home-text: #1c2533;
+  --home-strong: #0e1622;
+  --home-muted: #556377;
+  --home-line: #d3dbe6;
+  --home-hover: #e3eaf4;
+  --home-card: #ffffff;
+  --home-link: #0a5bc4;
+  --home-link-hover: #063f8a;
+  --home-input: #ffffff;
+  --home-input-line: #b4c1d3;
+  --home-chip-active: #dce9fb;
+  --home-send: #0964d7;
+  --home-send-text: #ffffff;
+  --home-dot: #0964d7;
+  --home-frame-line: #c9d3e1;
+  --home-frame-shadow: 0 10px 32px rgba(20, 40, 80, 0.12);
+}
+:root[data-theme="dark"] {
+  --home-bg: #090e16;
+  --home-text: #eef4ff;
+  --home-strong: #f6f9ff;
+  --home-muted: #a6b8d0;
+  --home-line: #283b53;
+  --home-hover: #192b42;
+  --home-card: #111d2c;
+  --home-link: #a9cfff;
+  --home-link-hover: #ffffff;
+  --home-input: #111d2c;
+  --home-input-line: #667e9e;
+  --home-chip-active: #223a58;
+  --home-send: #a9cfff;
+  --home-send-text: #122035;
+  --home-dot: #73baff;
+  --home-frame-line: #213147;
+  --home-frame-shadow: 0 0 48px rgba(36, 118, 178, 0.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --home-bg: #090e16;
+    --home-text: #eef4ff;
+    --home-strong: #f6f9ff;
+    --home-muted: #a6b8d0;
+    --home-line: #283b53;
+    --home-hover: #192b42;
+    --home-card: #111d2c;
+    --home-link: #a9cfff;
+    --home-link-hover: #ffffff;
+    --home-input: #111d2c;
+    --home-input-line: #667e9e;
+    --home-chip-active: #223a58;
+    --home-send: #a9cfff;
+    --home-send-text: #122035;
+    --home-dot: #73baff;
+    --home-frame-line: #213147;
+    --home-frame-shadow: 0 0 48px rgba(36, 118, 178, 0.08);
+  }
+}
 .chat.view-home:not(.chat-show-history) {
   grid-template-columns: minmax(0, 1fr) 320px;
 }
@@ -8,8 +69,8 @@
   display: none;
 }
 .view-home .conversation {
-  background: #090e16;
-  color: #eef4ff;
+  background: var(--home-bg);
+  color: var(--home-text);
 }
 .view-home .chat-header {
   padding-bottom: 10px;
@@ -17,20 +78,20 @@
 .view-home .chat-header .eyebrow,
 .view-home .voice-status,
 .view-home #voiceDetail {
-  color: #a6b8d0;
+  color: var(--home-muted);
 }
 .view-home .chat-header button {
-  color: #eef4ff;
+  color: var(--home-text);
 }
 .view-home .chat-header button:hover {
-  background: #192b42;
+  background: var(--home-hover);
 }
 .view-home .voice-status {
-  color: #a6b8d0;
-  padding-bottom: 0;
+  /* The avatar block already announces state on the home view. */
+  display: none;
 }
 .view-home #statusMode {
-  color: #eef4ff;
+  color: var(--home-text);
 }
 .voice-home {
   flex: 1;
@@ -42,7 +103,7 @@
   align-items: center;
   gap: 12px;
   scrollbar-width: thin;
-  scrollbar-color: #283b53 transparent;
+  scrollbar-color: var(--home-line) transparent;
 }
 .home-intro {
   text-align: center;
@@ -51,7 +112,7 @@
   flex-shrink: 0;
 }
 .home-intro .eyebrow {
-  color: #a6b8d0;
+  color: var(--home-muted);
   font-size: 14px;
 }
 .home-intro h2 {
@@ -60,6 +121,7 @@
   letter-spacing: -0.035em;
   line-height: 1.14;
   margin-top: 10px;
+  color: var(--home-strong);
 }
 .avatar-home-slot {
   width: 100%;
@@ -77,9 +139,9 @@
   margin: 0;
   border-radius: 18px;
   overflow: hidden;
-  background: #000;
-  box-shadow: 0 0 48px rgba(36, 118, 178, 0.08);
-  border: 1px solid #213147;
+  background: #05070b;
+  box-shadow: var(--home-frame-shadow);
+  border: 1px solid var(--home-frame-line);
   isolation: isolate;
 }
 .avatar-frame canvas {
@@ -123,14 +185,14 @@
 .avatar-state p {
   grid-column: 1/-1;
   font-size: 14px;
-  color: #a6b8d0;
+  color: var(--home-muted);
   line-height: 1.5;
 }
 #homeStateDot {
   height: 7px;
   width: 7px;
   border-radius: 50%;
-  background: #73baff;
+  background: var(--home-dot);
 }
 .view-home:has(.avatar-frame[data-mode="approval"]) #homeStateDot {
   background: #e6ad58;
@@ -143,21 +205,21 @@
   width: 100%;
   padding: 12px 16px;
   border-radius: 12px;
-  background: #111d2c;
-  border: 1px solid #283b53;
+  background: var(--home-card);
+  border: 1px solid var(--home-line);
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 6px 12px;
   flex-shrink: 0;
 }
 .home-caption .eyebrow {
-  color: #a6b8d0;
+  color: var(--home-muted);
 }
 .home-caption p {
   grid-column: 1/-1;
   font-size: 14px;
   line-height: 1.5;
-  color: #e2ecfa;
+  color: var(--home-text);
   overflow-wrap: anywhere;
 }
 .home-caption button {
@@ -165,13 +227,13 @@
   grid-row: 1;
   min-height: 28px;
   padding: 0;
-  color: #a9cfff;
+  color: var(--home-link);
   border: 0;
   font-size: 14px;
 }
 .home-caption button:hover {
   background: transparent;
-  color: #fff;
+  color: var(--home-link-hover);
 }
 .home-visual-controls {
   display: flex;
@@ -180,46 +242,46 @@
   justify-content: center;
   flex-wrap: wrap;
   font-size: 14px;
-  color: #a6b8d0;
+  color: var(--home-muted);
   flex-shrink: 0;
 }
 .home-visual-controls button {
-  color: #a9cfff;
-  border-color: #35465d;
+  color: var(--home-link);
+  border-color: var(--home-line);
   font-size: 14px;
   min-height: 44px;
 }
 .home-visual-controls button:hover {
-  background: #192b42;
+  background: var(--home-hover);
 }
 .view-home .composer-wrap {
-  background: #090e16;
+  background: var(--home-bg);
   padding-top: 8px;
 }
 .view-home .chat-input {
-  background: #111d2c;
-  border-color: #667e9e;
-  color: #eef4ff;
+  background: var(--home-input);
+  border-color: var(--home-input-line);
+  color: var(--home-text);
 }
 .view-home .chat-input input {
-  color: #eef4ff;
+  color: var(--home-text);
 }
 .view-home .chat-input input::placeholder {
-  color: #a6b8d0;
+  color: var(--home-muted);
 }
 .view-home #chatConversation {
-  color: #d8e7fc;
+  color: var(--home-text);
 }
 .view-home #chatConversation.active {
-  color: #9ac9ff;
-  background: #223a58;
+  color: var(--home-link);
+  background: var(--home-chip-active);
 }
 .view-home #chatSend {
-  background: #a9cfff;
-  color: #122035;
+  background: var(--home-send);
+  color: var(--home-send-text);
 }
 .view-home .composer-note {
-  color: #a6b8d0;
+  color: var(--home-muted);
 }
 .avatar-compact-slot {
   width: 58px;
@@ -236,7 +298,7 @@
   height: 58px;
   border-radius: 14px;
   box-shadow: none;
-  border-color: #35465d;
+  border-color: var(--line, #35465d);
 }
 .avatar-frame.compact figcaption {
   display: none;
@@ -385,7 +447,7 @@
   .avatar-state p,
   .home-visual-controls,
   .view-home .composer-note {
-    color: #eef4ff;
+    color: var(--home-text);
   }
   .avatar-frame,
   .home-caption {

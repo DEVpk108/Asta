@@ -72,9 +72,22 @@
     if (!value && state.model_profile === name)
       value = { status: state.model_status, model: state.model_name };
     var status = value ? String(value.status || "unknown") : "unknown";
-    text(name + "Status", status === "stopped" ? "Unloaded" : status);
+    var onDemand =
+      state.model_mode === "on_demand" &&
+      (status === "unknown" || status === "stopped");
+    text(
+      name + "Status",
+      onDemand ? "Standby" : status === "stopped" ? "Unloaded" : status,
+    );
     $(name + "Status").dataset.status = status;
-    text(name + "Model", value && value.model ? value.model : "Not reported");
+    text(
+      name + "Model",
+      value && value.model
+        ? value.model
+        : onDemand
+          ? "Loads when needed"
+          : "Not reported",
+    );
   }
   function renderSteps(steps) {
     var list = $("projectSteps");
@@ -277,6 +290,7 @@
     $("workspaceContext").hidden = !valid;
     $("workspaceEmpty").hidden = valid;
     text("workspaceProjectName", workspace.project_name);
+    $("workspaceProjectName").title = workspace.project_name || "";
     text("workspaceBranch", workspace.branch);
     $("workspaceBranch").hidden = !workspace.branch;
     text("workspaceRepository", workspace.repository);

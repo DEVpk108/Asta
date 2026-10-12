@@ -155,21 +155,37 @@ svg {
 .is-mac .tb-drag {
   padding-left: 90px;
 }
-.brand-mark,
-.welcome-mark {
-  font-weight: 650;
-  letter-spacing: -0.07em;
-  line-height: 1;
-  display: grid;
-  place-items: center;
-  background: var(--blue);
-  color: var(--surface);
-  border-radius: 10px;
+.asta-logo {
+  --logo-orbit: #4fb1dc;
+  --logo-node: #7adcf6;
+  display: block;
+  flex: none;
+  overflow: visible;
+}
+:root[data-theme="dark"] .asta-logo {
+  --logo-orbit: #62c3ea;
+  --logo-node: #8ae6fb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .asta-logo {
+    --logo-orbit: #62c3ea;
+    --logo-node: #8ae6fb;
+  }
+}
+.asta-logo .logo-orbits {
+  stroke: var(--logo-orbit);
+}
+.asta-logo .logo-nodes {
+  fill: var(--logo-node);
+}
+.theme-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
 }
 .brand-mark {
-  height: 28px;
-  width: 28px;
-  font-size: 26px;
+  height: 30px;
+  width: 30px;
 }
 .brand-name {
   font-size: 15px;
@@ -421,11 +437,9 @@ svg {
   padding: 24px 0 48px;
 }
 .welcome-mark {
-  width: 48px;
-  height: 48px;
-  font-size: 46px;
-  margin-bottom: 24px;
-  border-radius: 14px;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 20px;
 }
 .chat-empty h2 {
   font-size: clamp(30px, 3vw, 40px);
@@ -616,7 +630,9 @@ svg {
 .workspace-context strong {
   font-size: 15px;
   display: block;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .branch {
   font-size: 14px;

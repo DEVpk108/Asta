@@ -20,7 +20,7 @@
   var engine = null,
     fallback = false,
     raf = 0,
-    timer = 0,
+    frameIndex = 0,
     lastAt = 0,
     visualTime = 0,
     liveAmp = 0.14;
@@ -90,43 +90,45 @@
   }
   function boot() {
     try {
-      engine = window.AstaEngine.create($("avatarCanvas"), {
-        shape: "humanoid",
-        maxParticles: 12000,
+      engine = window.AstaCoreAvatar.create($("avatarCanvas"), {
+        maxParticles: 2400,
         maxDpr: 1.25,
         maxDimension: 768,
-        lowPower: true,
       });
       if (!engine || !engine.ok) throw new Error("Avatar renderer unavailable");
-      $("avatarRenderMode").textContent = "3D particle avatar";
-      frame.dataset.renderer = "webgl2";
+      $("avatarRenderMode").textContent = "ASTA core";
+      frame.dataset.renderer = "core";
     } catch (error) {
       startFallback();
     }
   }
   function stopScheduled() {
     if (raf) cancelAnimationFrame(raf);
-    if (timer) clearTimeout(timer);
     raf = 0;
-    timer = 0;
   }
   function continuous() {
     return (
       ready && motion && !preferences.matches && !document.hidden && !disposed
     );
   }
-  function fps() {
-    if (view === "chat") return mode === "speaking" ? 15 : 6;
-    if (codingActive) return 12;
-    return ["listening", "thinking", "speaking", "executing"].indexOf(mode) !==
-      -1
-      ? 30
-      : 12;
+  // Frames are paced by requestAnimationFrame (display vsync), never by
+  // setTimeout: Windows timer granularity (~15.6 ms) makes timer-paced
+  // animation stutter. A divisor of the refresh rate keeps cadence even:
+  // 1 = every display frame, 2 = every other frame.
+  function frameEvery() {
+    if (view === "chat") return 2;
+    if (codingActive) return 2;
+    return 1;
   }
   function draw(now) {
     raf = 0;
     if (disposed || document.hidden || !engine) return;
     var moving = continuous();
+    frameIndex++;
+    if (moving && lastAt && frameIndex % frameEvery() !== 0) {
+      raf = requestAnimationFrame(draw);
+      return;
+    }
     var dt = lastAt ? Math.min(0.15, Math.max(0, (now - lastAt) / 1000)) : 0.04;
     lastAt = now;
     if (moving) visualTime += dt;
@@ -155,6 +157,9 @@
         : 0,
       bloom: 0.75 + audioLevel * 0.3,
       compact: view === "chat",
+      mode: ready ? mode : "offline",
+      audio: moving ? audioLevel : 0,
+      still: !moving,
     };
     try {
       engine.render(values);
@@ -167,11 +172,7 @@
     }
     drawCount++;
     lastFrame = values;
-    if (continuous())
-      timer = setTimeout(function () {
-        timer = 0;
-        raf = requestAnimationFrame(draw);
-      }, 1000 / fps());
+    if (continuous()) raf = requestAnimationFrame(draw);
   }
   function refresh() {
     stopScheduled();
@@ -247,10 +248,10 @@
         mode: mode,
         ready: ready,
         motion: continuous(),
-        fpsCap: fps(),
+        frameEvery: frameEvery(),
         drawCount: drawCount,
         particles: engine ? engine.count : 0,
-        scheduled: !!(raf || timer),
+        scheduled: !!raf,
         lastFrame: lastFrame,
       };
     },

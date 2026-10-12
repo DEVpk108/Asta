@@ -231,6 +231,7 @@ function createWindow () {
     minWidth: 390,
     minHeight: 560,
     backgroundColor: '#f5f5f7',
+    icon: path.join(__dirname, 'assets', 'asta-icon.png'),
     show: false,
     frame: isMac,
     titleBarStyle: isMac ? 'hiddenInset' : 'default',

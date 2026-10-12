@@ -52,6 +52,7 @@ class HUDModule(Module):
             self.on_voice_action_committed,
         )
         self.event_bus.subscribe("conversation_mode_set", self.on_conversation_mode_set)
+        self.event_bus.subscribe("conversation_state_changed", self.on_conversation_state_changed)
         self.event_bus.subscribe("speech_started", self.on_speech_started)
         self.event_bus.subscribe("speech_finished", self.on_speech_finished)
         self.event_bus.subscribe("speech_interrupt", self.on_speech_interrupt)
@@ -224,6 +225,12 @@ class HUDModule(Module):
         if self._conversation_active:
             self.set_state(mode="listening", intensity="medium", status="LISTENING", progress=None, activity="conversation")
         else:
+            self.set_state(mode="idle", intensity="low", status="IDLE", progress=None, activity=None)
+
+    def on_conversation_state_changed(self, active=False, *args, **kwargs):
+        """Wake-word follow-up window opened or closed (no manual toggle)."""
+        self._conversation_active = bool(active)
+        if not self._conversation_active and self.state.mode == "listening":
             self.set_state(mode="idle", intensity="low", status="IDLE", progress=None, activity=None)
 
     def on_transport_message(self, message):
@@ -450,7 +457,7 @@ class HUDModule(Module):
                 progress=None,
                 activity="waiting",
             )
-        else:
+        elif self._conversation_active:
             self.set_state(
                 mode="listening",
                 intensity="medium",
@@ -458,6 +465,9 @@ class HUDModule(Module):
                 progress=None,
                 activity="command",
             )
+        else:
+            # Conversation mode is off: only the wake word is being watched.
+            self.set_state(mode="idle", intensity="low", status="IDLE", progress=None, activity=None)
         self.transport.publish_audio_level(0.0)
 
     def on_speech_interrupt(self, *args, **kwargs):
@@ -588,6 +598,7 @@ class HUDModule(Module):
             ("task_progress", self.on_task_progress),
             ("user_message", self.on_user_message),
             ("conversation_mode_set", self.on_conversation_mode_set),
+            ("conversation_state_changed", self.on_conversation_state_changed),
             ("speech_started", self.on_speech_started),
             ("speech_finished", self.on_speech_finished),
             ("speech_interrupt", self.on_speech_interrupt),

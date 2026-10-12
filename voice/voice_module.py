@@ -224,10 +224,18 @@ class VoiceModule(Module):
                 clear_buffer()
             print("[Voice] Conversation mode: OFF", flush=True)
 
+    def _end_conversation(self):
+        """Follow-up window closed: back to wake-word only."""
+        self._conversation_active = False
+        print("[Voice] Conversation mode: INACTIVE", flush=True)
+        self.microphone.clear_buffer()
+        self.event_bus.emit("conversation_state_changed", active=False)
+
     def _start_conversation(self, *, announce=True):
         self._conversation_active = True
         self._last_interaction = time.monotonic()
         print("[Voice] Conversation mode: ACTIVE", flush=True)
+        self.event_bus.emit("conversation_state_changed", active=True)
 
         if not announce:
             return
@@ -847,9 +855,7 @@ class VoiceModule(Module):
                     )
                 else:
                     if self._conversation_expired():
-                        self._conversation_active = False
-                        print("[Voice] Conversation mode: INACTIVE", flush=True)
-                        self.microphone.clear_buffer()
+                        self._end_conversation()
                         continue
 
                 if not self._can_listen():
@@ -895,9 +901,7 @@ class VoiceModule(Module):
                     if session_result is None:
                         self._queue_incremental_session_finished(session_id)
                         if self._conversation_expired():
-                            self._conversation_active = False
-                            print("[Voice] Conversation mode: INACTIVE", flush=True)
-                            self.microphone.clear_buffer()
+                            self._end_conversation()
                         continue
 
                     text = str(session_result.remainder or "").strip()
@@ -969,9 +973,7 @@ class VoiceModule(Module):
 
                 if audio is None:
                     if self._conversation_expired():
-                        self._conversation_active = False
-                        print("[Voice] Conversation mode: INACTIVE", flush=True)
-                        self.microphone.clear_buffer()
+                        self._end_conversation()
                     continue
 
                 if not self._can_listen():
