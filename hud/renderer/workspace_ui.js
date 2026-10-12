@@ -112,6 +112,7 @@
         "filesystem.read_file": "Read and verify file",
         "filesystem.list_files": "Inspect workspace",
         "system.run_command": "Run in sandbox",
+        "project.open_program": "Open on desktop",
       };
       label.textContent =
         step.tool === "filesystem.read_file" && !step.verification
@@ -151,6 +152,8 @@
           ? "Sandbox execution · read-only project snapshot · network disabled."
           : request.tool === "filesystem.write_file" && request.can_approve === true
           ? "Changes a file inside this project only. The full diff is printed in the ASTA console."
+          : request.tool === "project.open_program" && request.can_approve === true
+          ? "Runs this workspace program on your desktop, outside the sandbox, with your user permissions."
           : "A command preview is not available for this tool. Use the existing confirmation flow; you can reject here.";
       var clock = document.createElement("span");
       clock.className = "approval-clock";

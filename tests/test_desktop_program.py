@@ -332,3 +332,48 @@ def test_seeing_the_window_does_not_add_a_screen_check_outside_the_task_scope(tm
         assert tools[-1] == "project.open_program"
     finally:
         _shutdown(run)
+
+
+def test_hud_can_approve_opening_a_program_and_shows_it():
+    import json
+
+    from core.kernel import Kernel
+    from core.contracts import ToolRequest
+    from hud.hud_module import HUDModule
+    from tests.test_hud_module import RecordingHUDTransport
+
+    kernel = Kernel()
+    hud = HUDModule(kernel)
+    hud.transport = RecordingHUDTransport()
+    request = ToolRequest(tool="project.open_program", arguments={"path": "snake.py"}, request_id="open-snake")
+    kernel.approval_manager.request_approval(request, "confirm")
+    sent = []
+    kernel.event_bus.subscribe("tool_confirmation_response", lambda **event: sent.append(event))
+    try:
+        hud._publish_state()
+        [approval] = hud.state.approvals
+        assert approval["can_approve"] is True
+        assert json.loads(approval["preview"]) == {
+            "action": "open on your desktop", "program": "snake.py", "arguments": []}
+        hud.on_transport_message({"type": "hud.approval", "request_id": "open-snake", "approved": True})
+        assert sent == [{"request_id": "open-snake", "approved": True}]
+    finally:
+        kernel.shutdown()
+
+
+def test_hud_does_not_approve_a_program_without_a_path():
+    from core.kernel import Kernel
+    from core.contracts import ToolRequest
+    from hud.hud_module import HUDModule
+    from tests.test_hud_module import RecordingHUDTransport
+
+    kernel = Kernel()
+    hud = HUDModule(kernel)
+    hud.transport = RecordingHUDTransport()
+    kernel.approval_manager.request_approval(
+        ToolRequest(tool="project.open_program", arguments={}, request_id="open-none"), "confirm")
+    try:
+        hud._publish_state()
+        assert hud.state.approvals[0]["can_approve"] is False
+    finally:
+        kernel.shutdown()

@@ -200,12 +200,28 @@ class HUDModule(Module):
                 file_change = self._file_change_preview(kernel, request)
                 if file_change:
                     preview = file_change
+                program = self._program_preview(request)
+                if program:
+                    preview = program
                 ttl = approval_manager.ttl_seconds
                 remaining = max(0, ttl - (time.monotonic() - pending.created_at))
                 self.state.approvals.append({"request_id": request.request_id,
                     "tool": request.tool, "preview": preview,
-                    "can_approve": request.tool == "system.run_command" or bool(file_change),
+                    "can_approve": request.tool == "system.run_command" or bool(file_change) or bool(program),
                     "expires_at": time.time() + remaining if ttl > 0 else None})
+
+    @staticmethod
+    def _program_preview(request) -> str:
+        """The workspace program and its arguments for an open-on-desktop approval."""
+        if request.tool != "project.open_program":
+            return ""
+        path = request.arguments.get("path")
+        arguments = request.arguments.get("arguments") or []
+        if not isinstance(path, str) or not path.strip() or not isinstance(arguments, list):
+            return ""
+        safe = HUDTransport._safe_recent_files([path])
+        return json.dumps({"action": "open on your desktop", "program": safe[0] if safe else path[-160:],
+            "arguments": [str(item)[:80] for item in arguments[:8]]}, ensure_ascii=False)
 
     @staticmethod
     def _file_change_preview(kernel, request) -> str:
@@ -271,7 +287,8 @@ class HUDModule(Module):
             if (isinstance(request_id, str) and isinstance(approved, bool)
                     and manager is not None and pending is not None and manager.contains(request_id)
                     and (not approved or pending.request.tool == "system.run_command"
-                         or bool(self._file_change_preview(self.kernel, pending.request)))):
+                         or bool(self._file_change_preview(self.kernel, pending.request))
+                         or bool(self._program_preview(pending.request)))):
                 self.event_bus.emit("tool_confirmation_response", request_id=request_id, approved=approved)
             self._publish_state()
             return
