@@ -16,6 +16,26 @@ from core.phrasing import acknowledgement, say
 _TERMINAL = {"completed", "failed", "cancelled"}
 
 
+def planning_failure_reason(error) -> str:
+    """Why planning failed, in words a user can act on."""
+    text = str(error or "").strip()
+    lowered = text.lower()
+    if "output limit" in lowered:
+        return (
+            "The plan was longer than the coding model may write in one reply, so it was cut off. "
+            "Raise ASTA_CODING_AGENT_MAX_OUTPUT_TOKENS (and ASTA_CODING_LLM_CONTEXT_SIZE) in .env, "
+            "or ask for something smaller."
+        )
+    if "timeout" in lowered or "timed out" in lowered:
+        return "The coding model took too long to answer. Try again, or ask for something smaller."
+    if "context" in lowered and ("exceed" in lowered or "too long" in lowered or "size" in lowered):
+        return "The request didn't fit in the coding model's context. Raise ASTA_CODING_LLM_CONTEXT_SIZE in .env."
+    if not text:
+        return "The planner didn't say why."
+    text = text.removeprefix("Cognitive planning failed: ")
+    return f"Reason: {text[:300].rstrip('.')}."
+
+
 class BackgroundTaskCoordinator:
     def __init__(self, kernel):
         self.kernel = kernel
@@ -145,8 +165,12 @@ class BackgroundTaskCoordinator:
         if self.cancelled.is_set():
             return
         if task is None:
+            reason = planning_failure_reason(getattr(self.kernel.task_runtime, "last_planning_error", None))
             self._phase("failed", "No safe executable project plan was created")
-            self._say("I couldn’t create a safe executable project plan. No further project actions will run.")
+            self._say(
+                "I couldn’t create a safe project plan, so nothing was changed. " + reason,
+                spoken=say("plan_failed"),
+            )
         elif task.status.value in _TERMINAL or task.status.value == "paused":
             self._phase(task.status.value, "Project task " + task.status.value)
         elif self.snapshot()["phase"] != "awaiting_approval":

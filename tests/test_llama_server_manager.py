@@ -146,7 +146,7 @@ def test_coding_namespace_never_discovers_general_model(monkeypatch, tmp_path):
     )
     assert not manager.model_path
     assert manager._resolve_model_path(str(server)) is None
-    assert manager.context_size == 4096
+    assert manager.context_size == 8192  # room for whole files in a plan
     assert manager.batch_size == 256
     assert manager.ubatch_size == 128
 

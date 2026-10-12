@@ -333,6 +333,7 @@ class TaskRuntimeModule(Module):
         background = getattr(self.kernel, "background_tasks", None)
         if background is not None and background.busy and not background.in_worker():
             return None
+        self.last_planning_error = None
         self._emit_progress(
             "planning",
             "I’m working out how to do that.",
@@ -356,6 +357,7 @@ class TaskRuntimeModule(Module):
             )
         except PlanningError as exc:
             print(f"[Tasks] Planning failed: {exc}", flush=True)
+            self.last_planning_error = str(exc)
             return None
         finally:
             if agent_thinking:
@@ -1363,6 +1365,28 @@ class TaskRuntimeModule(Module):
                 else "Done. The planned project outcome passed its verification."
             )
 
+        program = None
+        for item in getattr(task, "evidence", ()) or ():
+            if (
+                isinstance(item, dict)
+                and item.get("tool") == "project.open_program"
+                and item.get("success") is True
+                and isinstance(item.get("output"), dict)
+            ):
+                program = item["output"]
+        if program is not None:
+            opened = f"`{program.get('path')}`"
+            state = "opened it on your desktop" if program.get("state") == "running" else "ran it on your desktop (it exited cleanly)"
+            created = [c for c in changes if c.get("created") and not c.get("unchanged")]
+            if edited:
+                message = f"Done. {edited}, verified the result, and {state}."
+            elif created:
+                lines = created[-1].get("lines_added")
+                size = f" ({lines} lines)" if isinstance(lines, int) and lines else ""
+                message = f"Done. Wrote `{created[-1]['path']}`{size}, verified it, and {state}."
+            else:
+                message = f"Done. Opened {opened} on your desktop."
+
         # Mixed requests: say what happened with the leading app/music part.
         prefix_notes: list[str] = []
         for item in getattr(task, "evidence", ()) or ():
@@ -1380,7 +1404,7 @@ class TaskRuntimeModule(Module):
             if note and note not in prefix_notes:
                 prefix_notes.append(note)
         attempts = int(task.metadata.get("replan_attempts", 0) or 0)
-        if attempts and verified and (edited or command is not None):
+        if attempts and verified and (edited or command is not None or program is not None):
             message = message.rstrip()
             message = (message if message.endswith((".", "!", "?")) else message + ".") + (
                 f" It took {attempts + 1} attempts; I used the failed check's output to fix it."
@@ -1390,7 +1414,7 @@ class TaskRuntimeModule(Module):
 
         spoken = TaskRuntimeModule._spoken_report(
             changes, command, command_step_arguments=TaskRuntimeModule._command_words(task, command_evidence),
-            attempts=attempts + 1, prefix_notes=prefix_notes,
+            attempts=attempts + 1, prefix_notes=prefix_notes, program=program,
         )
 
         return {
@@ -1484,7 +1508,7 @@ class TaskRuntimeModule(Module):
         return [target, *[str(item) for item in (step.metadata.get("arguments") or [])]]
 
     @staticmethod
-    def _spoken_report(changes, command, *, command_step_arguments, attempts, prefix_notes) -> str:
+    def _spoken_report(changes, command, *, command_step_arguments, attempts, prefix_notes, program=None) -> str:
         """A natural closing line; the chat keeps the full report.
 
         Phrasing varies between runs (core/phrasing.py) so it doesn't sound
@@ -1495,7 +1519,9 @@ class TaskRuntimeModule(Module):
         changed = [c for c in changes if not c.get("unchanged")]
         words = " ".join(command_step_arguments).lower()
         ran_tests = command is not None and ("test" in words or "pytest" in words)
-        if ran_tests and not changed:
+        if program is not None and program.get("state") == "running":
+            text = say("done_opened")
+        elif ran_tests and not changed:
             text = say("done_already_passing")
         elif ran_tests:
             text = say("done_tests")
@@ -2512,6 +2538,8 @@ class TaskRuntimeModule(Module):
                 f"Waiting {max(0.0, seconds):.1f} seconds "
                 "for the interface to settle."
             )
+        if tool == "project.open_program":
+            return f"Opening {args.get('path') or 'the program'} on your desktop."
         if tool == "system.run_command":
             return (
                 "Running Python in an isolated container. "

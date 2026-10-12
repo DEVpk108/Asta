@@ -416,6 +416,7 @@ class IntentRouter:
                 "filesystem.read_file",
                 "filesystem.write_file",
                 "system.run_command",
+                "project.open_program",
             ],
         }
 

@@ -74,6 +74,8 @@ class RecoveryManager:
         # asks the user to approve a critical step again. Diagnose instead.
         deterministic = str(getattr(result, "tool", "") or "") in {
             "system.run_command",
+            # A program that crashed on start crashes again; fix it instead.
+            "project.open_program",
             # Workspace writes fail on file state (exists / changed since
             # read); writing the same thing again cannot succeed.
             "filesystem.write_file",

@@ -11,6 +11,7 @@ from .builtin import (
     StopProcessTool,
 )
 from .sandbox import RunCommandTool
+from .project_program import OpenProjectProgramTool
 from .dispatcher import ToolDispatcher
 from .module import ToolRuntimeModule
 from .policy import (
@@ -60,4 +61,5 @@ __all__ = [
     "ComputerTypeTextTool", "ComputerKeypressTool", "ComputerHotkeyTool",
     "ComputerScrollTool",
     "ListWorkspaceFilesTool", "ReadWorkspaceFileTool", "WriteWorkspaceFileTool",
+    "OpenProjectProgramTool",
 ]

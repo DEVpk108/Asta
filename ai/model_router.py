@@ -293,7 +293,7 @@ class RoutedLLMProvider:
 
     def _configure(self, engine, profile):
         if self.purpose == "agent":
-            budget = int(os.getenv("ASTA_CODING_AGENT_MAX_OUTPUT_TOKENS", "2048")) if profile == "coding" else self.max_output_tokens
+            budget = int(os.getenv("ASTA_CODING_AGENT_MAX_OUTPUT_TOKENS", "4096")) if profile == "coding" else self.max_output_tokens
             engine.max_output_tokens = max(64, budget)
             engine.reasoning_retry_tokens = engine.max_output_tokens
             engine.temperature = float(os.getenv("ASTA_CODING_AGENT_TEMPERATURE", "0.0")) if profile == "coding" else self.temperature

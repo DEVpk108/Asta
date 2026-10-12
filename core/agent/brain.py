@@ -745,25 +745,36 @@ class AgentBrain:
                 "one is supplied. For a command-output check, include "
                 "verification='command.output', expected_returncode=0, "
                 "expected_stdout, and stdout_match='exact' or 'contains' on the "
-                "run step. Never infer success from a launched process alone. "
+                "run step. "
                 "Preserve case, punctuation and quoted literals from the original goal exactly. "
                 "Every filesystem.write_file MUST be followed by a separate filesystem.read_file "
-                "of the same path BEFORE executing code. Put verification='filesystem.file_content', "
-                "expected_path=<same path>, and expected_content=<exact written content> on that READ step. "
-                "A verification field on a write is not a readback. Do not use 'file_content' as an identifier. "
-                "JSON escaping is serialization only: after decoding, content and expected_content "
-                "must be exactly equal, with no extra backslashes. If planning_feedback is provided, "
+                "of the same path with verification='filesystem.file_content' BEFORE executing code. "
+                "Write each file's content ONCE, in the write step: do not repeat it in the read-back "
+                "(A.S.T.A. copies the written content into that check). "
+                "Programs the user wants to SEE or USE (games, windows/GUIs, anything interactive or "
+                "with an endless loop) cannot run in the sandbox (no screen, keyboard or extra "
+                "packages): open them on the user's desktop with action='open_program', "
+                "tool='project.open_program', path=<the .py file>, instead of system.run_command. "
+                "Write such programs with the Python standard library only (tkinter for windows and "
+                "games) unless the user names a package. Use system.run_command for tests and "
+                "scripts that print a result and exit. If planning_feedback is provided, "
                 "return a complete corrected proposal; the rejected proposal was never executed."
             ),
             "project_contract_example": ([
                 {"action": "write_file", "tool": "filesystem.write_file", "path": "example.py",
                  "content": 'print("EXAMPLE")\n'},
                 {"action": "read_file", "tool": "filesystem.read_file", "path": "example.py",
-                 "verification": "filesystem.file_content", "expected_path": "example.py",
-                 "expected_content": 'print("EXAMPLE")\n'},
+                 "verification": "filesystem.file_content"},
                 {"action": "run", "tool": "system.run_command", "target": "python",
                  "arguments": ["example.py"], "cwd": ".", "verification": "command.output",
                  "expected_returncode": 0, "expected_stdout": "EXAMPLE", "stdout_match": "exact"},
+            ] if intent.intent is IntentType.TASK else []),
+            "desktop_program_example": ([
+                {"action": "write_file", "tool": "filesystem.write_file", "path": "snake.py",
+                 "content": "import tkinter as tk\n# ... the complete game ...\n"},
+                {"action": "read_file", "tool": "filesystem.read_file", "path": "snake.py",
+                 "verification": "filesystem.file_content"},
+                {"action": "open_program", "tool": "project.open_program", "path": "snake.py"},
             ] if intent.intent is IntentType.TASK else []),
             **({
                 "existing_file_rules": (
@@ -789,8 +800,7 @@ class AgentBrain:
                      "content": "def add(a, b):\n    return a + b\n",
                      "expected_sha256_from_step": "step-1"},
                     {"action": "read_file", "tool": "filesystem.read_file", "path": "calc.py",
-                     "verification": "filesystem.file_content", "expected_path": "calc.py",
-                     "expected_content": "def add(a, b):\n    return a + b\n"},
+                     "verification": "filesystem.file_content"},
                     {"action": "run", "tool": "system.run_command", "target": "python",
                      "arguments": ["test_calc.py"], "cwd": ".", "verification": "command.output",
                      "expected_returncode": 0, "expected_stdout": "", "stdout_match": "contains"},

@@ -48,7 +48,9 @@ class LlamaServerManager:
         self.context_size = int(
             context_size
             if context_size is not None
-            else setting("CONTEXT_SIZE", "4096" if env_prefix != "ASTA_LLM" else "8192")
+            # The coding model writes whole files inside its plan; 4096 tokens
+            # of context leaves too little room for a game-sized file.
+            else setting("CONTEXT_SIZE", "8192" if env_prefix in {"ASTA_LLM", "ASTA_CODING_LLM"} else "4096")
         )
         self.gpu_layers = int(
             gpu_layers

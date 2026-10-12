@@ -21,7 +21,9 @@ def test_prompt_declares_verified_readback_and_equal_decoded_content():
     intent = IntentRouter().analyze(GOAL)
     payload = json.loads(brain._build_prompt(GOAL, intent))
     example = payload['project_contract_example']
-    assert example[0]['content'] == example[1]['expected_content']
+    # The content is written once; ASTA copies it into the read-back check.
+    assert 'expected_content' not in example[1]
+    assert "Write each file's content ONCE" in payload['instruction']
     assert example[1]['verification'] == 'filesystem.file_content'
     assert example[1]['tool'] == 'filesystem.read_file'
     assert 'ASTA_OK' in payload['intent']['goal']
@@ -29,7 +31,7 @@ def test_prompt_declares_verified_readback_and_equal_decoded_content():
     kernel.shutdown()
 
 
-def test_missing_readback_gets_one_replan_before_any_execution(tmp_path):
+def test_missing_readback_is_added_without_asking_the_model_again(tmp_path):
     good = _happy_plan()
     bad = [step for step in good if step.get('tool') != 'filesystem.read_file']
     workspace = tmp_path/'project'; workspace.mkdir()
@@ -37,24 +39,32 @@ def test_missing_readback_gets_one_replan_before_any_execution(tmp_path):
     brain = FixedPlanBrain(bad, replanned_steps=good)
     kernel.planner.agent_brain = brain
     try:
-        proposal = kernel.planner.plan(GOAL, intent=IntentRouter().analyze(GOAL))
-        assert proposal.steps
-        assert brain.plan_calls == 2
-        assert 'readback' in brain.intents[1]['planning_feedback']
+        plan = kernel.planner.plan(GOAL, intent=IntentRouter().analyze(GOAL))
+        assert brain.plan_calls == 1
+        write = next(step for step in plan.steps if step.metadata.get('tool') == 'filesystem.write_file')
+        readback = plan.steps[plan.steps.index(write) + 1]
+        assert readback.metadata['tool'] == 'filesystem.read_file'
+        assert readback.metadata['expected_content'] == write.metadata['content']
         assert not (workspace/'main.py').exists()
-        assert brain.intents[0].get('planning_feedback') is None
     finally:
         _shutdown(tasks, ai, tools); kernel.shutdown()
 
 
-def test_repeated_invalid_readback_stops_after_two_proposals(tmp_path):
-    bad = [step for step in _happy_plan() if step.get('tool') != 'filesystem.read_file']
+def test_repeated_invalid_verification_stops_after_two_proposals(tmp_path):
+    bad = []
+    for step in _happy_plan():
+        if step.get('tool') == 'filesystem.read_file':
+            continue
+        if step.get('tool') == 'filesystem.write_file':
+            # A content check on the write itself is not a read-back.
+            step = {**step, 'verification': 'filesystem.file_content'}
+        bad.append(step)
     workspace = tmp_path/'project'; workspace.mkdir()
     kernel, tasks, ai, tools = _build_runtime(workspace, tmp_path/'authority.json', bad)
     brain = FixedPlanBrain(bad)
     kernel.planner.agent_brain = brain
     try:
-        with pytest.raises(PlanningError, match='readback'):
+        with pytest.raises(PlanningError, match='File-content verification'):
             kernel.planner.plan(GOAL, intent=IntentRouter().analyze(GOAL))
         assert brain.plan_calls == 2
         assert not (workspace/'main.py').exists()

@@ -214,7 +214,7 @@ def test_chat_history_crosses_profiles_but_agent_prompt_does_not_pollute_chat():
     chat.generate_response("Tell me a joke")
     assert chat.engines["general"].seen[0]["content"] == "chat system"
     assert "control JSON prompt" not in str(chat.engines["general"].seen)
-    assert brain.engines["coding"].max_output_tokens == 2048
+    assert brain.engines["coding"].max_output_tokens == 4096
     chat.reset_conversation()
     assert not chat.history
 

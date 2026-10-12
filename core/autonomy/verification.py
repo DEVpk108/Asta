@@ -96,6 +96,9 @@ class VerificationEngine:
                 result,
             )
 
+        if verification == "program.opened":
+            return self._verify_program_opened(task, step, result)
+
         if verification == "filesystem.file_content":
             return self._verify_file_content(
                 task,
@@ -179,6 +182,30 @@ class VerificationEngine:
             task_id=task_id,
             step_id=step_id,
             metadata={"query": query},
+        )
+
+    @staticmethod
+    def _verify_program_opened(task, step, result) -> VerificationResult:
+        """A desktop program counts as opened when it is still running after
+        the settle window, or finished cleanly (exit 0)."""
+        output = getattr(result, "output", None)
+        output = output if isinstance(output, dict) else {}
+        state = output.get("state")
+        opened = bool(getattr(result, "success", False)) and output.get("launched") is True and (
+            state == "running" or (state == "finished" and output.get("returncode") == 0)
+        )
+        path = output.get("path") or "the program"
+        return VerificationResult(
+            status=VerificationStatus.VERIFIED if opened else VerificationStatus.FAILED,
+            summary=(
+                f"{path} is open on the desktop." if opened and state == "running"
+                else f"{path} ran and exited cleanly." if opened
+                else f"{path} did not stay open: {getattr(result, 'error', '') or 'no process'}"
+            ),
+            source="process_state",
+            task_id=getattr(task, "id", None),
+            step_id=getattr(step, "id", None),
+            metadata={"state": state, "pid": output.get("pid")},
         )
 
     @staticmethod

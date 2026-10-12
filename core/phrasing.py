@@ -68,6 +68,22 @@ LINES: dict[str, list[str]] = {
         "That's sorted. The tests are green now. Check it out.",
         "I've done the work. Everything passes now, have a look.",
     ],
+    "done_opened": [
+        "All done, sir. It's open on your screen now. Have fun!",
+        "I've finished it and it's running on your screen. Check it out.",
+        "Done. It's up on your desktop, give it a try.",
+        "That's ready. I've opened it for you, take a look.",
+    ],
+    "approve_open": [
+        "It's written. Can I open {path} on your desktop? It runs outside the sandbox.",
+        "I'd like to open {path} on your screen so you can try it. It runs outside the sandbox. Is that okay?",
+        "{path} is ready. Should I launch it on your desktop? It won't be sandboxed.",
+    ],
+    "plan_failed": [
+        "Sorry, I couldn't put a plan together for that. The reason is on screen.",
+        "I couldn't work out a safe plan for that one. Have a look at the screen for why.",
+        "That one didn't come together, sir. I've put the reason on screen.",
+    ],
     "done_already_passing": [
         "Good news, the tests already pass. Nothing needed changing.",
         "I checked, and the tests already pass. I didn't need to change anything.",

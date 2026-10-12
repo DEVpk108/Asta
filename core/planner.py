@@ -202,6 +202,9 @@ class Planner:
                     # the user said; never accept them from model output.
                     command.pop("user_directed", None)
                     command.pop("user_request_prefix", None)
+                commands = self._complete_project_commands(
+                    commands, can_insert_readback=self._has_tool("filesystem.read_file"),
+                )
                 if prefix_commands:
                     prefix_steps = self._prefix_task_steps(prefix_commands, value)
                     intent = self._with_prefix_scope(intent, prefix_steps, value)
@@ -432,6 +435,62 @@ class Planner:
             flush=True,
         )
         return plan
+
+    @staticmethod
+    def _complete_project_commands(
+        commands: list[dict[str, Any]], *, can_insert_readback: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Fill in what the model shouldn't have to write twice.
+
+        * The read-back after a write gets expected_path/expected_content
+          copied from the write (the model writes the file content once; a
+          Snake game written twice no longer overflows the output limit). A
+          missing read-back is inserted right after the write.
+        * A desktop program step (open_program) gets its process check.
+        """
+        def norm(value):
+            return str(value or "").replace("\\", "/").strip().strip("/")
+
+        def is_tool(command, tool, action):
+            named = str(command.get("tool") or "")
+            return named == tool or (not named and str(command.get("action") or "").lower() == action)
+
+        result = [dict(command) for command in commands]
+        index = 0
+        while index < len(result):
+            command = result[index]
+            if is_tool(command, "project.open_program", "open_program"):
+                command["action"], command["tool"] = "open_program", "project.open_program"
+                command["verification"] = "program.opened"
+                for key in ("expected_stdout", "expected_returncode", "stdout_match", "target", "cwd"):
+                    command.pop(key, None)
+            if not (is_tool(command, "filesystem.write_file", "write_file") and isinstance(command.get("content"), str)):
+                index += 1
+                continue
+            path = norm(command.get("path"))
+            readback = None
+            for later in result[index + 1:]:
+                if norm(later.get("path")) != path:
+                    continue
+                if is_tool(later, "filesystem.read_file", "read_file"):
+                    readback = later
+                break  # the next step touching this path decides
+            if readback is None and not can_insert_readback:
+                index += 1
+                continue
+            if readback is None:
+                readback = {"action": "read_file", "tool": "filesystem.read_file", "path": command.get("path")}
+                inserted_at = index + 2  # 1-based position of the new step
+                for later in result[index + 1:]:
+                    match = re.fullmatch(r"step-(\d+)", str(later.get("expected_sha256_from_step") or "").strip())
+                    if match and int(match.group(1)) >= inserted_at:
+                        later["expected_sha256_from_step"] = f"step-{int(match.group(1)) + 1}"
+                result.insert(index + 1, readback)
+            readback["verification"] = "filesystem.file_content"
+            readback["expected_path"] = command.get("path")
+            readback["expected_content"] = command["content"]
+            index += 1
+        return result
 
     @staticmethod
     def _offset_step_references(commands: list[dict[str, Any]], offset: int) -> list[dict[str, Any]]:

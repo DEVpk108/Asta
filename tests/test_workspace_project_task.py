@@ -293,6 +293,7 @@ def test_project_task_language_routes_to_bounded_task_intent():
         "filesystem.read_file",
         "filesystem.write_file",
         "system.run_command",
+        "project.open_program",
     ]
 
 

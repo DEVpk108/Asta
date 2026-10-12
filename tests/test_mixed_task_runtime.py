@@ -363,7 +363,7 @@ def test_music_can_be_paused_while_a_project_task_runs():
 
     assert media.operations == ["pause"]
     assert said[0] == "Paused."
-    assert "project task is still active" in said[1]
+    assert "project task is still running" in said[1]
 
 
 def test_a_paused_project_task_says_why():

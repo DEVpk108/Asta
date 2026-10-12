@@ -297,10 +297,12 @@ class AIModule(Module):
             hint = self.kernel.intent_router.analyze(text)
             if self._background_media_control(hint):
                 return
+            if self._side_actions().try_start(text, hint):
+                return
             if hint.intent in {IntentType.COMMAND, IntentType.TASK} or re.match(
                 r"^(?:(?:please|can you|could you|would you)\s+)*(?:open|launch|start|close|run|stop|play|pause|resume|press|type|switch|fix|write|create|modify|delete)\b",
                 str(text).strip(), re.I):
-                self._emit_assistant_text("A project task is still active. I can keep chatting, but please cancel it or wait before starting another action.")
+                self._emit_assistant_text("A project task is still running, and that would touch the project too, so it has to wait. I can keep chatting, or open apps and play music meanwhile.")
                 return
 
         if self._handle_conversation_mode_command(text):
@@ -1395,6 +1397,15 @@ class AIModule(Module):
 
     _SIDE_MEDIA_OPERATIONS = frozenset({"pause", "play", "toggle", "next", "previous", "stop"})
 
+    def _side_actions(self):
+        """Open apps / play music now, next to a background project task."""
+        runner = getattr(self, "_side_runner", None)
+        if runner is None:
+            from core.side_actions import SideActionRunner
+
+            runner = self._side_runner = SideActionRunner(self.kernel, say=self._emit_assistant_text)
+        return runner
+
     def _background_media_control(self, intent) -> bool:
         """Pause/resume/skip music while a project task runs in the background.
 
@@ -1440,6 +1451,11 @@ class AIModule(Module):
             )
         elif overwrite:
             text = f"{overwrite} already exists with different content. Should I replace it?"
+        elif request.tool == "project.open_program":
+            text = (
+                f"Can I open {request.arguments.get('path') or 'the program'} on your desktop? "
+                "It runs outside the sandbox, with your normal user permissions."
+            )
         elif action and target:
             text = f"I need your confirmation before I {action} {target}."
         elif target:
@@ -1461,6 +1477,8 @@ class AIModule(Module):
             question = say("approve_test_edit", path=overwrite)
         elif overwrite:
             question = say("approve_replace", path=overwrite)
+        elif request.tool == "project.open_program":
+            question = say("approve_open", path=str(request.arguments.get("path") or "the program"))
         elif request.tool == "system.run_command":
             target = str(request.arguments.get("target") or "").replace("\\", "/").rsplit("/", 1)[-1]
             target = re.sub(r"\.exe$", "", target, flags=re.IGNORECASE)
