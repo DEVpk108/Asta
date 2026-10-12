@@ -23,7 +23,12 @@ from .module import Module
 
 
 from core.tools.approval import APPROVAL_EXPIRED_ERROR
-from core.tools.workspace import existing_workspace_file  # noqa: E402
+from core.tools.workspace import (  # noqa: E402
+    existing_workspace_file,
+    is_test_path,
+    mentioned_paths,
+    text_change_summary,
+)
 from core.tools.sandbox import (  # noqa: E402
     SANDBOX_SETUP_COMMAND,
     SANDBOX_SETUP_MESSAGE,
@@ -605,6 +610,18 @@ class TaskRuntimeModule(Module):
         plan_step_id = result.metadata.get("plan_step_id")
         if plan_step_id:
             evidence["plan_step_id"] = plan_step_id
+        if (
+            result.success
+            and result.tool == "filesystem.write_file"
+            and isinstance(result.output, dict)
+            and result.output.get("diff")
+        ):
+            print(
+                f"[Tasks] Changed {result.output.get('path')} "
+                f"(+{result.output.get('lines_added', 0)} -{result.output.get('lines_removed', 0)}):\n"
+                + str(result.output["diff"]).rstrip(),
+                flush=True,
+            )
         if not result.success:
             if result.error in {
                 "Tool execution rejected by user.",
@@ -960,6 +977,9 @@ class TaskRuntimeModule(Module):
                     )
                     return
 
+                # Record the failed attempt first: the repair planner must
+                # see its output (a failing test's traceback, for example).
+                self.kernel.task_manager.add_evidence(evidence, task.id)
                 try:
                     new_plan = self.kernel.planner.replan(
                         task,
@@ -968,7 +988,8 @@ class TaskRuntimeModule(Module):
                     )
                 except PlanningError as exc:
                     evidence["replan_error"] = str(exc)
-                    self.kernel.task_manager.add_evidence(evidence, task.id)
+                    if task.evidence and isinstance(task.evidence[-1], dict):
+                        task.evidence[-1]["replan_error"] = str(exc)
                     self.event_bus.emit(
                         "task_replan_required",
                         task_id=task.id,
@@ -982,7 +1003,6 @@ class TaskRuntimeModule(Module):
                 task.pending_steps = [step.description for step in new_plan.steps]
                 task.current_step = None
                 task.error = None
-                self.kernel.task_manager.add_evidence(evidence, task.id)
                 self.event_bus.emit(
                     "task_replanned",
                     task_id=task.id,
@@ -1278,23 +1298,17 @@ class TaskRuntimeModule(Module):
                 for step in steps
             )
 
-        write_output = None
         command_evidence = None
         for item in getattr(task, "evidence", ()) or ():
             if not isinstance(item, dict) or item.get("success") is not True:
                 continue
-            if item.get("tool") == "filesystem.write_file":
-                output = item.get("output")
-                if isinstance(output, dict):
-                    write_output = output
-            elif item.get("tool") == "system.run_command":
+            if item.get("tool") == "system.run_command":
                 output = item.get("output")
                 if isinstance(output, dict):
                     command_evidence = (item, output)
 
-        artifacts = []
-        if isinstance(write_output, dict) and isinstance(write_output.get("path"), str):
-            artifacts.append({"path": write_output["path"]})
+        changes = TaskRuntimeModule._project_changes(task)
+        artifacts = [{"path": change["path"]} for change in changes]
 
         command = None
         if command_evidence is not None:
@@ -1314,7 +1328,17 @@ class TaskRuntimeModule(Module):
                 "stderr": output.get("stderr"),
             }
 
-        if artifacts and command is not None:
+        edited = TaskRuntimeModule._describe_edits(changes)
+        if edited and command is not None:
+            observed = str(command.get("stdout") or "").strip()
+            message = (
+                f"Done. {edited}, verified the result, and ran the project command "
+                f"(exit {command.get('returncode')}); "
+                + (f"output: {observed[:1200]}" if observed else "it printed no output.")
+            )
+        elif edited:
+            message = f"Done. {edited} and verified the result."
+        elif artifacts and command is not None:
             observed = str(command.get("stdout") or "").strip()
             path = artifacts[-1]["path"]
             message = (
@@ -1352,12 +1376,20 @@ class TaskRuntimeModule(Module):
                 note = str(output.get("message") or "").strip()
             if note and note not in prefix_notes:
                 prefix_notes.append(note)
+        attempts = int(task.metadata.get("replan_attempts", 0) or 0)
+        if attempts and verified and (edited or command is not None):
+            message = message.rstrip()
+            message = (message if message.endswith((".", "!", "?")) else message + ".") + (
+                f" It took {attempts + 1} attempts; I used the failed check's output to fix it."
+            )
         if prefix_notes:
             message = " ".join(prefix_notes) + " " + message
 
         return {
             "verified": verified,
             "artifacts": artifacts,
+            "changes": changes,
+            "attempts": attempts + 1,
             "command": command,
             "verifications": [
                 verification_evidence.get(step.id)
@@ -1365,6 +1397,89 @@ class TaskRuntimeModule(Module):
             ],
             "message": message,
         }
+
+    @staticmethod
+    def _project_changes(task) -> list[dict[str, Any]]:
+        """Net change per written file: what it held before the task vs. now.
+
+        Uses the file's first read in this task as "before" and its last
+        read-back as "after", so several fix attempts report one diff.
+        """
+        evidence = [item for item in (getattr(task, "evidence", ()) or ()) if isinstance(item, dict)]
+
+        def norm(value):
+            return str(value or "").replace("\\", "/").strip("/")
+
+        order: list[str] = []
+        writes: dict[str, list[tuple[int, dict]]] = {}
+        for index, item in enumerate(evidence):
+            output = item.get("output")
+            if (
+                item.get("tool") == "filesystem.write_file"
+                and item.get("success") is True
+                and isinstance(output, dict)
+                and isinstance(output.get("path"), str)
+            ):
+                path = norm(output["path"])
+                if path not in writes:
+                    order.append(path)
+                writes.setdefault(path, []).append((index, output))
+
+        changes = []
+        for path in order:
+            entries = writes[path]
+            first_index, first = entries[0]
+            last_index, last = entries[-1]
+            reads = [
+                (index, item["output"].get("content"))
+                for index, item in enumerate(evidence)
+                if item.get("tool") == "filesystem.read_file"
+                and item.get("success") is True
+                and isinstance(item.get("output"), dict)
+                and norm(item["output"].get("path")) == path
+                and isinstance(item["output"].get("content"), str)
+            ]
+            before = next((text for index, text in reversed(reads) if index < first_index), None)
+            after = next((text for index, text in reversed(reads) if index > last_index), None)
+            created = bool(first.get("created"))
+            if all(output.get("unchanged") for _, output in entries):
+                change = {"lines_added": 0, "lines_removed": 0, "diff": "", "diff_truncated": False}
+            elif before is not None and after is not None and not created:
+                change = text_change_summary(before, after, path)
+            elif len(entries) == 1 and "lines_added" in last:
+                change = {
+                    key: last.get(key)
+                    for key in ("lines_added", "lines_removed", "diff", "diff_truncated")
+                }
+            else:
+                change = {}
+            changes.append({
+                "path": path,
+                "created": created,
+                "unchanged": all(output.get("unchanged") for _, output in entries),
+                "writes": len(entries),
+                **change,
+            })
+        return changes
+
+    @staticmethod
+    def _describe_edits(changes) -> str:
+        """ "Updated `calc.py` (+1 -1 lines)" for edits of files that existed."""
+        parts = []
+        for change in changes:
+            if change.get("created") or change.get("unchanged"):
+                continue
+            stats = ""
+            if isinstance(change.get("lines_added"), int):
+                stats = f" (+{change['lines_added']} -{change.get('lines_removed', 0)} lines)"
+            parts.append(f"`{change['path']}`{stats}")
+        if not parts:
+            return ""
+        created = [f"`{c['path']}`" for c in changes if c.get("created") and not c.get("unchanged")]
+        text = "Updated " + ", ".join(parts)
+        if created:
+            text += ", created " + ", ".join(created)
+        return text
 
     def _existing_file_write(self, task, plan_step_id):
         """Resolve a create-only write that hit an existing workspace file.
@@ -1911,6 +2026,10 @@ class TaskRuntimeModule(Module):
         explicit = any(marker in goal for marker in cls._EXPLICIT_VERIFICATION_MARKERS)
         if verified and not explicit:
             return "Final step verified deterministically"
+        if verified and (getattr(task, "metadata", None) or {}).get("intent_type") == IntentType.TASK.value:
+            # A project check ("make sure the tests pass") was observed by
+            # the command/file verifier; ASTA's report states the evidence.
+            return "Project check verified deterministically"
         return None
 
     @staticmethod
@@ -2502,7 +2621,27 @@ class TaskRuntimeModule(Module):
             request.metadata["completion_message"] = str(
                 step.metadata["completion_message"]
             )
+        protected = self._unrequested_test_edit(task, request)
+        if protected:
+            # Making a check pass by rewriting its test is not a fix. The
+            # user decides whether a test they didn't mention may change.
+            request.metadata["confirm_overwrite"] = protected
+            request.metadata["confirm_kind"] = "test_edit"
         return request
+
+    @staticmethod
+    def _unrequested_test_edit(task, request: ToolRequest) -> str | None:
+        """Path of an existing test file this update would change unasked."""
+        if request.tool != "filesystem.write_file" or not request.arguments.get("expected_sha256"):
+            return None
+        path = str(request.arguments.get("path") or "").replace("\\", "/").strip("/")
+        if not path or not is_test_path(path):
+            return None
+        goal = str((task.metadata.get("intent_entities") or {}).get("goal") or task.goal or "")
+        named = {item.lower().strip("/") for item in mentioned_paths(goal)}
+        if path.lower() in named or path.rsplit("/", 1)[-1].lower() in named:
+            return None
+        return path
 
     @staticmethod
     def _read_step_digest(task, *, source_step_id, expected_path) -> str | None:

@@ -7,6 +7,7 @@ create/update text files. They do not delete or move files.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import hmac
 import os
@@ -121,6 +122,168 @@ def existing_workspace_file(workspace_manager, requested_path) -> tuple[str, byt
     except (OSError, RuntimeError, ValueError, WorkspacePathError):
         return None
     return hashlib.sha256(data).hexdigest(), data
+
+
+_TEST_PATH = re.compile(
+    r"(?:^|/)(?:tests?|__tests__|spec)/|(?:^|/)test_[^/]+$|(?:^|/)[^/]+_test\.[^/]+$"
+    r"|(?:^|/)[^/]+\.(?:test|spec)\.[^/]+$|(?:^|/)conftest\.py$",
+    re.I,
+)
+_FILE_MENTION = re.compile(
+    r"(?<![\w/\\.-])((?:[\w.-]+[/\\])*[\w-][\w.-]*\.[A-Za-z][A-Za-z0-9]{0,7})(?![\w/\\-])"
+)
+_SPOKEN_DOT = re.compile(
+    r"\b([\w-]+)\s+dot\s+(py|js|ts|tsx|jsx|json|md|txt|toml|yaml|yml|cfg|ini|html|css|sh|ps1)\b",
+    re.I,
+)
+_TEST_WORDS = re.compile(r"\b(?:tests?|pytest|unittest|failing|passes|pass)\b", re.I)
+_CONTEXT_SKIP_DIRS = {".pytest_cache", ".mypy_cache", ".ruff_cache", "dist", "build", ".idea", ".vscode"}
+MAX_CONTEXT_FILE_BYTES = 6000
+MAX_CONTEXT_TOTAL_BYTES = 12000
+MAX_CONTEXT_FILES = 4
+MAX_CONTEXT_LISTING = 60
+MAX_DIFF_CHARS = 4000
+
+
+def is_test_path(path: Any) -> bool:
+    """True for files that hold tests (test_x.py, x_test.go, tests/..., x.spec.ts)."""
+    return bool(_TEST_PATH.search(str(path or "").replace("\\", "/").lstrip("./")))
+
+
+def mentioned_paths(text: Any) -> list[str]:
+    """File names the user said ("calc.py", "src/app.js", "calc dot py")."""
+    value = _SPOKEN_DOT.sub(lambda match: f"{match.group(1)}.{match.group(2).lower()}", str(text or ""))
+    found: list[str] = []
+    for match in _FILE_MENTION.finditer(value):
+        item = match.group(1).replace("\\", "/").rstrip(".")
+        if item and item.lower() not in {name.lower() for name in found}:
+            found.append(item)
+    return found
+
+
+def text_change_summary(before: str | None, after: str, path: str = "") -> dict[str, Any]:
+    """Line-level change stats and a bounded unified diff for a text edit."""
+    old_lines = (before or "").replace("\r\n", "\n").splitlines(keepends=True)
+    new_lines = after.replace("\r\n", "\n").splitlines(keepends=True)
+    added = removed = 0
+    diff_lines = []
+    for line in difflib.unified_diff(old_lines, new_lines, f"a/{path}", f"b/{path}", n=2):
+        diff_lines.append(line if line.endswith("\n") else line + "\n")
+        if line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+    diff = "".join(diff_lines)
+    return {
+        "lines_added": added,
+        "lines_removed": removed,
+        "diff": diff[:MAX_DIFF_CHARS],
+        "diff_truncated": len(diff) > MAX_DIFF_CHARS,
+    }
+
+
+def planning_file_context(workspace_manager, goal: Any) -> dict[str, Any]:
+    """Bounded view of the project for planning an edit.
+
+    Lists a few dozen project files and includes the current text and SHA-256
+    of the files the user named (plus their tests), so the planner can write a
+    complete, correct update instead of guessing what the file contains.
+    Files the user did not name are marked read_only: the plan may read them,
+    but changing them needs the user's approval.
+    """
+    try:
+        root = resolve_workspace_root(workspace_manager)
+    except WorkspacePathError:
+        return {}
+
+    listing: list[str] = []
+    try:
+        for current, directories, files in os.walk(root):
+            base = Path(current)
+            relative_base = base.relative_to(root)
+            depth = len(relative_base.parts)
+            directories[:] = sorted(
+                name for name in directories
+                if depth < 2
+                and not name.startswith(".")
+                and name.lower() not in _CONTEXT_SKIP_DIRS
+                and not _is_sensitive_parts((*relative_base.parts, name))
+            )
+            for name in sorted(files):
+                parts = (*relative_base.parts, name)
+                if name.startswith(".asta-write-") or _is_sensitive_parts(parts):
+                    continue
+                listing.append("/".join(parts))
+                if len(listing) >= MAX_CONTEXT_LISTING:
+                    break
+            if len(listing) >= MAX_CONTEXT_LISTING:
+                break
+    except OSError:
+        pass
+
+    by_name: dict[str, list[str]] = {}
+    for item in listing:
+        by_name.setdefault(item.rsplit("/", 1)[-1].lower(), []).append(item)
+    lowered = {item.lower(): item for item in listing}
+
+    named: list[str] = []
+    for mention in mentioned_paths(goal):
+        exact = lowered.get(mention.lower())
+        matches = [exact] if exact else by_name.get(mention.rsplit("/", 1)[-1].lower(), [])
+        if len(matches) == 1 and matches[0] not in named:
+            named.append(matches[0])
+
+    selected: list[tuple[str, bool]] = [(item, True) for item in named]
+    if _TEST_WORDS.search(str(goal or "")) or named:
+        for item in named:
+            stem = Path(item).stem.lower()
+            for candidate in listing:
+                name = candidate.rsplit("/", 1)[-1].lower()
+                if (
+                    candidate not in named
+                    and is_test_path(candidate)
+                    and stem
+                    and stem in {name.split(".")[0].removeprefix("test_"), name.split(".")[0].removesuffix("_test")}
+                ):
+                    selected.append((candidate, False))
+        if not named and _TEST_WORDS.search(str(goal or "")):
+            tests = [item for item in listing if is_test_path(item) and item.endswith(".py")]
+            if len(tests) == 1:
+                selected.append((tests[0], False))
+
+    contents: list[dict[str, Any]] = []
+    total = 0
+    seen = set()
+    for item, editable in selected:
+        if item in seen or len(contents) >= MAX_CONTEXT_FILES:
+            continue
+        seen.add(item)
+        try:
+            path = resolve_workspace_path(root, item)
+            if _is_sensitive_path(root, path) or not path.is_file():
+                continue
+            raw = path.read_bytes() if path.stat().st_size <= MAX_TEXT_FILE_BYTES else None
+        except (OSError, RuntimeError, ValueError, WorkspacePathError):
+            continue
+        entry: dict[str, Any] = {"path": item, "read_only": not editable}
+        if raw is None or len(raw) > MAX_CONTEXT_FILE_BYTES or total + len(raw) > MAX_CONTEXT_TOTAL_BYTES:
+            entry["too_large_to_include"] = True
+        else:
+            try:
+                entry["content"] = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            entry["sha256"] = hashlib.sha256(raw).hexdigest()
+            total += len(raw)
+        contents.append(entry)
+
+    if not listing and not contents:
+        return {}
+    return {
+        "files": listing,
+        "files_truncated": len(listing) >= MAX_CONTEXT_LISTING,
+        "file_contents": contents,
+    }
 
 
 def _is_sensitive_path(root: Path, path: Path) -> bool:
@@ -421,6 +584,8 @@ class WriteWorkspaceFileTool(_WorkspaceFileTool):
             path.parent.resolve(strict=True).relative_to(root)
 
             exists = path.exists()
+            previous_text = None
+            previous_hash = None
             if exists:
                 if not path.is_file():
                     raise WorkspacePathError("The requested workspace path is not a regular file.")
@@ -439,6 +604,8 @@ class WriteWorkspaceFileTool(_WorkspaceFileTool):
                         f"Files larger than {MAX_TEXT_FILE_BYTES} bytes cannot be updated by this tool."
                     )
                 existing_hash = hashlib.sha256(existing).hexdigest()
+                previous_hash = existing_hash
+                previous_text = existing.decode("utf-8", errors="replace")
                 if not hmac.compare_digest(existing_hash, expected.lower()):
                     raise WorkspacePathError(
                         "The file changed since it was read; read it again before updating."
@@ -463,14 +630,18 @@ class WriteWorkspaceFileTool(_WorkspaceFileTool):
             temp_path = None
             digest = hashlib.sha256(payload).hexdigest()
             self._record_recent_file(root, path)
+            relative = path.relative_to(root).as_posix()
+            change = text_change_summary(previous_text, content, relative)
             return _tool_result(
                 request,
                 success=True,
                 output={
-                    "path": path.relative_to(root).as_posix(),
+                    "path": relative,
                     "created": not exists,
                     "bytes_written": len(payload),
                     "sha256": digest,
+                    **({"previous_sha256": previous_hash} if previous_hash else {}),
+                    **change,
                 },
                 start=start,
             )

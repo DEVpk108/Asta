@@ -149,6 +149,8 @@
       note.textContent =
         request.tool === "system.run_command"
           ? "Sandbox execution · read-only project snapshot · network disabled."
+          : request.tool === "filesystem.write_file" && request.can_approve === true
+          ? "Changes a file inside this project only. The full diff is printed in the ASTA console."
           : "A command preview is not available for this tool. Use the existing confirmation flow; you can reject here.";
       var clock = document.createElement("span");
       clock.className = "approval-clock";

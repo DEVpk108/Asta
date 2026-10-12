@@ -1427,7 +1427,12 @@ class AIModule(Module):
         action = request.metadata.get("action")
         target = request.arguments.get("target")
         overwrite = str(request.metadata.get("confirm_overwrite") or "").strip()
-        if overwrite:
+        if overwrite and request.metadata.get("confirm_kind") == "test_edit":
+            text = (
+                f"To finish, I'd have to change the test file {overwrite}, which you didn't ask me to edit. "
+                "Should I change it?"
+            )
+        elif overwrite:
             text = f"{overwrite} already exists with different content. Should I replace it?"
         elif action and target:
             text = f"I need your confirmation before I {action} {target}."

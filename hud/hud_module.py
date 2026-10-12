@@ -197,12 +197,38 @@ class HUDModule(Module):
                     args = request.arguments
                     preview = json.dumps({"target": args.get("target"),
                         "arguments": args.get("arguments", []), "cwd": args.get("cwd", ".")}, ensure_ascii=False)
+                file_change = self._file_change_preview(kernel, request)
+                if file_change:
+                    preview = file_change
                 ttl = approval_manager.ttl_seconds
                 remaining = max(0, ttl - (time.monotonic() - pending.created_at))
                 self.state.approvals.append({"request_id": request.request_id,
                     "tool": request.tool, "preview": preview,
-                    "can_approve": request.tool == "system.run_command",
+                    "can_approve": request.tool == "system.run_command" or bool(file_change),
                     "expires_at": time.time() + remaining if ttl > 0 else None})
+
+    @staticmethod
+    def _file_change_preview(kernel, request) -> str:
+        """Path and line counts (never code) for an approval-gated file write."""
+        if request.tool != "filesystem.write_file":
+            return ""
+        path = str((request.metadata or {}).get("confirm_overwrite") or "").strip()
+        content = request.arguments.get("content")
+        if not path or not isinstance(content, str):
+            return ""
+        try:
+            from core.tools.workspace import existing_workspace_file, text_change_summary
+
+            state = existing_workspace_file(getattr(kernel, "workspace_manager", None), path)
+            before = state[1].decode("utf-8", errors="replace") if state else ""
+            change = text_change_summary(before, content, path)
+        except Exception:
+            return ""
+        kind = "edit test file" if (request.metadata or {}).get("confirm_kind") == "test_edit" else "replace file"
+        safe = HUDTransport._safe_recent_files([path])
+        return json.dumps({"action": kind, "path": safe[0] if safe else path[-160:],
+            "lines_added": change["lines_added"], "lines_removed": change["lines_removed"]},
+            ensure_ascii=False)
 
     def reset_state(self):
         self.state = HUDState()
@@ -244,7 +270,8 @@ class HUDModule(Module):
             pending = manager.get(request_id) if manager is not None and isinstance(request_id, str) else None
             if (isinstance(request_id, str) and isinstance(approved, bool)
                     and manager is not None and pending is not None and manager.contains(request_id)
-                    and (not approved or pending.request.tool == "system.run_command")):
+                    and (not approved or pending.request.tool == "system.run_command"
+                         or bool(self._file_change_preview(self.kernel, pending.request)))):
                 self.event_bus.emit("tool_confirmation_response", request_id=request_id, approved=approved)
             self._publish_state()
             return

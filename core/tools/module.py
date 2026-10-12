@@ -51,7 +51,11 @@ class ToolRuntimeModule(Module):
             # the write tool's normal risk policy is.
             pending = self.kernel.approval_manager.request_approval(
                 request=request,
-                reason=f"{overwrite} already exists with different content; replacing it needs approval.",
+                reason=(
+                    f"Changing the test file {overwrite} was not requested; it needs approval."
+                    if (request.metadata or {}).get("confirm_kind") == "test_edit"
+                    else f"{overwrite} already exists with different content; replacing it needs approval."
+                ),
             )
             self.event_bus.emit(
                 "tool_confirmation_required",

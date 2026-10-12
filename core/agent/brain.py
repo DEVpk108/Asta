@@ -726,11 +726,13 @@ class AgentBrain:
     def _build_prompt(self, goal: str, intent: IntentResult) -> str:
         registry = getattr(self.kernel, "tool_registry", None)
         capabilities = self._plan_capabilities(registry, goal, intent)
+        workspace = self._workspace_context(goal, intent)
 
         payload = {
             "goal": goal,
             "intent": intent.entities,
             "capabilities": capabilities,
+            **({"workspace": workspace} if workspace else {}),
             "instruction": (
                 "Create the smallest safe executable plan. Return JSON only. "
                 "For goals that require visual verification, return the primary "
@@ -763,6 +765,33 @@ class AgentBrain:
                  "arguments": ["example.py"], "cwd": ".", "verification": "command.output",
                  "expected_returncode": 0, "expected_stdout": "EXAMPLE", "stdout_match": "exact"},
             ] if intent.intent is IntentType.TASK else []),
+            **({
+                "existing_file_rules": (
+                    "workspace.file_contents shows the CURRENT text of existing files. To change "
+                    "one: read_file it as its own step, then write_file the COMPLETE new file "
+                    "content with expected_sha256_from_step=<id of that read step> (steps are "
+                    "numbered step-1, step-2, ... in your list order), then a verified readback, "
+                    "then run the check. Change only what the goal needs and keep everything else "
+                    "byte-for-byte. To fix failing tests, fix the code under test; files marked "
+                    "read_only (for example tests the user did not name) must not be rewritten to "
+                    "make a check pass. For a test command, check expected_returncode=0 and use "
+                    "stdout_match='contains' with a short line the passing run prints (or an empty "
+                    "expected_stdout when the run prints nothing on success). If recovery_context "
+                    "shows a failed run, use its stdout/stderr to find the cause and fix that."
+                ),
+                "project_update_example": [
+                    {"action": "read_file", "tool": "filesystem.read_file", "path": "calc.py"},
+                    {"action": "write_file", "tool": "filesystem.write_file", "path": "calc.py",
+                     "content": "def add(a, b):\n    return a + b\n",
+                     "expected_sha256_from_step": "step-1"},
+                    {"action": "read_file", "tool": "filesystem.read_file", "path": "calc.py",
+                     "verification": "filesystem.file_content", "expected_path": "calc.py",
+                     "expected_content": "def add(a, b):\n    return a + b\n"},
+                    {"action": "run", "tool": "system.run_command", "target": "python",
+                     "arguments": ["test_calc.py"], "cwd": ".", "verification": "command.output",
+                     "expected_returncode": 0, "expected_stdout": "", "stdout_match": "contains"},
+                ],
+            } if workspace.get("file_contents") else {}),
             "required_output": {
                 "goal_summary": "one sentence",
                 "success_conditions": ["1-3 observable conditions"],
@@ -793,6 +822,21 @@ class AgentBrain:
             }
         }
         return json.dumps(payload, ensure_ascii=False)
+
+    def _workspace_context(self, goal: str, intent: IntentResult) -> dict[str, Any]:
+        """Current project files (and named files' text) for project-task planning."""
+        if intent.intent is not IntentType.TASK:
+            return {}
+        try:
+            from core.tools.workspace import planning_file_context
+
+            return planning_file_context(
+                getattr(self.kernel, "workspace_manager", None),
+                (intent.entities or {}).get("goal") or goal,
+            )
+        except Exception as exc:
+            print(f"[Agent] Workspace context unavailable: {type(exc).__name__}: {exc}", flush=True)
+            return {}
 
     @staticmethod
     def _plan_capabilities(registry, goal: str, intent: IntentResult) -> list[dict[str, Any]]:

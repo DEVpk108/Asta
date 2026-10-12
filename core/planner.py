@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from core.media.catalog import resolve_play_query
@@ -129,6 +130,7 @@ class Planner:
             retryable = contract_error.startswith((
                 "Project file writes must", "The verified readback must", "File-content verification",
                 "Project command verification", "Project command stdout verification",
+                "Project file updates must",
             ))
             if not isinstance(intent, IntentResult) or intent.intent is not IntentType.TASK or not retryable:
                 raise
@@ -203,7 +205,9 @@ class Planner:
                 if prefix_commands:
                     prefix_steps = self._prefix_task_steps(prefix_commands, value)
                     intent = self._with_prefix_scope(intent, prefix_steps, value)
-                    commands = prefix_steps + commands
+                    commands = prefix_steps + self._offset_step_references(
+                        commands, len(prefix_steps)
+                    )
                 planner_name = "cognitive_v1"
                 agent_metadata = brain.task_metadata(proposal)
                 print(
@@ -396,7 +400,9 @@ class Planner:
                             for key, value in command.items()
                             if key not in {"action", "target", "tool"}
                             and value is not None
-                            and value != ""
+                            # An empty expected_stdout is a real condition
+                            # (a passing test run that prints nothing).
+                            and (value != "" or key == "expected_stdout")
                         },
                     },
                 )
@@ -425,6 +431,21 @@ class Planner:
             flush=True,
         )
         return plan
+
+    @staticmethod
+    def _offset_step_references(commands: list[dict[str, Any]], offset: int) -> list[dict[str, Any]]:
+        """Keep "expected_sha256_from_step": "step-1" pointing at the LLM's own read
+        step after the user's app/music steps are placed in front of it."""
+        if offset <= 0:
+            return commands
+        shifted = []
+        for command in commands:
+            reference = command.get("expected_sha256_from_step")
+            match = re.fullmatch(r"step-(\d+)", str(reference or "").strip())
+            if match:
+                command = {**command, "expected_sha256_from_step": f"step-{int(match.group(1)) + offset}"}
+            shifted.append(command)
+        return shifted
 
     def _prefix_task_steps(
         self,
@@ -581,6 +602,21 @@ class Planner:
                 }:
                     raise PlanningError(
                         "Project command stdout verification must use exact or contains matching."
+                    )
+
+            if tool == "filesystem.write_file" and step.metadata.get("expected_sha256_from_step"):
+                reference = str(step.metadata.get("expected_sha256_from_step") or "").strip()
+                path = str(step.metadata.get("path") or "").replace("\\", "/").strip("/")
+                position = steps.index(step)
+                source = next((item for item in steps[:position] if item.id == reference), None)
+                if (
+                    source is None
+                    or str(source.metadata.get("tool") or "") != "filesystem.read_file"
+                    or str(source.metadata.get("path") or "").replace("\\", "/").strip("/") != path
+                ):
+                    raise PlanningError(
+                        "Project file updates must use expected_sha256_from_step naming an "
+                        f"earlier filesystem.read_file step of the same path ('{path}')."
                     )
 
             if tool == "filesystem.write_file":
@@ -1039,6 +1075,13 @@ class Planner:
         strategy_value = getattr(strategy, "value", str(strategy)).strip().lower()
         if strategy_value == "rebuild_plan":
             entities = dict(task.metadata.get("intent_entities") or {})
+            goal = task.goal
+            if entities.get("prefix_commands"):
+                # The user's app/music part already ran; repair only the
+                # project part instead of replaying the music on every retry.
+                entities.pop("prefix_commands", None)
+                entities.pop("request", None)
+                goal = str(entities.get("goal") or task.goal).strip() or task.goal
             intent_type = (
                 IntentType.TASK
                 if task.metadata.get("intent_type") == IntentType.TASK.value
@@ -1047,7 +1090,7 @@ class Planner:
             intent = IntentResult(
                 intent=intent_type,
                 confidence=float(task.metadata.get("confidence", 0.98)),
-                normalized_text=task.goal,
+                normalized_text=goal,
                 entities={
                     **entities,
                     "recovery_context": self._compact_recovery_context(
@@ -1059,7 +1102,7 @@ class Planner:
                 classifier=str(task.metadata.get("classifier", "replan")),
             )
             return self.plan(
-                task.goal,
+                goal,
                 intent=intent,
                 constraints=task.constraints,
                 metadata={
@@ -1190,7 +1233,10 @@ class Planner:
                     "bytes_read",
                 ):
                     value = output.get(key)
-                    if isinstance(value, str):
+                    if isinstance(value, str) and key == "stderr" and len(value) > 1200:
+                        # Tracebacks end with the actual error; keep the tail.
+                        compact_output[key] = "..." + value[-1200:]
+                    elif isinstance(value, str):
                         compact_output[key] = value[:1200]
                     elif value is not None:
                         compact_output[key] = value
