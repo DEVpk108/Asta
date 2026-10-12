@@ -40,6 +40,15 @@ class BackgroundTaskCoordinator:
             kernel.event_bus.subscribe(event, callback)
         self.worker.start()
 
+    def _say(self, text):
+        """Show and speak a coordinator reply.
+
+        The HUD chat and speech listen to ``assistant_sentence``; emitting only
+        ``assistant_response`` left status/queue/cancel replies invisible.
+        """
+        self.kernel.event_bus.emit("assistant_sentence", text=text)
+        self.kernel.event_bus.emit("assistant_response", text=text)
+
     @property
     def busy(self):
         with self.lock:
@@ -75,7 +84,7 @@ class BackgroundTaskCoordinator:
             current = self.kernel.task_manager.current()
             active = current is not None and current.status.value not in _TERMINAL
             if self.closing.is_set() or self.busy or active:
-                self.kernel.event_bus.emit("assistant_response", text="A task is already active. Please finish or cancel it before starting another project task.")
+                self._say("A task is already active. Please finish or cancel it before starting another project task.")
                 return False
             self.cancelled.clear()
             manager = getattr(self.kernel, "workspace_manager", None)
@@ -84,7 +93,7 @@ class BackgroundTaskCoordinator:
                           "goal": str(goal), "message": "Project task queued"}
             self.schedule(lambda: self._start_goal(goal, intent))
         self._publish()
-        self.kernel.event_bus.emit("assistant_response", text="I’ve queued that project task in the background. We can keep talking while it runs.")
+        self._say("I’ve queued that project task in the background. We can keep talking while it runs.")
         return True
 
     def schedule(self, operation):
@@ -95,7 +104,7 @@ class BackgroundTaskCoordinator:
             try:
                 self.queue.put_nowait((job_id, operation))
             except queue.Full:
-                self.kernel.event_bus.emit("assistant_response", text="The project worker queue is full. Please wait for the current step.")
+                self._say("The project worker queue is full. Please wait for the current step.")
                 return False
             return True
 
@@ -117,7 +126,7 @@ class BackgroundTaskCoordinator:
                 task = self.kernel.task_manager.get(snapshot["task_id"]) if snapshot and snapshot["task_id"] else None
                 if task is not None and task.status.value not in _TERMINAL:
                     self.kernel.task_manager.fail("Background worker failed.", task.id)
-                self.kernel.event_bus.emit("assistant_response", text="The background project task failed. Check its status before retrying.")
+                self._say("The background project task failed. Check its status before retrying.")
             finally:
                 with self.lock:
                     self.running_operation = False
@@ -130,7 +139,7 @@ class BackgroundTaskCoordinator:
             return
         if task is None:
             self._phase("failed", "No safe executable project plan was created")
-            self.kernel.event_bus.emit("assistant_response", text="I couldn’t create a safe executable project plan. No further project actions will run.")
+            self._say("I couldn’t create a safe executable project plan. No further project actions will run.")
         elif task.status.value in _TERMINAL or task.status.value == "paused":
             self._phase(task.status.value, "Project task " + task.status.value)
         elif self.snapshot()["phase"] != "awaiting_approval":
@@ -163,6 +172,34 @@ class BackgroundTaskCoordinator:
                     if pending.request.metadata.get("task_id") == task["id"]:
                         self.kernel.approval_manager.reject(pending.request.request_id)
             self._phase(task.get("status", "failed"), "Project task " + task.get("status", "failed"))
+            if task.get("status") == "paused":
+                self._say_paused(task)
+
+    def _say_paused(self, task):
+        """A paused task blocks new actions, so never pause silently."""
+        metadata = task.get("metadata") or {}
+        setup = metadata.get("capability_setup") or {}
+        if isinstance(setup, dict) and setup.get("status") == "running":
+            return  # the setup flow explains itself
+        reason = ""
+        for item in reversed(task.get("evidence") or []):
+            if not isinstance(item, dict):
+                continue
+            check = item.get("verification") if isinstance(item.get("verification"), dict) else {}
+            if item.get("success") is False and item.get("error"):
+                reason = str(item["error"])
+                break
+            if check.get("status") in {"failed", "unknown"} and check.get("summary"):
+                reason = str(check["summary"])
+                break
+        reason = reason.strip().rstrip(".")
+        if len(reason) > 160:
+            reason = reason[:157].rstrip() + "..."
+        text = "I paused the project task"
+        text += f" because of this: {reason}." if reason else "."
+        text += " Say cancel task to stop it."
+        print(f"[Tasks] Paused: {reason or 'no reason recorded'}", flush=True)
+        self._say(text)
 
     def on_workspace(self, workspace=None, **kwargs):
         if self.busy and self.workspace_identity is not None and isinstance(workspace, dict):
@@ -209,9 +246,11 @@ class BackgroundTaskCoordinator:
             r"(?:(?:okay|ok|hey)\s+)?(?:are you|is asta)\s+(?:still\s+)?(?:generating|writing|working on)\s+(?:(?:the|my)\s+)?(?:code|project|coding task)", value):
             state = self.snapshot()
             message = (f"The project task is {state['phase'].replace('_', ' ')}. {state['message']}" if state else "There is no background project task.")
+            if state and state.get("phase") == "awaiting_approval":
+                message += " Say approve coding step or reject coding step."
         else:
             return False
-        self.kernel.event_bus.emit("assistant_response", text=message)
+        self._say(message)
         return True
 
     def shutdown(self):

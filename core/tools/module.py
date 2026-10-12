@@ -1,4 +1,7 @@
+import threading
+
 from core.module import Module
+from core.tools.approval import APPROVAL_EXPIRED_ERROR
 
 from core.contracts import IntentResult, IntentType, ToolRequest, ToolResult
 from core.tools.request_builder import ToolRequestBuilder
@@ -42,6 +45,22 @@ class ToolRuntimeModule(Module):
                 error="Background task cancelled or conflicting action blocked.",
                 metadata={"background_conflict": True}), request=request)
             return
+        overwrite = str((request.metadata or {}).get("confirm_overwrite") or "").strip()
+        if overwrite:
+            # Replacing an existing project file always asks first, whatever
+            # the write tool's normal risk policy is.
+            pending = self.kernel.approval_manager.request_approval(
+                request=request,
+                reason=f"{overwrite} already exists with different content; replacing it needs approval.",
+            )
+            self.event_bus.emit(
+                "tool_confirmation_required",
+                request=pending.request,
+                reason=pending.reason,
+            )
+            self._schedule_expiry(pending.request.request_id)
+            return
+
         result = self.kernel.tool_dispatcher.dispatch(
             request,
             confirmed=self._is_user_directed(request),
@@ -61,6 +80,33 @@ class ToolRuntimeModule(Module):
             request=pending.request,
             reason=pending.reason,
         )
+        self._schedule_expiry(pending.request.request_id)
+
+    def _schedule_expiry(self, request_id):
+        """Reject an unanswered approval when it expires.
+
+        Previously an expired approval was only cleaned up when the user next
+        spoke, so its task stayed "awaiting approval" and blocked new work.
+        """
+        ttl = float(getattr(self.kernel.approval_manager, "ttl_seconds", 0) or 0)
+        if ttl <= 0:
+            return
+        timer = threading.Timer(ttl + 0.5, self._expire_approval, args=(request_id,))
+        timer.daemon = True
+        timer.start()
+
+    def _expire_approval(self, request_id):
+        manager = self.kernel.approval_manager
+        pending = manager.get(request_id)
+        if pending is None or manager.contains(request_id):
+            return  # already answered, or still live
+        print(f"[Tools] Approval expired (request_id={request_id}); step not run.", flush=True)
+        background = getattr(self.kernel, "background_tasks", None)
+        task_id = pending.request.metadata.get("task_id")
+        if background is not None and background.owns(task_id) and not background.in_worker():
+            background.schedule(lambda: self._confirmation_response(request_id, False, expired=True))
+            return
+        self._confirmation_response(request_id, False, expired=True)
 
     _USER_DIRECTED_TOOLS = frozenset({"computer.type_text", "computer.keypress"})
 
@@ -97,7 +143,7 @@ class ToolRuntimeModule(Module):
             return
         self._confirmation_response(request_id, approved)
 
-    def _confirmation_response(self, request_id, approved):
+    def _confirmation_response(self, request_id, approved, *, expired=False):
         if not isinstance(request_id, str):
             self._emit_error(request_id, "Invalid request_id.")
             return
@@ -149,7 +195,11 @@ class ToolRuntimeModule(Module):
             ToolResult(
                 success=False,
                 tool="",
-                error="Tool execution rejected by user.",
+                error=(
+                    APPROVAL_EXPIRED_ERROR
+                    if expired
+                    else "Tool execution rejected by user."
+                ),
                 metadata=rejection_metadata,
             )
         )

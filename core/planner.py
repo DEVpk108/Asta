@@ -168,9 +168,42 @@ class Planner:
                 raise PlanningError(
                     "Open-ended project tasks require ASTA_AGENT_MODE=1."
                 )
+            prefix_commands = [
+                dict(command)
+                for command in (intent.entities or {}).get("prefix_commands") or ()
+                if isinstance(command, dict)
+            ]
+            brain_goal, brain_intent = value, intent
+            if prefix_commands:
+                # "Open Spotify and play X, then write main.py": the app/media
+                # part is already deterministic. Plan only the project part
+                # with the LLM and run the parsed commands first.
+                brain_goal = str(intent.entities.get("goal") or value).strip() or value
+                brain_intent = IntentResult(
+                    intent=intent.intent,
+                    confidence=intent.confidence,
+                    normalized_text=brain_goal,
+                    entities={
+                        key: item
+                        for key, item in intent.entities.items()
+                        if key not in {"prefix_commands", "request"}
+                    },
+                    requires_tools=True,
+                    requires_reasoning=True,
+                    classifier=intent.classifier,
+                )
             try:
-                proposal = brain.plan(value, intent=intent)
+                proposal = brain.plan(brain_goal, intent=brain_intent)
                 commands = [dict(step) for step in proposal.steps]
+                for command in commands:
+                    # Consent markers are only ever set by A.S.T.A. for text
+                    # the user said; never accept them from model output.
+                    command.pop("user_directed", None)
+                    command.pop("user_request_prefix", None)
+                if prefix_commands:
+                    prefix_steps = self._prefix_task_steps(prefix_commands, value)
+                    intent = self._with_prefix_scope(intent, prefix_steps, value)
+                    commands = prefix_steps + commands
                 planner_name = "cognitive_v1"
                 agent_metadata = brain.task_metadata(proposal)
                 print(
@@ -392,6 +425,126 @@ class Planner:
             flush=True,
         )
         return plan
+
+    def _prefix_task_steps(
+        self,
+        prefix_commands: list[dict[str, Any]],
+        goal: str,
+    ) -> list[dict[str, Any]]:
+        """Expand the user's explicit app/media commands before project steps."""
+        steps: list[dict[str, Any]] = []
+        pending: list[dict[str, Any]] = []
+        for command in self._merge_prefix_open_play(prefix_commands):
+            if not command.pop("_provider_play", False):
+                pending.append(command)
+                continue
+            if pending:
+                steps.extend(self._expand_media_commands(pending, user_directed=True))
+                pending = []
+            group = self._expand_media_commands([command], user_directed=True)
+            player = next(
+                (step for step in group if step.get("tool") == "media.ui_play"),
+                {},
+            )
+            query = str(player.get("query") or command.get("query") or "").strip()
+            app = str(player.get("application") or command.get("provider") or "").strip()
+            # Every step of this play (search link, wait, press Play) reports
+            # the same "couldn't confirm X is playing in Y" if it fails.
+            steps.extend(
+                {"media_query": query, "media_app": app, **step} for step in group
+            )
+        if pending:
+            steps.extend(self._expand_media_commands(pending, user_directed=True))
+        steps = self._expand_search_commands(steps, user_directed=True)
+        # These steps came verbatim from the user's own words (e.g. typing the
+        # song title into Spotify search), exactly like a direct command, so
+        # TaskRuntime may keep their user_directed consent in this plan.
+        return [{**step, "user_request_prefix": True} for step in steps]
+
+    def _merge_prefix_open_play(
+        self,
+        commands: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Play "open Spotify and play X" through the music app's own path.
+
+        In a mixed request the music part runs unattended in the background,
+        so use the dependable provider flow (search link, then press the
+        result's Play button and confirm from the media session) instead of
+        hunting for the search box on screen.
+        """
+        infer = getattr(self.media_manager, "provider_for_application", None)
+        resolve = getattr(self.media_manager, "application_for_provider", None)
+        items = [dict(command) for command in commands]
+        if not callable(infer) or not callable(resolve):
+            return items
+
+        merged: list[dict[str, Any]] = []
+        index = 0
+        while index < len(items):
+            command = items[index]
+            following = items[index + 1] if index + 1 < len(items) else None
+            action = str(command.get("action") or "").strip().lower()
+            target = str(command.get("target") or "").strip()
+            if (
+                following is not None
+                and action in {"open", "launch", "start"}
+                and target
+                and str(following.get("action") or "").strip().lower() == "media"
+                and str(following.get("operation") or "").strip().lower() == "play"
+                and str(following.get("query") or "").strip()
+            ):
+                provider = str(infer(target) or "").strip()
+                requested = str(following.get("provider") or "").strip()
+                requested_provider = str(infer(requested) or requested).strip() if requested else ""
+                if (
+                    provider
+                    and not provider.lower().startswith(("youtube", "system"))
+                    and resolve(provider)
+                    and (not requested_provider or requested_provider.lower() == provider.lower())
+                ):
+                    merged.append({**following, "provider": provider, "_provider_play": True})
+                    index += 2
+                    continue
+            merged.append(command)
+            index += 1
+        return merged
+
+    def _with_prefix_scope(
+        self,
+        intent: IntentResult,
+        prefix_steps: list[dict[str, Any]],
+        goal: str,
+    ) -> IntentResult:
+        """Allow the tools needed by the explicit prefix commands, nothing more."""
+        names = set()
+        for command in prefix_steps:
+            try:
+                definition = self.selector.select(
+                    IntentResult(
+                        intent=IntentType.COMMAND,
+                        confidence=intent.confidence,
+                        normalized_text=goal,
+                        entities=dict(command),
+                        requires_tools=True,
+                        classifier="rules",
+                    )
+                )
+            except ValueError as exc:
+                raise PlanningError(str(exc)) from exc
+            names.add(definition.name)
+        scope = [str(name) for name in intent.entities.get("capability_scope") or ()]
+        return IntentResult(
+            intent=intent.intent,
+            confidence=intent.confidence,
+            normalized_text=intent.normalized_text,
+            entities={
+                **intent.entities,
+                "capability_scope": scope + sorted(names - set(scope)),
+            },
+            requires_tools=True,
+            requires_reasoning=True,
+            classifier=intent.classifier,
+        )
 
     @staticmethod
     def _validate_project_task_verification(steps: list[PlanStep]) -> None:
@@ -1434,6 +1587,9 @@ class Planner:
                 "action": "inspect",
                 "tool": "vision.inspect",
                 "prompt": verification_prompt,
+                # Lets TaskRuntime cross-check with the OS media session.
+                "media_query": query,
+                "media_app": application.strip(),
             },
         ]
 

@@ -110,6 +110,7 @@ def test_authenticated_hud_client_receives_cached_workspace_context():
 
 def test_speech_lifecycle_updates_hud_state():
     kernel, hud = build_hud()
+    kernel.event_bus.emit("conversation_state_changed", active=True)
 
     kernel.event_bus.emit("speech_started")
     assert hud.get_state().mode == "speaking"
@@ -121,6 +122,28 @@ def test_speech_lifecycle_updates_hud_state():
     assert hud.get_state().intensity == "medium"
     assert hud.get_state().activity == "command"
 
+    hud.shutdown()
+
+
+def test_reply_after_conversation_off_returns_to_idle():
+    kernel, hud = build_hud()
+    kernel.event_bus.emit("conversation_mode_set", enabled=True)
+    kernel.event_bus.emit("conversation_mode_set", enabled=False)
+    # ASTA then says "Conversation mode is off..."; finishing must not re-listen.
+    kernel.event_bus.emit("speech_started")
+    kernel.event_bus.emit("speech_finished")
+    assert hud.get_state().mode == "idle"
+    hud.shutdown()
+
+
+def test_follow_up_window_closing_returns_to_idle():
+    kernel, hud = build_hud()
+    kernel.event_bus.emit("conversation_state_changed", active=True)
+    kernel.event_bus.emit("speech_started")
+    kernel.event_bus.emit("speech_finished")
+    assert hud.get_state().mode == "listening"
+    kernel.event_bus.emit("conversation_state_changed", active=False)
+    assert hud.get_state().mode == "idle"
     hud.shutdown()
 
 

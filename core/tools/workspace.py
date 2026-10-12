@@ -106,6 +106,23 @@ def resolve_workspace_path(
     return candidate
 
 
+def existing_workspace_file(workspace_manager, requested_path) -> tuple[str, bytes] | None:
+    """Return (sha256, bytes) of an existing, non-sensitive workspace text file."""
+    try:
+        root = resolve_workspace_root(workspace_manager)
+        path = resolve_workspace_path(root, requested_path)
+        if _is_sensitive_path(root, path) or _is_sensitive_parts(
+            str(requested_path).replace("\\", "/").split("/")
+        ):
+            return None
+        if not path.is_file() or path.stat().st_size > MAX_TEXT_FILE_BYTES:
+            return None
+        data = path.read_bytes()
+    except (OSError, RuntimeError, ValueError, WorkspacePathError):
+        return None
+    return hashlib.sha256(data).hexdigest(), data
+
+
 def _is_sensitive_path(root: Path, path: Path) -> bool:
     relative = path.relative_to(root)
     return _is_sensitive_parts(relative.parts)

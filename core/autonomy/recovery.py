@@ -69,7 +69,16 @@ class RecoveryManager:
                 metadata={"requires_user": True},
             )
 
-        if attempts <= self.max_retries:
+        # A sandboxed project command runs against the same read-only
+        # snapshot, so an identical re-run gives the same answer and only
+        # asks the user to approve a critical step again. Diagnose instead.
+        deterministic = str(getattr(result, "tool", "") or "") in {
+            "system.run_command",
+            # Workspace writes fail on file state (exists / changed since
+            # read); writing the same thing again cannot succeed.
+            "filesystem.write_file",
+        }
+        if attempts <= self.max_retries and not deterministic:
             return RecoveryDecision(
                 action=RecoveryAction.RETRY,
                 reason="The failed step has not exhausted its retry budget.",

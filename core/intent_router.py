@@ -97,7 +97,8 @@ class IntentRouter:
     )
     _PROJECT_TASK_LEAD = re.compile(
         r"^(?:(?:please|can you|could you|would you|will you|"
-        r"i want you to|i need you to|okay|ok|hey)\s+)+",
+        r"i want you to|i need you to|i would like you to|i'd like you to|"
+        r"i want to|now|just|also|then|okay|ok|hey|so)\s+)+",
         re.IGNORECASE,
     )
     _PROJECT_TASK_VERB = re.compile(
@@ -116,6 +117,18 @@ class IntentRouter:
     def route(self, text: str) -> IntentType:
         """Backward-compatible intent-only API."""
         return self.analyze(text).intent
+
+    # Where a spoken/typed request moves on to its next step: a sentence end
+    # and/or a sequencing phrase ("... play X. After that, write main.py").
+    _SEQUENCE_BOUNDARY = re.compile(
+        r"(?:[.!?][\"\u201c\u201d\u2019']*\s+|\s*,\s*|\s+)"
+        r"(?:(?:and\s+)?(?:then|after\s+that|afterwards|after\s+this|next|"
+        r"finally|also)\b\s*,?\s*)+"
+        r"|[.!?][\"\u201c\u201d\u2019']*\s+",
+        re.IGNORECASE,
+    )
+    _QUOTE_CHARS = "\"'\u201c\u201d\u2018\u2019`"
+    _SENTENCE_LIKE_TARGET = re.compile(r"[.!?]\s|[\"\u201c\u201d]|,")
 
     def analyze(self, text: str) -> IntentResult:
         if not text:
@@ -207,10 +220,25 @@ class IntentRouter:
                 classifier="project_task_rules",
             )
 
-        compound_commands = self._extract_compound_commands(
-            normalized,
-            known_providers=self._media_providers,
-        )
+        mixed_task = self._extract_mixed_task(text)
+        if mixed_task:
+            return IntentResult(
+                intent=IntentType.TASK,
+                confidence=0.9,
+                normalized_text=str(text).strip(),
+                entities=mixed_task,
+                requires_tools=True,
+                requires_reasoning=True,
+                classifier="project_task_rules",
+            )
+
+        compound_commands = [
+            self._clean_quoted_entities(command)
+            for command in self._extract_compound_commands(
+                normalized,
+                known_providers=self._media_providers,
+            )
+        ]
         if compound_commands:
             return IntentResult(
                 intent=IntentType.COMMAND,
@@ -286,6 +314,89 @@ class IntentRouter:
             normalized_text=normalized,
             classifier="rules",
         )
+
+    def _normalize_command_text(self, text: str) -> str:
+        """The same normalisation analyze() applies before command parsing."""
+        value = self._normalize(text)
+        value = self._strip_wakeword_prefix(value)
+        value = self._normalize(canonicalize_command(strip_wake_remnant(value)))
+        value = self._DANGLING_CLAUSE_PATTERN.sub("", value).strip()
+        return app_last(canonical_app_names(value))
+
+    def _parse_command_prefix(self, text: str) -> list[dict[str, Any]]:
+        """Parse the leading app/media part of a mixed request, or []."""
+        normalized = self._normalize_command_text(text)
+        if not normalized:
+            return []
+        commands = self._extract_compound_commands(
+            normalized,
+            known_providers=self._media_providers,
+        )
+        if not commands:
+            single = self._refine_command_entities(
+                self._extract_command_entities(
+                    normalized,
+                    known_providers=self._media_providers,
+                )
+            )
+            if not single:
+                return []
+            commands = single.get("commands") or [single]
+        cleaned = [self._clean_quoted_entities(command) for command in commands]
+        if any(
+            not command
+            or self._SENTENCE_LIKE_TARGET.search(str(command.get("target") or ""))
+            or len(str(command.get("target") or "").split()) > 6
+            for command in cleaned
+        ):
+            return []
+        return cleaned
+
+    def _extract_mixed_task(self, text: str) -> dict[str, Any]:
+        """Split "open X and play Y, then write/run code" into two parts.
+
+        The leading app/media commands stay deterministic; the project part
+        goes to the scoped task planner. Without this, the whole request was
+        parsed as "open <entire sentence>".
+        """
+        original = str(text or "").strip()
+        if not original:
+            return {}
+        for boundary in self._SEQUENCE_BOUNDARY.finditer(original):
+            prefix = original[: boundary.start()].strip(" ,;")
+            rest = original[boundary.end():].strip(" ,;")
+            if not prefix or not rest:
+                continue
+            if not self._extract_project_task(self._normalize(rest)):
+                continue
+            commands = self._parse_command_prefix(prefix)
+            if not commands:
+                continue
+            project = self._extract_project_task(self._normalize(rest))
+            return {
+                "goal": rest,
+                "request": original,
+                "capability_scope": project["capability_scope"],
+                "prefix_commands": commands,
+            }
+        return {}
+
+    @classmethod
+    def _clean_quoted_entities(cls, command: dict[str, Any]) -> dict[str, Any]:
+        """Drop quotes/end punctuation around spoken titles and app names."""
+        if not isinstance(command, dict):
+            return command
+        action = str(command.get("action") or "").lower()
+        cleaned = dict(command)
+        keys = ("query",) if action in {"media", "search"} else ()
+        if action in {"open", "launch", "start", "close"}:
+            keys = ("target",)
+        for key in keys:
+            value = cleaned.get(key)
+            if isinstance(value, str):
+                value = value.strip().strip(cls._QUOTE_CHARS + " ,.!?;:")
+                cleaned[key] = value.strip(cls._QUOTE_CHARS + " ")
+        return cleaned
 
     @classmethod
     def _extract_project_task(cls, text: str) -> dict[str, Any]:
@@ -430,7 +541,9 @@ class IntentRouter:
         r"^(?:(?:okay|ok|uk|hey|hi|please|so|and|now|asta|just|uh|um|"
         r"can you|could you|would you|will you)[\s,]+)+"
     )
-    _ITEM = r"(?:(?:the|this|that|my|current)\s+)?(?:song|track|music|gaana|gana|one|playback|audio|it)"
+    # Speech recognition can clip the last word when the turn ends early
+    # ("pause the so"), so accept clear prefixes of song/track/music too.
+    _ITEM = r"(?:(?:the|this|that|my|current)\s+)?(?:song|son|so|track|trac|tra|music|musi|mus|gaana|gana|one|playback|audio|it)"
     _APP_SUFFIX = re.compile(r"\s+(?:on|in)\s+(spotify|apple music|youtube music|youtube)$|\s+(spotify)$")
     _TRANSPORT_PATTERNS = (
         ("pause", re.compile(
@@ -803,6 +916,7 @@ class IntentRouter:
             return refined
 
         if action == "media":
+            entities = cls._clean_quoted_entities(entities)
             operation = str(entities.get("operation") or "").lower()
             query = str(entities.get("query") or "").strip().lower()
             provider = str(entities.get("provider") or "")
@@ -847,9 +961,18 @@ class IntentRouter:
             return entities
 
         cleaned = cls._TRAILING_POLITENESS.sub("", target.strip()).strip(" ,.!?;:")
+        cleaned = cleaned.strip(cls._QUOTE_CHARS + " ")
         if action in {"open", "launch", "start"} and cleaned.startswith("up "):
             cleaned = cleaned[3:].strip()
         if not cleaned:
+            return {}
+        if action in {"open", "launch", "start", "close"} and (
+            cls._SENTENCE_LIKE_TARGET.search(cleaned)
+            or len(cleaned.split()) > 6
+        ):
+            # A whole multi-step sentence is not an app name. Let the
+            # conversational model or task planner handle it instead of
+            # trying to open "spotify and play ... after that ...".
             return {}
 
         if action == "stop" and cleaned in cls._MEDIA_STOP_TARGETS:

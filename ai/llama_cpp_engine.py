@@ -10,6 +10,7 @@ import requests
 from core import gpu_share
 
 from .llama_server_manager import LlamaServerManager
+from .model_tool_calls import native_tool_call_text
 
 
 class LlamaCppEngine:
@@ -401,6 +402,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
         first_event_time = None
         first_delta_time = None
         full_text = ""
+        streamed_tool_calls = {}
         sentence_buffer = ""
         final_result = None
         final_id = None
@@ -462,6 +464,15 @@ Your goal is not merely to produce an answer. Help the user understand the probl
                 choice = choices[0] if choices else {}
                 finish_reason = choice.get("finish_reason") or finish_reason
                 delta = choice.get("delta") or {}
+                for call in delta.get("tool_calls") or []:
+                    # Native tool calls stream as fragments; join them by index.
+                    slot = streamed_tool_calls.setdefault(
+                        call.get("index", len(streamed_tool_calls)),
+                        {"function": {"name": "", "arguments": ""}},
+                    )
+                    function = call.get("function") or {}
+                    slot["function"]["name"] += function.get("name") or ""
+                    slot["function"]["arguments"] += function.get("arguments") or ""
                 content = self._normalize_text(delta.get("content", ""))
 
                 if content:
@@ -489,6 +500,11 @@ Your goal is not merely to produce an answer. Help the user understand the probl
                     server_timings = data["timings"]
                 if data.get("usage") or data.get("timings"):
                     final_result = data
+
+        if streamed_tool_calls:
+            full_text += native_tool_call_text(
+                [streamed_tool_calls[key] for key in sorted(streamed_tool_calls)]
+            )
 
         if not final_result:
             final_result = {}

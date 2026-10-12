@@ -48,7 +48,7 @@ function environment(failWebgl = false, reduced = false) {
   }
   const engine = {
     ok: true,
-    count: 12000,
+    count: 2400,
     render() {
       renders++;
     },
@@ -78,10 +78,10 @@ function environment(failWebgl = false, reduced = false) {
     dispatchEvent(event) {
       if (listeners[event.type]) listeners[event.type](event);
     },
-    AstaEngine: {
+    AstaCoreAvatar: {
       create(canvas, value) {
         options = value;
-        if (failWebgl) throw new Error("no WebGL");
+        if (failWebgl) throw new Error("no canvas");
         return engine;
       },
     },
@@ -154,11 +154,13 @@ function environment(failWebgl = false, reduced = false) {
 const env = environment();
 env.frame();
 assert.equal(env.window.AstaViews.current(), "home");
-assert.equal(env.stats().options.maxParticles, 12000);
+assert.equal(env.stats().options.maxParticles, 2400);
 assert.equal(env.stats().options.maxDimension, 768);
 assert.equal(env.stats().options.maxDpr, 1.25);
-assert.equal(env.stats().options.lowPower, true);
-assert.equal(env.stats().timers, 0, "offline avatar must not loop");
+assert.equal(env.diagnostics().renderer, "core");
+assert.equal(env.stats().raf + env.stats().timers, 0, "offline avatar must not loop");
+assert.equal(env.diagnostics().lastFrame.mode, "offline");
+assert.equal(env.diagnostics().lastFrame.still, true);
 env.window.AstaAvatar.setReady(true);
 env.window.AstaAvatar.setState({ mode: "speaking" });
 env.window.AstaAvatar.setAudioLevel(1);
@@ -166,21 +168,31 @@ env.frame();
 env.tick();
 env.tick();
 const loud = env.diagnostics().lastFrame.amp;
-assert.equal(env.diagnostics().fpsCap, 30);
+assert.equal(env.diagnostics().lastFrame.mode, "speaking");
+assert.ok(env.diagnostics().lastFrame.audio > 0, "speech audio reaches the renderer");
+const loudAudio = env.diagnostics().lastFrame.audio;
+assert.equal(env.diagnostics().frameEvery, 1, "homepage animates every display frame");
+assert.equal(env.stats().timers, 0, "animation is never timer-paced");
 env.window.AstaAvatar.setAudioLevel(0);
 for (let i = 0; i < 8; i++) env.tick();
 assert.ok(
   env.diagnostics().lastFrame.amp < loud,
   "speech energy must follow real audio",
 );
+assert.ok(env.diagnostics().lastFrame.audio < loudAudio);
 env.window.AstaViews.show("chat");
 env.frame();
 assert.equal(env.node("avatarFrame").parentNode.id, "avatarCompactSlot");
 assert.equal(env.diagnostics().lastFrame.compact, true);
-assert.equal(env.diagnostics().fpsCap, 15);
+assert.equal(env.diagnostics().frameEvery, 2);
+env.window.AstaAvatar.setState({ mode: "thinking" });
+env.frame();
+env.frame();
+assert.equal(env.diagnostics().lastFrame.mode, "thinking", "chat avatar keeps animating while thinking");
+assert.ok(env.stats().raf, "chat avatar stays scheduled");
 env.window.AstaAvatar.setState({ mode: "idle" });
 env.frame();
-assert.equal(env.diagnostics().fpsCap, 6);
+assert.equal(env.diagnostics().frameEvery, 2);
 env.window.AstaViews.show("home");
 env.window.AstaAvatar.setState({
   mode: "speaking",
@@ -188,8 +200,8 @@ env.window.AstaAvatar.setState({
 });
 env.frame();
 assert.equal(
-  env.diagnostics().fpsCap,
-  12,
+  env.diagnostics().frameEvery,
+  2,
   "coding reduces the visual frame budget",
 );
 env.document.hidden = true;
@@ -198,10 +210,10 @@ assert.equal(env.stats().raf + env.stats().timers, 0);
 env.document.hidden = false;
 env.docListeners.visibilitychange();
 env.frame();
-assert.ok(env.stats().timers);
+assert.ok(env.stats().raf);
 env.node("avatarMotionToggle").onclick();
 env.frame();
-assert.equal(env.stats().timers, 0);
+assert.equal(env.stats().raf + env.stats().timers, 0);
 env.listeners.pagehide();
 assert.equal(env.stats().disposals, 1);
 assert.equal(env.stats().raf + env.stats().timers, 0);
@@ -209,7 +221,7 @@ const still = environment(false, true);
 still.frame();
 still.window.AstaAvatar.setReady(true);
 still.frame();
-assert.equal(still.stats().timers, 0);
+assert.equal(still.stats().raf + still.stats().timers, 0);
 assert.equal(still.node("avatarMotionToggle").disabled, true);
 const fallback = environment(true);
 fallback.frame();

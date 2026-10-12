@@ -22,6 +22,13 @@ from .module import Module
 
 
 
+from core.tools.approval import APPROVAL_EXPIRED_ERROR
+from core.tools.workspace import existing_workspace_file  # noqa: E402
+from core.tools.sandbox import (  # noqa: E402
+    SANDBOX_SETUP_COMMAND,
+    SANDBOX_SETUP_MESSAGE,
+    is_sandbox_setup_error,
+)
 from core.media.request import UNSUPPORTED_MUSIC_APPS  # noqa: E402
 
 class TaskRuntimeModule(Module):
@@ -599,7 +606,10 @@ class TaskRuntimeModule(Module):
         if plan_step_id:
             evidence["plan_step_id"] = plan_step_id
         if not result.success:
-            if result.error == "Tool execution rejected by user.":
+            if result.error in {
+                "Tool execution rejected by user.",
+                APPROVAL_EXPIRED_ERROR,
+            }:
                 if plan_step_id:
                     self.kernel.task_manager.set_plan_step_status(
                         plan_step_id,
@@ -608,11 +618,109 @@ class TaskRuntimeModule(Module):
                     )
                 self.kernel.task_manager.add_evidence(evidence, task.id)
                 self.kernel.task_manager.fail(
-                    "The user denied the requested tool action.",
+                    "The approval expired, so the step was not run."
+                    if result.error == APPROVAL_EXPIRED_ERROR
+                    else "The user denied the requested tool action.",
                     task.id,
                 )
                 return
 
+        prefix_soft_failure = False
+        if not result.success:
+            step_metadata = self._plan_step_metadata(task, plan_step_id)
+            if self._has_later_project_steps(task, step_metadata):
+                # A mixed request ("open Spotify and play X, then write
+                # main.py"): the music part failed, but the project part is
+                # independent. Report it and continue instead of replanning
+                # the whole task around the music app.
+                prefix_soft_failure = True
+                note = self._unconfirmed_prefix_note(step_metadata)
+                evidence["verification"] = {
+                    "status": "unconfirmed",
+                    "verified": False,
+                    "summary": str(result.error or "The step did not complete."),
+                    "note": note,
+                }
+                print(
+                    f"[Tasks] {note} ({result.error or 'step failed'}) "
+                    "Continuing with the project steps.",
+                    flush=True,
+                )
+                self.event_bus.emit(
+                    "task_progress",
+                    task_id=task.id,
+                    phase="working",
+                    text=f"{note} Continuing with the project steps.",
+                )
+
+        if (
+            not result.success
+            and not prefix_soft_failure
+            and result.tool == "filesystem.write_file"
+            and str(result.error or "").startswith("The file already exists.")
+        ):
+            # The plan wrote a file that is already in the workspace (often
+            # from an earlier run of the same request).
+            existing = self._existing_file_write(task, plan_step_id)
+            if existing is not None and existing[0] == "unchanged":
+                output = existing[1]
+                print(
+                    f"[Tasks] {output['path']} already has the requested content; "
+                    "nothing to write.",
+                    flush=True,
+                )
+                result = ToolResult(
+                    success=True,
+                    tool=result.tool,
+                    output=output,
+                    duration_seconds=result.duration_seconds,
+                    metadata=result.metadata,
+                )
+                evidence.update(success=True, output=output, error=None)
+            elif existing is not None:
+                # Different content: replacing the user's file needs a yes.
+                overwrite_request = existing[1]
+                confirm_path = overwrite_request.metadata.get("confirm_overwrite")
+                evidence["overwrite_confirmation"] = {
+                    "path": confirm_path or overwrite_request.arguments.get("path"),
+                    "line_endings_only": not confirm_path,
+                }
+                self.kernel.task_manager.add_evidence(evidence, task.id)
+                print(
+                    f"[Tasks] {confirm_path} already exists with different content; "
+                    "asking before replacing it."
+                    if confirm_path
+                    else f"[Tasks] {overwrite_request.arguments.get('path')} has the same text "
+                    "with different line endings; rewriting it.",
+                    flush=True,
+                )
+                self.event_bus.emit("tool_request", request=overwrite_request)
+                return
+
+        if not result.success and not prefix_soft_failure:
+            print(
+                f"[Tasks] Step failed: {result.tool or 'tool'}: "
+                f"{result.error or 'no error message'}",
+                flush=True,
+            )
+            if result.tool == "system.run_command" and is_sandbox_setup_error(result.error):
+                # Docker/Podman or the local image is missing. Retrying or
+                # replanning cannot fix that, and each attempt would ask for
+                # another critical approval. Stop and say what to do.
+                print(
+                    "[Tasks] Sandbox setup needed: start Docker Desktop, then run "
+                    f"`{SANDBOX_SETUP_COMMAND}` in the ASTA folder.",
+                    flush=True,
+                )
+                if plan_step_id:
+                    self.kernel.task_manager.set_plan_step_status(
+                        plan_step_id,
+                        PlanStepStatus.FAILED,
+                        task.id,
+                    )
+                self.kernel.task_manager.add_evidence(evidence, task.id)
+                self.kernel.task_manager.fail(SANDBOX_SETUP_MESSAGE, task.id)
+                return
             self.event_bus.emit(
                 "task_progress",
                 task_id=task.id,
@@ -1012,7 +1120,32 @@ class TaskRuntimeModule(Module):
         # visual condition was confirmed.
         if result.tool == "vision.inspect" and result.success:
             output = result.output if isinstance(result.output, dict) else {}
-            if not bool(output.get("verified")):
+            step_metadata = self._plan_step_metadata(task, plan_step_id)
+            if not bool(output.get("verified")) and self._has_later_project_steps(
+                task, step_metadata
+            ):
+                # A mixed request ("play X, then write main.py"): the music
+                # check is unconfirmed, but the project part is independent.
+                # Continue and report it, instead of dropping the project.
+                summary = str(
+                    output.get("summary")
+                    or "Visual inspection did not confirm the requested condition."
+                ).strip()
+                note = self._unconfirmed_prefix_note(step_metadata)
+                evidence["verification"] = {
+                    "status": "unconfirmed",
+                    "verified": False,
+                    "summary": summary,
+                    "note": note,
+                }
+                print(f"[Tasks] {note} Continuing with the project steps.", flush=True)
+                self.event_bus.emit(
+                    "task_progress",
+                    task_id=task.id,
+                    phase="working",
+                    text=f"{note} Continuing with the project steps.",
+                )
+            elif not bool(output.get("verified")):
                 summary = str(
                     output.get("summary")
                     or "Visual inspection did not confirm the requested condition."
@@ -1203,6 +1336,25 @@ class TaskRuntimeModule(Module):
                 else "Done. The planned project outcome passed its verification."
             )
 
+        # Mixed requests: say what happened with the leading app/music part.
+        prefix_notes: list[str] = []
+        for item in getattr(task, "evidence", ()) or ():
+            if not isinstance(item, dict):
+                continue
+            check = item.get("verification")
+            output = item.get("output") if isinstance(item.get("output"), dict) else {}
+            note = ""
+            if isinstance(check, dict) and check.get("status") == "unconfirmed" and check.get("note"):
+                note = str(check["note"])
+            elif item.get("tool") == "vision.inspect" and output.get("source") == "media_session" and output.get("track"):
+                note = f"{output['track']} is playing."
+            elif item.get("tool") == "media.ui_play" and item.get("success") and output.get("verified"):
+                note = str(output.get("message") or "").strip()
+            if note and note not in prefix_notes:
+                prefix_notes.append(note)
+        if prefix_notes:
+            message = " ".join(prefix_notes) + " " + message
+
         return {
             "verified": verified,
             "artifacts": artifacts,
@@ -1213,6 +1365,97 @@ class TaskRuntimeModule(Module):
             ],
             "message": message,
         }
+
+    def _existing_file_write(self, task, plan_step_id):
+        """Resolve a create-only write that hit an existing workspace file.
+
+        Returns ("unchanged", output) when the file already holds exactly the
+        planned content, ("overwrite", request) for a one-time, approval-gated
+        replacement bound to the file's current SHA-256, or None.
+        """
+        plan = getattr(task, "plan", None)
+        if plan is None or not plan_step_id:
+            return None
+        try:
+            step = plan.get_step(plan_step_id)
+        except (KeyError, AttributeError, TypeError):
+            return None
+        metadata = step.metadata or {}
+        if metadata.get("expected_sha256") or metadata.get("expected_sha256_from_step"):
+            return None
+        path = metadata.get("path")
+        content = metadata.get("content")
+        if not isinstance(path, str) or not isinstance(content, str):
+            return None
+        state = existing_workspace_file(
+            getattr(self.kernel, "workspace_manager", None),
+            path,
+        )
+        if state is None:
+            return None
+        digest, data = state
+        if data == content.encode("utf-8"):
+            return "unchanged", {
+                "path": path,
+                "created": False,
+                "unchanged": True,
+                "bytes_written": 0,
+                "sha256": digest,
+            }
+        asked = task.metadata.setdefault("overwrite_confirmations", [])
+        if plan_step_id in asked:
+            return None
+        request = self.build_plan_request(task, step)
+        if request is None:
+            return None
+        asked.append(plan_step_id)
+        # Same text, only Windows (CRLF) line endings differ: rewriting it
+        # loses nothing, so no approval is needed; the read-back check
+        # still compares the exact planned content.
+        same_text = data.replace(b"\r\n", b"\n") == content.encode("utf-8").replace(b"\r\n", b"\n")
+        metadata = dict(request.metadata)
+        if not same_text:
+            metadata["confirm_overwrite"] = path
+        return "overwrite", ToolRequest(
+            tool=request.tool,
+            arguments={**request.arguments, "expected_sha256": digest},
+            request_id=f"{request.request_id}-overwrite",
+            timeout_seconds=request.timeout_seconds,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _plan_step_metadata(task, plan_step_id) -> dict[str, Any]:
+        plan = getattr(task, "plan", None)
+        if plan is None or not plan_step_id:
+            return {}
+        try:
+            return dict(plan.get_step(plan_step_id).metadata or {})
+        except (KeyError, AttributeError, TypeError):
+            return {}
+
+    @staticmethod
+    def _has_later_project_steps(task, step_metadata) -> bool:
+        """True for a leading user-request step followed by planned project work."""
+        if step_metadata.get("user_request_prefix") is not True:
+            return False
+        plan = getattr(task, "plan", None)
+        return any(
+            step.metadata.get("user_request_prefix") is not True
+            for step in (getattr(plan, "steps", ()) or ())
+        )
+
+    @staticmethod
+    def _unconfirmed_prefix_note(step_metadata) -> str:
+        query = str(
+            step_metadata.get("media_query") or step_metadata.get("query") or ""
+        ).strip()
+        app = str(
+            step_metadata.get("media_app") or step_metadata.get("application") or ""
+        ).strip()
+        if query and app:
+            return f"I couldn't confirm that {query} is playing in {app}."
+        return "I couldn't confirm the first part of the request."
 
     def _complete_from_verified_visual_result(
         self,
@@ -1230,6 +1473,10 @@ class TaskRuntimeModule(Module):
         output = result.output if isinstance(result.output, dict) else {}
         if not bool(output.get("verified")):
             return False
+        if self._has_later_project_steps(
+            task, self._plan_step_metadata(task, plan_step_id)
+        ):
+            return False  # the music check is not the goal of a mixed task
 
         agent_state = task.metadata.get("agent_state")
         if not isinstance(agent_state, dict):
@@ -1298,6 +1545,9 @@ class TaskRuntimeModule(Module):
         step_description: str,
     ) -> bool:
         """Run one bounded cognitive decision after a successful tool result."""
+        if self._plan_step_metadata(task, plan_step_id).get("user_request_prefix") is True:
+            # Deterministic steps from the user's own words: just follow them.
+            return False
         agent_state = task.metadata.get("agent_state")
         brain = getattr(self.kernel, "agent_brain", None)
         if (
@@ -2108,6 +2358,9 @@ class TaskRuntimeModule(Module):
             "required_capabilities",
             "agent_generated",
             "user_directed",
+            "user_request_prefix",
+            "media_query",
+            "media_app",
             "completion_message",
         }
         raw_entities.update(
@@ -2236,7 +2489,13 @@ class TaskRuntimeModule(Module):
         if (
             step.metadata.get("user_directed") is True
             and task.plan is not None
-            and task.plan.metadata.get("planner") == "deterministic"
+            and (
+                task.plan.metadata.get("planner") == "deterministic"
+                # Leading app/media commands of a mixed request: planned
+                # deterministically from the user's words, then the project
+                # part was added by the LLM planner (which cannot set this).
+                or step.metadata.get("user_request_prefix") is True
+            )
         ):
             request.metadata["user_directed"] = True
         if step.metadata.get("completion_message"):

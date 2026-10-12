@@ -45,6 +45,25 @@ class SandboxProcessResult:
     stderr_truncated: bool = False
 
 
+SANDBOX_SETUP_MESSAGE = (
+    "I couldn't run it because the code sandbox isn't ready. "
+    "Start Docker Desktop, build the sandbox image once, then ask me again."
+)
+SANDBOX_SETUP_COMMAND = "docker build --pull -t asta-python-sandbox:1 -f sandbox/Dockerfile ."
+
+
+def is_sandbox_setup_error(error: object) -> bool:
+    """True when the container runtime/image is missing, not the user's code."""
+    text = str(error or "")
+    return text.startswith(
+        (
+            "Sandbox unavailable:",
+            "Sandbox container creation failed.",
+            "Sandbox container creation timed out.",
+        )
+    )
+
+
 class SandboxRuntimeError(RuntimeError):
     """The local container runtime is missing or could not be started."""
 
