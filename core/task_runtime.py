@@ -721,9 +721,11 @@ class TaskRuntimeModule(Module):
                 flush=True,
             )
             if result.tool == "system.run_command" and is_sandbox_setup_error(result.error):
-                # Docker/Podman or the local image is missing. Retrying or
-                # replanning cannot fix that, and each attempt would ask for
-                # another critical approval. Stop and say what to do.
+                # Docker/Podman is stopped or the local image is missing.
+                # Replanning the user's code cannot fix that, so repair the
+                # environment instead (once per task), then rerun the step.
+                if self._start_sandbox_repair(task, plan_step_id, result, evidence):
+                    return
                 print(
                     "[Tasks] Sandbox setup needed: start Docker Desktop, then run "
                     f"`{SANDBOX_SETUP_COMMAND}` in the ASTA folder.",
@@ -2194,12 +2196,31 @@ class TaskRuntimeModule(Module):
             "step_id": event.get("step_id"),
             "requires_user": bool(event.get("requires_user")),
         }
+        sandbox = str(event.get("capability") or "").lower() == "sandbox"
+        if sandbox:
+            details = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+            setup_evidence["observed"] = list(details.get("observed") or [])
+            setup_evidence["actions"] = list(details.get("actions") or [])
         self.kernel.task_manager.add_evidence(setup_evidence, task.id)
         task.metadata["capability_setup"] = {
             "capability": event.get("capability"),
             "step_id": event.get("step_id"),
             "status": status,
         }
+        if sandbox:
+            print(
+                f"[Tasks] Sandbox repair {status}: observed "
+                f"{'; '.join(setup_evidence['observed']) or 'nothing'}; "
+                f"did {'; '.join(setup_evidence['actions']) or 'nothing'}.",
+                flush=True,
+            )
+            if status != "completed":
+                self.kernel.task_manager.fail(
+                    str(event.get("summary") or SANDBOX_SETUP_MESSAGE),
+                    task.id,
+                )
+                return
+            self.event_bus.emit("assistant_sentence", text=str(event.get("summary") or ""))
 
         if status != "completed":
             return
@@ -2238,12 +2259,63 @@ class TaskRuntimeModule(Module):
             )
             return
 
+        if sandbox and next_request.tool == "system.run_command":
+            # The user already approved exactly this command; it never ran.
+            next_request.metadata["retry_after_setup"] = True
         print(
             f"[Tasks] Capability setup complete; resuming {next_step.id} -> "
             f"{next_request.tool}",
             flush=True,
         )
         self.event_bus.emit("tool_request", request=next_request)
+
+    def _start_sandbox_repair(self, task, plan_step_id, result, evidence) -> bool:
+        """Diagnose and fix the sandbox environment, then resume the step."""
+        if os.getenv("ASTA_SANDBOX_SELF_REPAIR", "1").strip().lower() in {"0", "false", "no", "off"}:
+            return False
+        setup_manager = getattr(self.kernel, "capability_setup_manager", None)
+        supports = getattr(setup_manager, "supports", None)
+        if not plan_step_id or not callable(supports) or not supports("sandbox"):
+            return False
+        attempts = int(task.metadata.get("sandbox_repair_attempts", 0) or 0)
+        if attempts >= 1:
+            return False
+        task.metadata["sandbox_repair_attempts"] = attempts + 1
+        self.kernel.task_manager.set_plan_step_status(
+            plan_step_id,
+            PlanStepStatus.FAILED,
+            task.id,
+        )
+        evidence["sandbox_repair"] = {"started": True, "error": str(result.error or "")[:300]}
+        self.kernel.task_manager.add_evidence(evidence, task.id)
+        # Mark the repair as running before pausing, so the pause is not
+        # announced as a problem: the repair explains itself.
+        task.metadata["capability_setup"] = {
+            "capability": "sandbox",
+            "step_id": plan_step_id,
+            "status": "running",
+        }
+        self.kernel.task_manager.pause(task.id)
+        print(
+            "[Tasks] Sandbox isn't ready; diagnosing and repairing it, then "
+            f"rerunning {plan_step_id}.",
+            flush=True,
+        )
+        self.event_bus.emit(
+            "task_progress",
+            task_id=task.id,
+            phase="recovery",
+            text="The code sandbox isn't ready. I'm checking why and fixing it.",
+        )
+        started = setup_manager.start(
+            task,
+            capability="sandbox",
+            step_id=plan_step_id,
+            context={"error": str(result.error or "")},
+        )
+        if not started:
+            self.kernel.task_manager.fail(SANDBOX_SETUP_MESSAGE, task.id)
+        return True
 
     @staticmethod
     def _setup_provider_for_step(task, plan_step_id, result):

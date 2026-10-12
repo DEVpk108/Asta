@@ -1,10 +1,15 @@
+import json
 import threading
+import time
 
 from core.module import Module
 from core.tools.approval import APPROVAL_EXPIRED_ERROR
 
 from core.contracts import IntentResult, IntentType, ToolRequest, ToolResult
 from core.tools.request_builder import ToolRequestBuilder
+from core.tools.sandbox import is_sandbox_setup_error
+
+APPROVED_RETRY_SECONDS = 900.0
 
 
 class ToolRuntimeModule(Module):
@@ -17,6 +22,10 @@ class ToolRuntimeModule(Module):
             kernel=kernel,
         )
         self.tool_request_builder = ToolRequestBuilder(kernel.tool_registry)
+        # Approved commands that never ran because the sandbox wasn't ready:
+        # after ASTA repairs it, exactly that command may run once more
+        # without asking again.
+        self._approved_retries: dict[tuple, float] = {}
 
     def initialize(self):
         self.event_bus.subscribe("tool_request", self.on_tool_request)
@@ -67,7 +76,7 @@ class ToolRuntimeModule(Module):
 
         result = self.kernel.tool_dispatcher.dispatch(
             request,
-            confirmed=self._is_user_directed(request),
+            confirmed=self._is_user_directed(request) or self._approved_retry(request),
         )
 
         if result.success or not result.metadata.get("requires_confirmation"):
@@ -176,6 +185,8 @@ class ToolRuntimeModule(Module):
                 request,
                 confirmed=True,
             )
+            if not result.success and is_sandbox_setup_error(result.error):
+                self._approved_retries[self._fingerprint(request)] = time.monotonic()
             self._emit_result(result, request=request)
             return
 
@@ -207,6 +218,29 @@ class ToolRuntimeModule(Module):
                 metadata=rejection_metadata,
             )
         )
+
+    @staticmethod
+    def _fingerprint(request) -> tuple:
+        metadata = getattr(request, "metadata", None) or {}
+        try:
+            arguments = json.dumps(request.arguments, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            arguments = repr(request.arguments)
+        return (request.tool, arguments, metadata.get("task_id"), metadata.get("plan_step_id"))
+
+    def _approved_retry(self, request) -> bool:
+        """One rerun of an approved command that the sandbox couldn't start."""
+        if not (getattr(request, "metadata", None) or {}).get("retry_after_setup"):
+            return False
+        now = time.monotonic()
+        for key, created in list(self._approved_retries.items()):
+            if now - created > APPROVED_RETRY_SECONDS:
+                self._approved_retries.pop(key, None)
+        created = self._approved_retries.pop(self._fingerprint(request), None)
+        if created is None:
+            return False
+        print("[Tools] Rerunning the command you already approved, now that the sandbox is ready.", flush=True)
+        return True
 
     def _emit_result(self, result, *, request=None):
         if request is not None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import threading
 from dataclasses import dataclass
 from enum import Enum
@@ -40,14 +41,24 @@ class CapabilitySetupManager:
     def __init__(self, media_manager, *, event_bus=None, operators=None):
         self.media_manager = media_manager
         self.event_bus = event_bus
-        self._operators = dict(operators or {"spotify": self._spotify_operator})
+        self._operators = dict(
+            operators
+            or {"spotify": self._spotify_operator, "sandbox": self._sandbox_operator}
+        )
         self._running: set[tuple[str, str]] = set()
         self._lock = threading.RLock()
 
     def supports(self, capability: str) -> bool:
         return str(capability or "").strip().lower() in self._operators
 
-    def start(self, task, *, capability: str, step_id: str | None = None) -> bool:
+    def start(
+        self,
+        task,
+        *,
+        capability: str,
+        step_id: str | None = None,
+        context: dict | None = None,
+    ) -> bool:
         key = (task.id, str(capability or "").strip().lower())
         if not self.supports(key[1]):
             return False
@@ -73,23 +84,34 @@ class CapabilitySetupManager:
 
         thread = threading.Thread(
             target=self._run,
-            args=(task.id, key[1], step_id),
+            args=(task.id, key[1], step_id, dict(context or {})),
             name=f"asta-setup-{key[1]}",
             daemon=True,
         )
         thread.start()
         return True
 
-    def _run(self, task_id: str, capability: str, step_id: str | None) -> None:
+    def _run(
+        self,
+        task_id: str,
+        capability: str,
+        step_id: str | None,
+        context: dict | None = None,
+    ) -> None:
         key = (task_id, capability)
         try:
             operator = self._operators[capability]
-            result = operator()
+            try:
+                takes_context = bool(inspect.signature(operator).parameters)
+            except (TypeError, ValueError):
+                takes_context = False
+            result = operator(context or {}) if takes_context else operator()
             status = getattr(result, "status", None)
             status_value = getattr(status, "value", str(status)).lower()
 
             if status_value == "completed":
-                self.media_manager.refresh_configuration()
+                if capability != "sandbox":
+                    self.media_manager.refresh_configuration()
                 event = CapabilitySetupEvent(
                     capability=capability,
                     task_id=task_id,
@@ -97,6 +119,7 @@ class CapabilitySetupManager:
                     status=CapabilitySetupStatus.COMPLETED,
                     summary=str(getattr(result, "summary", "Setup completed.")),
                     metadata={
+                        **dict(getattr(result, "metadata", None) or {}),
                         "redirect_uri": getattr(result, "redirect_uri", None),
                     },
                 )
@@ -135,7 +158,11 @@ class CapabilitySetupManager:
             f"[Setup] {capability} setup {event.status.value}: {event.summary}",
             flush=True,
         )
-        if event.status in {
+        if capability == "sandbox":
+            # The task runtime speaks the outcome (and fails the task with
+            # the same words), so don't say it twice.
+            pass
+        elif event.status in {
             CapabilitySetupStatus.WAITING_FOR_USER,
             CapabilitySetupStatus.FAILED,
         }:
@@ -148,6 +175,11 @@ class CapabilitySetupManager:
         return SpotifySetupOperator(
             notify=self._notify,
         ).run()
+
+    def _sandbox_operator(self, context=None):
+        from .sandbox_setup import SandboxSetupOperator
+
+        return SandboxSetupOperator(notify=self._notify).run(context)
 
     def _notify(self, message: str) -> None:
         if self.event_bus is None:
