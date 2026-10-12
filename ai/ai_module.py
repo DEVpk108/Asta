@@ -4,6 +4,7 @@ import time
 
 from core.quick_answers import quick_math, unsupported_file_action
 from core.agent import intent_resolver, project_followup, work_awareness
+from core.agent.project_conversation import ProjectConversation
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from core.module import Module
@@ -288,6 +289,7 @@ class AIModule(Module):
         if not text:
             return
         print(f"[AI] User: {text}", flush=True)
+        self._current_user_text = str(text)
 
         if self._handle_approval_response(text):
             return
@@ -355,6 +357,12 @@ class AIModule(Module):
             if followup is not None:
                 print(f"[AI] Follow-up to the last project task: {followup.normalized_text}", flush=True)
                 intent_hint = followup
+        if intent_hint.intent in {IntentType.UNKNOWN, IntentType.CONVERSATION}:
+            understood = self._understand_project_request(text)
+            if understood is True:
+                return  # asked what to change
+            if understood is not None:
+                intent_hint = understood
         recovered_intent = self._recover_recent_command(text, intent_hint)
         if recovered_intent is not None:
             intent_hint = recovered_intent
@@ -388,18 +396,7 @@ class AIModule(Module):
                     "I can't start a project task because the task runtime is unavailable."
                 )
                 return
-            if result.classifier == "project_followup":
-                text = str((result.entities or {}).get("goal") or text)
-            background = getattr(self.kernel, "background_tasks", None)
-            if background is not None:
-                background.start(text, result)
-                return
-            task = starter(text, result)
-            if task is None:
-                self._emit_assistant_text(
-                    "I couldn't create a safe executable plan for that project task. "
-                    "No project actions were started."
-                )
+            self._start_project_task(text, result)
             return
         if result.intent == IntentType.MEMORY:
             self.event_bus.emit("memory_request", intent=result)
@@ -423,6 +420,98 @@ class AIModule(Module):
         work = work_awareness.recent_work(getattr(self.kernel, "task_manager", None))
         note = work_awareness.llm_context(work)
         self._generate_response(text, runtime_context=f"[{note}]\n{text}" if note else None)
+
+    def _start_project_task(self, text, result):
+        if result.classifier in {"project_followup", "project_conversation"}:
+            text = str((result.entities or {}).get("goal") or text)
+        task_runtime = getattr(self.kernel, "task_runtime", None)
+        starter = getattr(task_runtime, "start_goal", None)
+        background = getattr(self.kernel, "background_tasks", None)
+        if background is not None:
+            background.start(text, result)
+            return
+        if not callable(starter):
+            self._emit_assistant_text("I can't start a project task because the task runtime is unavailable.")
+            return
+        task = starter(text, result)
+        if task is None:
+            self._emit_assistant_text(
+                "I couldn't create a safe executable plan for that project task. "
+                "No project actions were started."
+            )
+
+    def _project_conversation(self):
+        talk = getattr(self, "_project_talk", None)
+        if talk is None:
+            talk = self._project_talk = ProjectConversation()
+        return talk
+
+    def _understand_project_request(self, text, *, forced=False):
+        """Project work said conversationally: a TASK intent, True (asked a question), or None."""
+        manager = getattr(self.kernel, "workspace_manager", None)
+        snapshot = manager.snapshot() if manager is not None else {}
+        project_path = str(snapshot.get("project_path") or "")
+        complete = getattr(self.engine, "complete_json", None)
+        if not project_path or not callable(complete) or os.getenv(
+            "ASTA_INTENT_LLM", "1"
+        ).strip().lower() in {"0", "false", "off", "no"}:
+            return None
+        try:
+            from core.tools.workspace import planning_file_context
+
+            files = list((planning_file_context(manager, "") or {}).get("files") or [])
+        except Exception:
+            files = []
+        last = project_followup.last_project_task(getattr(self.kernel, "task_manager", None))
+        talk = self._project_conversation()
+        if not forced and not talk.worth_checking(text, files, last):
+            return None
+        try:
+            history = self.chat_history.latest_active_context(limit=8)
+        except Exception:
+            history = []
+        recent = ""
+        if last is not None:
+            status = getattr(getattr(last, "status", None), "value", "") or ""
+            recent = f"{last.goal} ({status})"
+        project = str(snapshot.get("project_name") or "") or re.split(r"[\\/]", project_path.rstrip("\\/"))[-1]
+        started = time.perf_counter()
+        decision = talk.decide(text, complete, project=project, files=files, recent_task=recent, history=history)
+        print(
+            f"[AI] Project conversation: {decision.action if decision else 'unparsed'}"
+            f" goal={getattr(decision, 'goal', '')!r} question={getattr(decision, 'question', '')!r}"
+            f" ({time.perf_counter() - started:.2f}s)",
+            flush=True,
+        )
+        if decision is None or decision.action == "none":
+            return None
+        if decision.action == "ask":
+            self._emit_assistant_text(decision.question)
+            return True
+        entities = self.kernel.intent_router._extract_project_task(f"edit the file {decision.goal}") or {}
+        if not entities:
+            return None
+        entities["goal"] = decision.goal
+        return IntentResult(
+            intent=IntentType.TASK,
+            confidence=0.8,
+            normalized_text=decision.goal,
+            entities=entities,
+            requires_tools=True,
+            requires_reasoning=True,
+            classifier="project_conversation",
+        )
+
+    def _project_request_from_tool_call(self):
+        """The chat model reached for project files: understand the request instead."""
+        text = getattr(self, "_current_user_text", "")
+        understood = self._understand_project_request(text, forced=True) if text else None
+        if understood is None:
+            return False
+        if understood is not True:
+            print(f"[AI] Intent: task (classifier=project_conversation)", flush=True)
+            self._start_project_task(text, understood)
+        return True
 
     def _handle_work_followup(self, text):
         """"Try again" / "what happened?" refer to the task that just ran."""

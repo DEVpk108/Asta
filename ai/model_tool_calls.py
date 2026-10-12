@@ -22,10 +22,6 @@ MEDIA_OPERATIONS = {
     "play": "play", "resume": "play", "pause": "pause", "toggle": "toggle",
     "next": "next", "skip": "next", "previous": "previous", "stop": "pause",
 }
-PROJECT_FALLBACK_TEXT = (
-    "That sounds like a change to the project. Tell me which file to change, "
-    "for example: change snake.py so the snake also moves with W, A, S and D."
-)
 FALLBACK_TEXT = "Sorry, I couldn't do that. Please try saying it again."
 
 
@@ -162,8 +158,11 @@ def finish_model_response(module, response: str) -> str | None:
     if clean:
         return clean
     if any(name.startswith(("filesystem.", "project.")) or name == "system.run_command" for name, _ in calls):
-        module.event_bus.emit("assistant_sentence", text=PROJECT_FALLBACK_TEXT)
-        return PROJECT_FALLBACK_TEXT
+        # The chat model can't touch the project; the request is understood
+        # (and started as a project task, or asked about) instead.
+        handler = getattr(module, "_project_request_from_tool_call", None)
+        if callable(handler) and handler():
+            return None
     module.event_bus.emit("assistant_sentence", text=FALLBACK_TEXT)
     return FALLBACK_TEXT
 
