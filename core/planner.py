@@ -410,6 +410,7 @@ class Planner:
             previous_id = step_id
 
         if intent.intent is IntentType.TASK:
+            self._drop_pre_edit_content_checks(steps)
             self._validate_project_task_verification(steps)
 
         plan = Plan(
@@ -566,6 +567,41 @@ class Planner:
             requires_reasoning=True,
             classifier=intent.classifier,
         )
+
+    @staticmethod
+    def _drop_pre_edit_content_checks(steps: list[PlanStep]) -> None:
+        """A read *before* editing a file observes its old text.
+
+        Models sometimes attach the post-edit content check to that first
+        read too, which can only fail. The check belongs to the read-back
+        after the write (still required below), so remove it from the
+        pre-edit read instead of pausing the task.
+        """
+        def norm(value):
+            return str(value or "").replace("\\", "/").strip("/")
+
+        for index, step in enumerate(steps):
+            metadata = step.metadata
+            if (
+                str(metadata.get("tool") or "") != "filesystem.read_file"
+                or str(metadata.get("verification") or "").strip().lower() != "filesystem.file_content"
+            ):
+                continue
+            path = norm(metadata.get("path"))
+            if not any(
+                str(later.metadata.get("tool") or "") == "filesystem.write_file"
+                and norm(later.metadata.get("path")) == path
+                for later in steps[index + 1:]
+            ):
+                continue
+            for key in ("verification", "expected_path", "expected_content"):
+                metadata.pop(key, None)
+            step.completion_conditions = ["filesystem.read_file reports success"]
+            print(
+                f"[Tasks] {step.id} reads {path} before editing it; "
+                "its content check moves to the read-back after the write.",
+                flush=True,
+            )
 
     @staticmethod
     def _validate_project_task_verification(steps: list[PlanStep]) -> None:

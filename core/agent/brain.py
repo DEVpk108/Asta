@@ -768,7 +768,8 @@ class AgentBrain:
             **({
                 "existing_file_rules": (
                     "workspace.file_contents shows the CURRENT text of existing files. To change "
-                    "one: read_file it as its own step, then write_file the COMPLETE new file "
+                    "one: read_file it as its own step (no verification on this first read: it sees "
+                    "the old text), then write_file the COMPLETE new file "
                     "content with expected_sha256_from_step=<id of that read step> (steps are "
                     "numbered step-1, step-2, ... in your list order), then a verified readback, "
                     "then run the check. Change only what the goal needs and keep everything else "

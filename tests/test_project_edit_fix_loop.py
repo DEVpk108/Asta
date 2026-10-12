@@ -521,3 +521,42 @@ def test_hud_still_cannot_approve_a_plain_write():
         assert hud.state.approvals[0]["can_approve"] is False
     finally:
         kernel.shutdown()
+
+
+def _live_model_plan():
+    """The plan Qwen3.5-4B produced in the first live run (verbatim shape)."""
+    plan = _edit_plan(FIXED)
+    plan[0].update(
+        verification="filesystem.file_content", expected_path="calc.py", expected_content=FIXED,
+    )
+    return plan
+
+
+def test_content_check_on_the_pre_edit_read_moves_to_the_read_back(tmp_path):
+    workspace = _project(tmp_path)
+    run = _runtime(tmp_path, workspace, _live_model_plan())
+    try:
+        run.kernel.event_bus.emit("user_message", GOAL)
+
+        task = run.kernel.task_manager.list()[0]
+        assert task.status is TaskStatus.COMPLETED, task.error
+        first, _, readback, _ = task.plan.steps
+        assert "verification" not in first.metadata and "expected_content" not in first.metadata
+        assert readback.metadata["verification"] == "filesystem.file_content"
+        assert (workspace / "calc.py").read_text(encoding="utf-8") == FIXED
+        assert "Updated `calc.py` (+1 -1 lines)" in run.spoken[-1]
+        assert task.result["attempts"] == 1
+    finally:
+        _shutdown(run)
+
+
+def test_read_only_content_check_without_an_edit_is_kept(tmp_path):
+    check = [{
+        "action": "read_file", "tool": "filesystem.read_file", "path": "calc.py",
+        "verification": "filesystem.file_content", "expected_path": "calc.py", "expected_content": BUGGY,
+    }]
+    planner, _ = _planner(tmp_path, check)
+
+    plan = planner.plan("Check calc.py", intent=_task_intent("Check calc.py"))
+
+    assert plan.steps[0].metadata["verification"] == "filesystem.file_content"
