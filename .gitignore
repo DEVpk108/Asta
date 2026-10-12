@@ -73,3 +73,6 @@ Thumbs.db
 
 # Downloaded speech models (scripts/download_speech_models.py)
 models/speech/
+
+# Applied patch files
+*.patch
