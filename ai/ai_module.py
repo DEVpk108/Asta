@@ -1446,10 +1446,31 @@ class AIModule(Module):
         else:
             text = "I need your confirmation before performing that action."
         background = getattr(self.kernel, "background_tasks", None)
-        if background is not None and background.owns(request.metadata.get("task_id")):
+        in_background = background is not None and background.owns(request.metadata.get("task_id"))
+        if in_background:
             text += " Use the approval button, or say approve coding step or reject coding step."
         print(f"[AI] Approval required: {reason}", flush=True)
-        self._emit_assistant_text(text)
+        self._emit_assistant_text(text, spoken=self._spoken_approval(request, in_background) or None)
+
+    @staticmethod
+    def _spoken_approval(request, in_background) -> str:
+        """One short question; the chat card carries the details."""
+        overwrite = str(request.metadata.get("confirm_overwrite") or "").strip()
+        if overwrite and request.metadata.get("confirm_kind") == "test_edit":
+            question = f"Can I change the test file {overwrite}?"
+        elif overwrite:
+            question = f"Can I replace {overwrite}?"
+        elif request.tool == "system.run_command":
+            target = str(request.arguments.get("target") or "").replace("\\", "/").rsplit("/", 1)[-1]
+            target = re.sub(r"\.exe$", "", target, flags=re.IGNORECASE)
+            if re.fullmatch(r"python[\d.]*w?", target, flags=re.IGNORECASE):
+                target = "python"  # say "python", not "python.exe" or "python3.13"
+            arguments = [str(item) for item in (request.arguments.get("arguments") or [])][:3]
+            command = " ".join([target, *arguments]).strip() or "the command"
+            question = f"Can I run {command}?"
+        else:
+            return ""  # keep the full sentence
+        return question + (" Say approve coding step." if in_background else "")
 
     def on_tool_result(self, result):
         if not isinstance(result, ToolResult):
@@ -1478,7 +1499,7 @@ class AIModule(Module):
         )
         self._emit_assistant_text(text)
 
-    def _emit_assistant_text(self, text):
+    def _emit_assistant_text(self, text, spoken=None):
         if not text:
             return
         # A retried step can fail twice in a row; say the same thing once.
@@ -1488,7 +1509,10 @@ class AIModule(Module):
             print(f"[AI] Suppressed repeated message: {text}", flush=True)
             return
         self._last_assistant_emit = (text, now)
-        self.event_bus.emit("assistant_sentence", text=text)
+        if spoken is not None and spoken != text:
+            self.event_bus.emit("assistant_sentence", text=text, spoken=spoken)
+        else:
+            self.event_bus.emit("assistant_sentence", text=text)
         self.event_bus.emit("assistant_response", text=text)
 
     @staticmethod

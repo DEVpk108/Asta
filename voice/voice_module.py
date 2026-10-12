@@ -257,6 +257,9 @@ class VoiceModule(Module):
         )
 
     def _on_assistant_sentence(self, *args, **kwargs):
+        spoken = kwargs.get("spoken")
+        if spoken is not None and not str(spoken).strip():
+            return  # shown in the chat only; no speech will follow
         # During incremental capture, assistant responses must not turn into
         # a new TTS cycle or clear the live microphone stream. SpeechModule
         # defers their audio until the user finishes the utterance.

@@ -163,10 +163,7 @@ class SandboxSetupOperator:
                     "ASTA_DOCKER_DESKTOP_PATH to Docker Desktop.exe, then ask me again.",
                     fixable=False,
                 )
-            self.notify(
-                f"The code sandbox needs {self._product}, which isn't running. "
-                "I'm starting it now; this can take a minute."
-            )
+            self.notify(f"{self._short_product} isn't open. I'm opening {self._short_product}.")
             if not self._wait_for_engine():
                 return self._failed(
                     f"I started {self._product}, but it wasn't ready after "
@@ -186,10 +183,7 @@ class SandboxSetupOperator:
                     f"`{self.runtime_name} build --pull -t {self.image} -f sandbox/Dockerfile .`, "
                     "then ask me again."
                 )
-            self.notify(
-                "The sandbox image isn't built yet. I'm building it once from ASTA's own "
-                "Dockerfile; this needs the internet and a few minutes."
-            )
+            self.notify("The sandbox image is missing. I'm building it; this takes a few minutes.")
             built = self._call(
                 ["build", "--pull", "-t", self.image, "-f", str(dockerfile), str(self.repo_root)],
                 timeout=self.build_timeout,
@@ -218,6 +212,10 @@ class SandboxSetupOperator:
         )
 
     # ------------------------------------------------------------------
+    @property
+    def _short_product(self) -> str:
+        return "Docker" if self.runtime_name == "docker" else "Podman"
+
     @property
     def _product(self) -> str:
         return "Docker Desktop" if self.runtime_name == "docker" else "Podman"

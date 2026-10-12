@@ -260,7 +260,13 @@ class SpeechModule(Module):
             for text in deferred:
                 self.on_assistant_sentence(text)
 
-    def on_assistant_sentence(self, text):
+    def on_assistant_sentence(self, text, spoken=None):
+        if spoken is not None:
+            # The chat shows `text`; only the short `spoken` line is said.
+            # An empty `spoken` means "show it, don't say it".
+            if not str(spoken).strip():
+                return
+            text = str(spoken)
         if not text:
             return
 

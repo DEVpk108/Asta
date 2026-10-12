@@ -1242,6 +1242,7 @@ class TaskRuntimeModule(Module):
                 self.event_bus.emit(
                     "assistant_sentence",
                     text=report["message"],
+                    spoken=report.get("spoken") or report["message"],
                 )
             self.kernel.task_manager.complete(
                 result=final_result,
@@ -1387,8 +1388,14 @@ class TaskRuntimeModule(Module):
         if prefix_notes:
             message = " ".join(prefix_notes) + " " + message
 
+        spoken = TaskRuntimeModule._spoken_report(
+            changes, command, command_step_arguments=TaskRuntimeModule._command_words(task, command_evidence),
+            attempts=attempts + 1, prefix_notes=prefix_notes,
+        )
+
         return {
             "verified": verified,
+            "spoken": spoken,
             "artifacts": artifacts,
             "changes": changes,
             "attempts": attempts + 1,
@@ -1463,6 +1470,52 @@ class TaskRuntimeModule(Module):
                 **change,
             })
         return changes
+
+    @staticmethod
+    def _command_words(task, command_evidence) -> list[str]:
+        if command_evidence is None:
+            return []
+        evidence, _ = command_evidence
+        try:
+            step = task.plan.get_step(evidence.get("plan_step_id"))
+        except (AttributeError, KeyError, TypeError):
+            return []
+        target = str(step.metadata.get("target") or "").replace("\\", "/").rsplit("/", 1)[-1]
+        return [target, *[str(item) for item in (step.metadata.get("arguments") or [])]]
+
+    @staticmethod
+    def _spoken_report(changes, command, *, command_step_arguments, attempts, prefix_notes) -> str:
+        """The few words worth hearing; the chat keeps the full report."""
+        updated = [c["path"] for c in changes if not c.get("created") and not c.get("unchanged")]
+        created = [c["path"] for c in changes if c.get("created") and not c.get("unchanged")]
+        did = []
+        if updated:
+            did.append("I updated " + " and ".join(updated))
+        if created:
+            did.append("I created " + " and ".join(created))
+        outcome = ""
+        if command is not None:
+            words = " ".join(command_step_arguments).lower()
+            output = str(command.get("stdout") or "").strip()
+            if "test" in words or "pytest" in words:
+                outcome = "the tests passed"
+            elif output and "\n" not in output and len(output) <= 80:
+                outcome = f"it printed {output}"
+            else:
+                outcome = "it ran successfully"
+        if did and outcome:
+            text = f"Done. {', '.join(did)}, and {outcome}."
+        elif did:
+            text = f"Done. {', '.join(did)}."
+        elif outcome:
+            text = f"Done. {outcome[0].upper() + outcome[1:]}."
+        else:
+            text = "Done."
+        if attempts > 1:
+            text += f" It took {attempts} tries."
+        if prefix_notes:
+            text = " ".join(prefix_notes) + " " + text
+        return text
 
     @staticmethod
     def _describe_edits(changes) -> str:
@@ -2220,7 +2273,8 @@ class TaskRuntimeModule(Module):
                     task.id,
                 )
                 return
-            self.event_bus.emit("assistant_sentence", text=str(event.get("summary") or ""))
+            # Shown in the chat, not spoken: the result that follows matters.
+            self.event_bus.emit("assistant_sentence", text=str(event.get("summary") or ""), spoken="")
 
         if status != "completed":
             return

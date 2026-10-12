@@ -40,13 +40,16 @@ class BackgroundTaskCoordinator:
             kernel.event_bus.subscribe(event, callback)
         self.worker.start()
 
-    def _say(self, text):
+    def _say(self, text, spoken=None):
         """Show and speak a coordinator reply.
 
         The HUD chat and speech listen to ``assistant_sentence``; emitting only
         ``assistant_response`` left status/queue/cancel replies invisible.
         """
-        self.kernel.event_bus.emit("assistant_sentence", text=text)
+        if spoken is not None and spoken != text:
+            self.kernel.event_bus.emit("assistant_sentence", text=text, spoken=spoken)
+        else:
+            self.kernel.event_bus.emit("assistant_sentence", text=text)
         self.kernel.event_bus.emit("assistant_response", text=text)
 
     @property
@@ -93,7 +96,10 @@ class BackgroundTaskCoordinator:
                           "goal": str(goal), "message": "Project task queued"}
             self.schedule(lambda: self._start_goal(goal, intent))
         self._publish()
-        self._say("I’ve queued that project task in the background. We can keep talking while it runs.")
+        self._say(
+            "I’ve queued that project task in the background. We can keep talking while it runs.",
+            spoken="On it.",
+        )
         return True
 
     def schedule(self, operation):
@@ -199,7 +205,8 @@ class BackgroundTaskCoordinator:
         text += f" because of this: {reason}." if reason else "."
         text += " Say cancel task to stop it."
         print(f"[Tasks] Paused: {reason or 'no reason recorded'}", flush=True)
-        self._say(text)
+        # The reason is shown in the chat; saying it aloud is too long.
+        self._say(text, spoken="I paused the project task. The reason is on screen.")
 
     def on_workspace(self, workspace=None, **kwargs):
         if self.busy and self.workspace_identity is not None and isinstance(workspace, dict):

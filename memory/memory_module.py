@@ -107,7 +107,7 @@ class MemoryModule(Module):
         self.kernel.memory_context = self.backend.context(text, n_results=5)
         self._queue_write("user", text)
 
-    def on_assistant_sentence(self, text):
+    def on_assistant_sentence(self, text, spoken=None):
         self._queue_write("assistant", text)
 
     def on_memory_request(self, intent=None, **_kwargs):

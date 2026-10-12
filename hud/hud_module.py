@@ -603,7 +603,7 @@ class HUDModule(Module):
         else:
             self.set_state(mode="listening", intensity="medium", status="LISTENING", progress=None, activity="approval_rejected")
 
-    def on_assistant_sentence(self, text):
+    def on_assistant_sentence(self, text, spoken=None):
         if not isinstance(text, str) or not text.strip():
             return
         value = text.strip()
