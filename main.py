@@ -201,7 +201,6 @@ def main():
     from ai.final_runtime_patch import apply_final_runtime_patch
     from ai.context_runtime_patch import apply_context_runtime_patch
     from memory.memory_module import MemoryModule
-    from memory.runtime_patch import apply_memory_runtime_patch
     from input.text_input_module import TextInputModule
     from voice.voice_module import VoiceModule
     from vision.screenshot_backend import capture_screenshot
@@ -210,7 +209,8 @@ def main():
     apply_ai_runtime_patch()
     apply_final_runtime_patch()
     apply_context_runtime_patch()
-    apply_memory_runtime_patch()
+    # MemoryModule owns recall and ContextBuilder owns prompt inclusion.
+    # The former memory patch only forwarded generation arguments unchanged.
 
     kernel = Kernel()
     register_builtin_skills(kernel.skill_manager)

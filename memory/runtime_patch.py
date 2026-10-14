@@ -1,25 +1,15 @@
-"""Runtime bridge that injects recalled MemPalace context into A.S.T.A. generation."""
+"""Retired memory-wrapper compatibility entry point.
 
-from ai.ai_module import AIModule
-
-
-_PATCHED = False
-_ORIGINAL_GENERATE_RESPONSE = None
+MemoryModule recalls into kernel.memory_context; ContextBuilder decides whether
+to include it in a prompt. The former wrapper only forwarded arguments to the
+existing generation method and did not inject or persist memory.
+"""
 
 
 def apply_memory_runtime_patch():
-    """Add memory context without coupling AIModule directly to MemPalace."""
-    global _PATCHED, _ORIGINAL_GENERATE_RESPONSE
+    """Compatibility no-op for older startup code; never mutate AIModule.
 
-    if _PATCHED:
-        return
-
-    original = AIModule._generate_response
-    _ORIGINAL_GENERATE_RESPONSE = original
-
-    def _generate_response_with_memory(self, text, runtime_context=None):
-        """Preserve the context pipeline without persisting memory into chat history."""
-        return original(self, text, runtime_context=runtime_context)
-
-    AIModule._generate_response = _generate_response_with_memory
-    _PATCHED = True
+    Main no longer imports or calls this hook. Keep the callable so an older
+    launcher can invoke it without replacing the current generation pipeline.
+    """
+    return None
