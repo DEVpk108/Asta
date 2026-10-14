@@ -35,6 +35,7 @@ from core.tools.sandbox import (  # noqa: E402
     is_sandbox_setup_error,
 )
 from core.media.request import UNSUPPORTED_MUSIC_APPS  # noqa: E402
+from core.visual_evidence import is_verified_inspection_output
 
 class TaskRuntimeModule(Module):
     """Bind user goals and tool activity to the active AgentTask.
@@ -821,7 +822,7 @@ class TaskRuntimeModule(Module):
         if result.tool == "vision.inspect" and result.success:
             output = result.output if isinstance(result.output, dict) else {}
             step_metadata = self._plan_step_metadata(task, plan_step_id)
-            if not bool(output.get("verified")) and self._has_later_project_steps(
+            if not is_verified_inspection_output(output) and self._has_later_project_steps(
                 task, step_metadata
             ):
                 # A mixed request ("play X, then write main.py"): the music
@@ -845,7 +846,7 @@ class TaskRuntimeModule(Module):
                     phase="working",
                     text=f"{note} Continuing with the project steps.",
                 )
-            elif not bool(output.get("verified")):
+            elif not is_verified_inspection_output(output):
                 summary = str(
                     output.get("summary")
                     or "Visual inspection did not confirm the requested condition."
@@ -1674,11 +1675,11 @@ class TaskRuntimeModule(Module):
         step_description: str,
     ) -> bool:
         """Complete a visual verification goal without another LLM call."""
-        if result.tool != "vision.inspect" or not result.success:
+        if result.tool != "vision.inspect" or result.success is not True:
             return False
 
         output = result.output if isinstance(result.output, dict) else {}
-        if not bool(output.get("verified")):
+        if not is_verified_inspection_output(output):
             return False
         if self._has_later_project_steps(
             task, self._plan_step_metadata(task, plan_step_id)
@@ -1785,6 +1786,8 @@ class TaskRuntimeModule(Module):
                 "success": bool(result.success),
                 "output": result.output,
                 "error": result.error,
+                "request_id": result.metadata.get("request_id"),
+                "plan_step_id": result.metadata.get("plan_step_id"),
             },
         }
 
@@ -2219,6 +2222,8 @@ class TaskRuntimeModule(Module):
                     "success": bool(result.success),
                     "output": result.output,
                     "error": result.error,
+                    "request_id": result.metadata.get("request_id"),
+                    "plan_step_id": result.metadata.get("plan_step_id"),
                 },
             }
         )

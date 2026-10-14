@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from core.contracts import IntentResult, IntentType
+from core.visual_evidence import is_verified_inspection_output
 
 
 class AgentBrainError(RuntimeError):
@@ -405,37 +406,59 @@ class AgentBrain:
 
     @staticmethod
     def _has_verified_visual_observation(task_state: dict[str, Any]) -> bool:
+        """Accept only the current successful semantic-inspection result.
+
+        The runtime appends observations in execution order. Older positives
+        cannot survive another tool result, even a read-only one. Matching
+        request/step identity is enforced when supplied by the runtime.
+        """
+        latest = task_state.get("latest_result")
+        if (
+            not isinstance(latest, dict)
+            or latest.get("tool") != "vision.inspect"
+            or latest.get("success") is not True
+            or not is_verified_inspection_output(latest.get("output"))
+        ):
+            return False
+
         observations = task_state.get("observations") or ()
-        for observation in observations:
-            if not isinstance(observation, dict):
-                continue
-            data = observation.get("data")
-            if not isinstance(data, dict):
-                continue
-            output = data.get("output")
-            if not isinstance(output, dict):
-                output = data
+        if not isinstance(observations, (list, tuple)) or not observations:
+            return False
+        observation = observations[-1]
+        if not isinstance(observation, dict):
+            return False
+        # Retain the documented legacy Bonsai observation shape only when
+        # bound to a current vision.inspect result with the same output.
+        legacy = (
+            observation.get("kind") == "visual_verification"
+            and observation.get("source") == "vision.bonsai"
+        )
+        if observation.get("source") != "vision.inspect" and not legacy:
+            return False
+        data = observation.get("data")
+        if not isinstance(data, dict):
+            return False
+        if data.get("success") is not True and not (
+            legacy and "success" not in data
+        ):
+            return False
+        output = data.get("output")
+        if not is_verified_inspection_output(output) or output != latest["output"]:
+            return False
+        for key in ("request_id", "plan_step_id"):
+            if data.get(key) != latest.get(key):
+                return False
 
-            analysis = output.get("analysis")
-            if isinstance(analysis, dict):
-                merged = dict(output)
-                merged.update(analysis)
-                output = merged
-
-            explicit_flags = (
-                "verified",
-                "vision_verified",
-                "visual_match",
-                "window_detected",
-            )
-            if any(bool(output.get(key)) for key in explicit_flags):
-                return True
-
-            # A tool may return a structured visibility result directly.
-            if "visible" in output and bool(output.get("visible")):
-                return True
-
-        return False
+        actions = task_state.get("actions") or ()
+        if actions:
+            if not isinstance(actions, (list, tuple)) or not isinstance(actions[-1], dict):
+                return False
+            if (
+                actions[-1].get("tool") != "vision.inspect"
+                or actions[-1].get("outcome") == "failure"
+            ):
+                return False
+        return True
 
     def _find_action_capability(
         self,
