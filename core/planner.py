@@ -506,7 +506,8 @@ class Planner:
         * The read-back after a write gets expected_path/expected_content
           copied from the write (the model writes the file content once; a
           Snake game written twice no longer overflows the output limit). A
-          missing read-back is inserted right after the write.
+          missing or too-late read-back is inserted right after the write.
+          Code execution is a barrier even when it names a different file.
         * A desktop program step (open_program) gets its process check.
         """
         def norm(value):
@@ -531,6 +532,11 @@ class Planner:
             path = norm(command.get("path"))
             readback = None
             for later in result[index + 1:]:
+                if (
+                    is_tool(later, "system.run_command", "run")
+                    or is_tool(later, "project.open_program", "open_program")
+                ):
+                    break  # a read after execution cannot verify this write
                 if norm(later.get("path")) != path:
                     continue
                 if is_tool(later, "filesystem.read_file", "read_file"):
@@ -726,7 +732,7 @@ class Planner:
     @staticmethod
     def _validate_project_task_verification(steps: list[PlanStep]) -> None:
         """Require observable outcome checks for project writes and commands."""
-        for step in steps:
+        for index, step in enumerate(steps):
             tool = str(step.metadata.get("tool") or "")
             verification = str(step.metadata.get("verification") or "").strip().lower()
             if tool == "system.run_command":
@@ -763,8 +769,7 @@ class Planner:
             if tool == "filesystem.write_file" and step.metadata.get("expected_sha256_from_step"):
                 reference = str(step.metadata.get("expected_sha256_from_step") or "").strip()
                 path = str(step.metadata.get("path") or "").replace("\\", "/").strip("/")
-                position = steps.index(step)
-                source = next((item for item in steps[:position] if item.id == reference), None)
+                source = next((item for item in steps[:index] if item.id == reference), None)
                 if (
                     source is None
                     or str(source.metadata.get("tool") or "") != "filesystem.read_file"
@@ -776,12 +781,11 @@ class Planner:
                     )
 
             if tool == "filesystem.write_file":
-                index = steps.index(step)
                 expected_path = str(step.metadata.get("path") or "").replace("\\", "/").strip("/")
                 expected_content = step.metadata.get("content")
                 readbacks = [
-                    candidate
-                    for candidate in steps[index + 1:]
+                    (position, candidate)
+                    for position, candidate in enumerate(steps[index + 1:], index + 1)
                     if (
                         str(candidate.metadata.get("tool") or "") == "filesystem.read_file"
                         and str(candidate.metadata.get("verification") or "").strip().lower()
@@ -792,16 +796,42 @@ class Planner:
                     raise PlanningError(
                         "Project file writes must be followed by a verified file readback."
                     )
-                if not any(
-                    str(candidate.metadata.get("expected_path") or "").replace("\\", "/").strip("/")
-                    == expected_path
-                    and candidate.metadata.get("expected_content") == expected_content
-                    and str(candidate.metadata.get("path") or "").replace("\\", "/").strip("/")
-                    == expected_path
-                    for candidate in readbacks
-                ):
+                matching_readbacks = [
+                    position
+                    for position, candidate in readbacks
+                    if (
+                        str(candidate.metadata.get("expected_path") or "").replace("\\", "/").strip("/")
+                        == expected_path
+                        and candidate.metadata.get("expected_content") == expected_content
+                        and str(candidate.metadata.get("path") or "").replace("\\", "/").strip("/")
+                        == expected_path
+                    )
+                ]
+                if not matching_readbacks:
                     raise PlanningError(
                         "The verified readback must match the written file path and content."
+                    )
+                barrier = next(
+                    (
+                        position
+                        for position, candidate in enumerate(steps[index + 1:], index + 1)
+                        if (
+                            str(candidate.metadata.get("tool") or "") in {
+                                "system.run_command", "project.open_program",
+                            }
+                            or (
+                                str(candidate.metadata.get("tool") or "") == "filesystem.write_file"
+                                and str(candidate.metadata.get("path") or "").replace("\\", "/").strip("/")
+                                == expected_path
+                            )
+                        )
+                    ),
+                    len(steps),
+                )
+                if not any(position < barrier for position in matching_readbacks):
+                    raise PlanningError(
+                        "Project file writes must be verified before executing code "
+                        "or rewriting the same file."
                     )
 
             if verification == "filesystem.file_content":
