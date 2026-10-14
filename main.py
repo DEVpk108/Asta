@@ -199,7 +199,6 @@ def main():
     from ai.ai_module import AIModule
     from ai.runtime_patch import apply_ai_runtime_patch
     from ai.final_runtime_patch import apply_final_runtime_patch
-    from ai.context_runtime_patch import apply_context_runtime_patch
     from memory.memory_module import MemoryModule
     from input.text_input_module import TextInputModule
     from voice.voice_module import VoiceModule
@@ -208,9 +207,8 @@ def main():
     # Apply small runtime compatibility patches before module instances are created.
     apply_ai_runtime_patch()
     apply_final_runtime_patch()
-    apply_context_runtime_patch()
     # MemoryModule owns recall and ContextBuilder owns prompt inclusion.
-    # The former memory patch only forwarded generation arguments unchanged.
+    # Native AIModule generation now prepares context; no memory/context wrapper.
 
     kernel = Kernel()
     register_builtin_skills(kernel.skill_manager)

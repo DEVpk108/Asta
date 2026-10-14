@@ -2,7 +2,6 @@ import re
 import time
 
 from core.contracts import IntentResult, IntentType, ToolResult
-from ai.model_tool_calls import finish_model_response, speech_filter
 
 
 _POST_RESPONSE_SCREENSHOT_PATTERN = re.compile(
@@ -374,29 +373,6 @@ def apply_ai_runtime_patch():
             return "Opened the latest screenshot."
         return original_format_tool_success(result)
 
-    def patched_generate_response(self, text, runtime_context=None):
-        """Stream complete sentence chunks to speech while retaining turn context."""
-        def on_sentence(sentence):
-            if sentence:
-                self.event_bus.emit("assistant_sentence", text=sentence)
-
-        response = self.engine.generate_response(
-            text,
-            on_sentence=speech_filter(on_sentence),
-            context=runtime_context,
-        )
-        if not response:
-            print("[AI] No response generated.", flush=True)
-            return
-
-        # Speech has already received sentence chunks during generation.
-        # Emit the completed response separately for chat/HUD consumers.
-        # Tool-call markup is routed (allowlisted) or dropped, never shown.
-        response = finish_model_response(self, response)
-        if not response:
-            return
-        self.event_bus.emit("assistant_response", text=response)
-
     def patched_voice_on_conversation_mode_set(self, enabled):
         original_voice_on_conversation_mode_set(self, enabled)
         if not enabled:
@@ -418,7 +394,6 @@ def apply_ai_runtime_patch():
     AIModule.on_user_message = patched_on_user_message
     AIModule._is_creator_identity_question = classmethod(patched_creator_handler)
     AIModule._format_tool_success = staticmethod(patched_format_tool_success)
-    AIModule._generate_response = patched_generate_response
     VoiceModule.on_conversation_mode_set = patched_voice_on_conversation_mode_set
     VoiceModule._can_listen = patched_voice_can_listen
     AIModule._asta_runtime_patch_applied = True

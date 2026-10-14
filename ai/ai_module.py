@@ -11,6 +11,7 @@ from core.module import Module
 from core.contracts import ActionType, IntentType, IntentResult, ToolRequest, ToolResult
 from core.tools import ToolRequestBuilder
 from core.approval_language import classify_approval, normalize_confirmation_transcript
+from core.context_builder import ContextBuilder
 
 from chat_history import ChatHistoryStore
 
@@ -1762,7 +1763,28 @@ class AIModule(Module):
         # Keep internal diagnostics in logs/HUD metadata, not in spoken audio.
         return "I couldn't complete that action."
 
+    def _prepare_runtime_context(self, text, runtime_context=None):
+        """Apply the existing per-turn context policy without a startup wrapper."""
+        builder = getattr(self.kernel, "context_builder", None)
+        if builder is None:
+            builder = ContextBuilder(self.kernel)
+            self.kernel.context_builder = builder
+
+        context = runtime_context
+        try:
+            if not context:
+                intent = self.kernel.intent_router.analyze(text)
+                context = builder.build_prompt(text, intent)
+        except Exception as exc:  # context enrichment must not break chat
+            print(
+                f"[Context] Failed to build runtime context: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            context = None
+        return context
+
     def _generate_response(self, text, runtime_context=None):
+        context = self._prepare_runtime_context(text, runtime_context)
         def on_sentence(sentence):
             if sentence:
                 self.event_bus.emit("assistant_sentence", text=sentence)
@@ -1770,7 +1792,7 @@ class AIModule(Module):
         response = self.engine.generate_response(
             text,
             on_sentence=speech_filter(on_sentence),
-            context=runtime_context,
+            context=context,
         )
         if not response:
             print("[AI] No response generated.", flush=True)
