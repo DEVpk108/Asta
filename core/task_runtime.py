@@ -717,336 +717,7 @@ class TaskRuntimeModule(Module):
                 return
 
         if not result.success and not prefix_soft_failure:
-            print(
-                f"[Tasks] Step failed: {result.tool or 'tool'}: "
-                f"{result.error or 'no error message'}",
-                flush=True,
-            )
-            if result.tool == "system.run_command" and is_sandbox_setup_error(result.error):
-                # Docker/Podman is stopped or the local image is missing.
-                # Replanning the user's code cannot fix that, so repair the
-                # environment instead (once per task), then rerun the step.
-                if self._start_sandbox_repair(task, plan_step_id, result, evidence):
-                    return
-                print(
-                    "[Tasks] Sandbox setup needed: start Docker Desktop, then run "
-                    f"`{SANDBOX_SETUP_COMMAND}` in the ASTA folder.",
-                    flush=True,
-                )
-                if plan_step_id:
-                    self.kernel.task_manager.set_plan_step_status(
-                        plan_step_id,
-                        PlanStepStatus.FAILED,
-                        task.id,
-                    )
-                self.kernel.task_manager.add_evidence(evidence, task.id)
-                self.kernel.task_manager.fail(SANDBOX_SETUP_MESSAGE, task.id)
-                return
-            self.event_bus.emit(
-                "task_progress",
-                task_id=task.id,
-                phase="recovery",
-                text=(
-                    "I hit a problem with that step. "
-                    "I’m figuring out what went wrong."
-                ),
-            )
-            if plan_step_id:
-                self.kernel.task_manager.set_plan_step_status(
-                    plan_step_id,
-                    PlanStepStatus.FAILED,
-                    task.id,
-                )
-
-            # Decide before recording the current failure so RecoveryManager
-            # counts only prior failures as history and the current result as
-            # the next attempt. This keeps direct recovery decisions and the
-            # runtime integration on the same attempt-counting contract.
-            decision = self.kernel.recovery_manager.decide(
-                task,
-                result,
-                step_id=plan_step_id,
-            )
-            evidence["recovery"] = decision.to_dict()
-
-            diagnosis = None
-            if decision.action.value == "replan":
-                diagnosis_engine = getattr(self.kernel, "diagnosis_engine", None)
-                if diagnosis_engine is not None:
-                    diagnosis = diagnosis_engine.diagnose(
-                        task,
-                        result,
-                        recovery=decision,
-                        step_id=plan_step_id,
-                    )
-                    evidence["diagnosis"] = diagnosis.to_dict()
-                    self.event_bus.emit(
-                        "task_diagnosed",
-                        task_id=task.id,
-                        diagnosis=diagnosis.to_dict(),
-                    )
-
-            if decision.action.value == "retry":
-                retry_step = (
-                    task.plan.get_step(plan_step_id)
-                    if task.plan is not None and plan_step_id
-                    else None
-                )
-                if retry_step is not None:
-                    retry_step.status = PlanStepStatus.READY
-                    retry_request = self.build_plan_request(
-                        task,
-                        retry_step,
-                    )
-                    if retry_request is not None:
-                        self.kernel.task_manager.add_evidence(
-                            evidence,
-                            task.id,
-                        )
-                        self.event_bus.emit(
-                            "task_recovery_required",
-                            task_id=task.id,
-                            decision=decision.to_dict(),
-                            diagnosis=None,
-                        )
-                        print(
-                            f"[Tasks] Recovery retry: {retry_step.id} -> "
-                            f"{retry_request.tool}",
-                            flush=True,
-                        )
-                        self.event_bus.emit(
-                            "tool_request",
-                            request=retry_request,
-                        )
-                        return
-
-            if decision.action.value == "wait_for_user":
-                diagnosis = None
-                diagnosis_engine = getattr(self.kernel, "diagnosis_engine", None)
-                if diagnosis_engine is not None:
-                    try:
-                        diagnosis = diagnosis_engine.diagnose(
-                            task,
-                            result,
-                            recovery=decision,
-                            step_id=plan_step_id,
-                        )
-                        evidence["diagnosis"] = diagnosis.to_dict()
-                        self.event_bus.emit(
-                            "task_diagnosed",
-                            task_id=task.id,
-                            diagnosis=diagnosis.to_dict(),
-                        )
-                    except Exception as exc:
-                        evidence["diagnosis_error"] = str(exc)
-
-                setup_manager = getattr(
-                    self.kernel,
-                    "capability_setup_manager",
-                    None,
-                )
-                category = (
-                    getattr(
-                        getattr(diagnosis, "category", None),
-                        "value",
-                        "",
-                    )
-                    .strip()
-                    .lower()
-                    if diagnosis is not None
-                    else ""
-                )
-                if category == "setup_required" and setup_manager is not None:
-                    provider = self._setup_provider_for_step(
-                        task,
-                        plan_step_id,
-                        result,
-                    )
-                    if provider and setup_manager.supports(provider):
-                        self.kernel.task_manager.pause(task.id)
-                        started = setup_manager.start(
-                            task,
-                            capability=provider,
-                            step_id=plan_step_id,
-                        )
-                        evidence["capability_setup"] = {
-                            "capability": provider,
-                            "started": bool(started),
-                            "step_id": plan_step_id,
-                        }
-                        if started:
-                            task.metadata["capability_setup"] = {
-                                "capability": provider,
-                                "step_id": plan_step_id,
-                                "status": "running",
-                            }
-                            self.kernel.task_manager.add_evidence(
-                                evidence,
-                                task.id,
-                            )
-                            self.event_bus.emit(
-                                "task_recovery_required",
-                                task_id=task.id,
-                                decision=decision.to_dict(),
-                                diagnosis=diagnosis.to_dict(),
-                            )
-                            return
-
-                        evidence["capability_setup"]["status"] = "unavailable"
-                        self.kernel.task_manager.add_evidence(
-                            evidence,
-                            task.id,
-                        )
-                        self.event_bus.emit(
-                            "task_recovery_required",
-                            task_id=task.id,
-                            decision=decision.to_dict(),
-                            diagnosis=diagnosis.to_dict(),
-                        )
-                        return
-
-                self.kernel.task_manager.add_evidence(
-                    evidence,
-                    task.id,
-                )
-                self.event_bus.emit(
-                    "task_recovery_required",
-                    task_id=task.id,
-                    decision=decision.to_dict(),
-                    diagnosis=diagnosis.to_dict() if diagnosis is not None else None,
-                )
-                self.kernel.task_manager.pause(task.id)
-                return
-
-            if decision.action.value == "replan":
-                replan_engine = getattr(self.kernel, "replan_engine", None)
-                if replan_engine is None or diagnosis is None:
-                    self.kernel.task_manager.pause(task.id)
-                    return
-
-                step = (
-                    task.plan.get_step(plan_step_id)
-                    if task.plan is not None and plan_step_id
-                    else None
-                )
-                replan_decision = replan_engine.choose(
-                    diagnosis,
-                    plan_step=step,
-                )
-                evidence["replan"] = replan_decision.to_dict()
-                self.event_bus.emit(
-                    "task_recovery_required",
-                    task_id=task.id,
-                    decision=decision.to_dict(),
-                    diagnosis=diagnosis.to_dict(),
-                )
-                self.event_bus.emit(
-                    "task_progress",
-                    task_id=task.id,
-                    phase="replanning",
-                    text=(
-                        "I understand the problem. "
-                        "I’m trying a different way."
-                    ),
-                )
-
-                attempts = int(task.metadata.get("replan_attempts", 0)) + 1
-                task.metadata["replan_attempts"] = attempts
-                max_replans = 3
-
-                if replan_decision.strategy.value == "wait_for_user":
-                    self.kernel.task_manager.add_evidence(evidence, task.id)
-                    self.event_bus.emit(
-                        "task_replan_required",
-                        task_id=task.id,
-                        decision=replan_decision.to_dict(),
-                    )
-                    self.kernel.task_manager.pause(task.id)
-                    return
-
-                if replan_decision.strategy.value == "fail" or attempts > max_replans:
-                    evidence["replan_guard"] = {
-                        "max_replans": max_replans,
-                        "attempt": attempts,
-                    }
-                    self.kernel.task_manager.add_evidence(evidence, task.id)
-                    self.event_bus.emit(
-                        "task_replan_required",
-                        task_id=task.id,
-                        decision=replan_decision.to_dict(),
-                    )
-                    self.kernel.task_manager.fail(
-                        "Autonomous replanning exhausted its safe recovery budget.",
-                        task.id,
-                    )
-                    return
-
-                # Record the failed attempt first: the repair planner must
-                # see its output (a failing test's traceback, for example).
-                self.kernel.task_manager.add_evidence(evidence, task.id)
-                try:
-                    new_plan = self.kernel.planner.replan(
-                        task,
-                        diagnosis,
-                        replan_decision.strategy,
-                    )
-                except PlanningError as exc:
-                    evidence["replan_error"] = str(exc)
-                    if task.evidence and isinstance(task.evidence[-1], dict):
-                        task.evidence[-1]["replan_error"] = str(exc)
-                    self.event_bus.emit(
-                        "task_replan_required",
-                        task_id=task.id,
-                        decision=replan_decision.to_dict(),
-                        error=str(exc),
-                    )
-                    self.kernel.task_manager.pause(task.id)
-                    return
-
-                task.plan = new_plan
-                task.pending_steps = [step.description for step in new_plan.steps]
-                task.current_step = None
-                task.error = None
-                self.event_bus.emit(
-                    "task_replanned",
-                    task_id=task.id,
-                    decision=replan_decision.to_dict(),
-                    plan=new_plan.to_dict(),
-                )
-
-                # The task remains ACTIVE throughout an autonomous replan;
-                # only its structured plan is replaced.
-                task.plan.status = PlanStatus.ACTIVE
-                task.plan.mark_ready_steps()
-
-                next_step = self._next_ready_plan_step(task)
-                if next_step is None:
-                    self.kernel.task_manager.fail(
-                        "Replanned task has no executable ready step.",
-                        task.id,
-                    )
-                    return
-
-                next_request = self.build_plan_request(task, next_step)
-                if next_request is None:
-                    self.kernel.task_manager.fail(
-                        f"Unable to build a tool request for replanned step '{next_step.id}'.",
-                        task.id,
-                    )
-                    return
-
-                print(
-                    f"[Tasks] Autonomous replan: {next_step.id} -> "
-                    f"{next_request.tool}",
-                    flush=True,
-                )
-                self.event_bus.emit("tool_request", request=next_request)
-                return
-
-            self.kernel.task_manager.fail(
-                result.error or "Tool execution failed.",
-                task.id,
-            )
+            self._handle_step_failure(task, result, evidence, plan_step_id)
             return
 
         step = result.metadata.get("task_step") or task.current_step or result.tool
@@ -1103,24 +774,29 @@ class TaskRuntimeModule(Module):
                     PlanStepStatus.FAILED,
                     task.id,
                 )
-                self.kernel.task_manager.add_evidence(evidence, task.id)
                 self.event_bus.emit(
                     "task_verification_failed",
                     task_id=task.id,
                     verification=verification.to_dict(),
                 )
-                synthetic_failure = ToolResult(
+                # A private recovery view, not another execution or bus event.
+                # Preserve output and request provenance for diagnosis; retain
+                # the original tool success in the single evidence entry.
+                failure = ToolResult(
                     success=False,
                     tool=result.tool,
+                    output=result.output,
                     error=verification.summary,
+                    duration_seconds=result.duration_seconds,
                     metadata={
+                        **result.metadata,
                         "task_id": task.id,
                         "task_step": step,
                         "plan_step_id": structured_step.id,
                         "verification_failure": True,
                     },
                 )
-                self.event_bus.emit("tool_result", result=synthetic_failure)
+                self._handle_step_failure(task, failure, evidence, structured_step.id)
                 return
 
             if verification_key and verification.status.value == "unknown":
@@ -1278,6 +954,348 @@ class TaskRuntimeModule(Module):
             flush=True,
         )
         self.event_bus.emit("tool_request", request=next_request)
+
+    def _handle_step_failure(self, task, result, evidence, plan_step_id):
+        """Recover one attempt without publishing a second tool result.
+
+        evidence describes the real tool call, including any failed postcondition.
+        It must not yet be in task.evidence: RecoveryManager counts prior attempts
+        plus the current result. Record it once before dispatching retry/replan.
+        """
+        print(
+            f"[Tasks] Step failed: {result.tool or 'tool'}: "
+            f"{result.error or 'no error message'}",
+            flush=True,
+        )
+        if result.tool == "system.run_command" and is_sandbox_setup_error(result.error):
+            # Docker/Podman is stopped or the local image is missing.
+            # Replanning the user's code cannot fix that, so repair the
+            # environment instead (once per task), then rerun the step.
+            if self._start_sandbox_repair(task, plan_step_id, result, evidence):
+                return
+            print(
+                "[Tasks] Sandbox setup needed: start Docker Desktop, then run "
+                f"`{SANDBOX_SETUP_COMMAND}` in the ASTA folder.",
+                flush=True,
+            )
+            if plan_step_id:
+                self.kernel.task_manager.set_plan_step_status(
+                    plan_step_id,
+                    PlanStepStatus.FAILED,
+                    task.id,
+                )
+            self.kernel.task_manager.add_evidence(evidence, task.id)
+            self.kernel.task_manager.fail(SANDBOX_SETUP_MESSAGE, task.id)
+            return
+        self.event_bus.emit(
+            "task_progress",
+            task_id=task.id,
+            phase="recovery",
+            text=(
+                "I hit a problem with that step. "
+                "I’m figuring out what went wrong."
+            ),
+        )
+        if plan_step_id:
+            self.kernel.task_manager.set_plan_step_status(
+                plan_step_id,
+                PlanStepStatus.FAILED,
+                task.id,
+            )
+
+        # Decide before recording the current failure so RecoveryManager
+        # counts only prior failures as history and the current result as
+        # the next attempt. This keeps direct recovery decisions and the
+        # runtime integration on the same attempt-counting contract.
+        decision = self.kernel.recovery_manager.decide(
+            task,
+            result,
+            step_id=plan_step_id,
+        )
+        evidence["recovery"] = decision.to_dict()
+
+        diagnosis = None
+        if decision.action.value == "replan":
+            diagnosis_engine = getattr(self.kernel, "diagnosis_engine", None)
+            if diagnosis_engine is not None:
+                diagnosis = diagnosis_engine.diagnose(
+                    task,
+                    result,
+                    recovery=decision,
+                    step_id=plan_step_id,
+                )
+                evidence["diagnosis"] = diagnosis.to_dict()
+                self.event_bus.emit(
+                    "task_diagnosed",
+                    task_id=task.id,
+                    diagnosis=diagnosis.to_dict(),
+                )
+
+        if decision.action.value == "retry":
+            retry_step = (
+                task.plan.get_step(plan_step_id)
+                if task.plan is not None and plan_step_id
+                else None
+            )
+            if retry_step is not None:
+                retry_step.status = PlanStepStatus.READY
+                retry_request = self.build_plan_request(
+                    task,
+                    retry_step,
+                )
+                if retry_request is not None:
+                    self.kernel.task_manager.add_evidence(
+                        evidence,
+                        task.id,
+                    )
+                    self.event_bus.emit(
+                        "task_recovery_required",
+                        task_id=task.id,
+                        decision=decision.to_dict(),
+                        diagnosis=None,
+                    )
+                    print(
+                        f"[Tasks] Recovery retry: {retry_step.id} -> "
+                        f"{retry_request.tool}",
+                        flush=True,
+                    )
+                    self.event_bus.emit(
+                        "tool_request",
+                        request=retry_request,
+                    )
+                    return
+
+        if decision.action.value == "wait_for_user":
+            diagnosis = None
+            diagnosis_engine = getattr(self.kernel, "diagnosis_engine", None)
+            if diagnosis_engine is not None:
+                try:
+                    diagnosis = diagnosis_engine.diagnose(
+                        task,
+                        result,
+                        recovery=decision,
+                        step_id=plan_step_id,
+                    )
+                    evidence["diagnosis"] = diagnosis.to_dict()
+                    self.event_bus.emit(
+                        "task_diagnosed",
+                        task_id=task.id,
+                        diagnosis=diagnosis.to_dict(),
+                    )
+                except Exception as exc:
+                    evidence["diagnosis_error"] = str(exc)
+
+            setup_manager = getattr(
+                self.kernel,
+                "capability_setup_manager",
+                None,
+            )
+            category = (
+                getattr(
+                    getattr(diagnosis, "category", None),
+                    "value",
+                    "",
+                )
+                .strip()
+                .lower()
+                if diagnosis is not None
+                else ""
+            )
+            if category == "setup_required" and setup_manager is not None:
+                provider = self._setup_provider_for_step(
+                    task,
+                    plan_step_id,
+                    result,
+                )
+                if provider and setup_manager.supports(provider):
+                    self.kernel.task_manager.pause(task.id)
+                    started = setup_manager.start(
+                        task,
+                        capability=provider,
+                        step_id=plan_step_id,
+                    )
+                    evidence["capability_setup"] = {
+                        "capability": provider,
+                        "started": bool(started),
+                        "step_id": plan_step_id,
+                    }
+                    if started:
+                        task.metadata["capability_setup"] = {
+                            "capability": provider,
+                            "step_id": plan_step_id,
+                            "status": "running",
+                        }
+                        self.kernel.task_manager.add_evidence(
+                            evidence,
+                            task.id,
+                        )
+                        self.event_bus.emit(
+                            "task_recovery_required",
+                            task_id=task.id,
+                            decision=decision.to_dict(),
+                            diagnosis=diagnosis.to_dict(),
+                        )
+                        return
+
+                    evidence["capability_setup"]["status"] = "unavailable"
+                    self.kernel.task_manager.add_evidence(
+                        evidence,
+                        task.id,
+                    )
+                    self.event_bus.emit(
+                        "task_recovery_required",
+                        task_id=task.id,
+                        decision=decision.to_dict(),
+                        diagnosis=diagnosis.to_dict(),
+                    )
+                    return
+
+            self.kernel.task_manager.add_evidence(
+                evidence,
+                task.id,
+            )
+            self.event_bus.emit(
+                "task_recovery_required",
+                task_id=task.id,
+                decision=decision.to_dict(),
+                diagnosis=diagnosis.to_dict() if diagnosis is not None else None,
+            )
+            self.kernel.task_manager.pause(task.id)
+            return
+
+        if decision.action.value == "replan":
+            replan_engine = getattr(self.kernel, "replan_engine", None)
+            if replan_engine is None or diagnosis is None:
+                self.kernel.task_manager.add_evidence(evidence, task.id)
+                self.kernel.task_manager.pause(task.id)
+                return
+
+            step = (
+                task.plan.get_step(plan_step_id)
+                if task.plan is not None and plan_step_id
+                else None
+            )
+            replan_decision = replan_engine.choose(
+                diagnosis,
+                plan_step=step,
+            )
+            evidence["replan"] = replan_decision.to_dict()
+            self.event_bus.emit(
+                "task_recovery_required",
+                task_id=task.id,
+                decision=decision.to_dict(),
+                diagnosis=diagnosis.to_dict(),
+            )
+            self.event_bus.emit(
+                "task_progress",
+                task_id=task.id,
+                phase="replanning",
+                text=(
+                    "I understand the problem. "
+                    "I’m trying a different way."
+                ),
+            )
+
+            attempts = int(task.metadata.get("replan_attempts", 0)) + 1
+            task.metadata["replan_attempts"] = attempts
+            max_replans = 3
+
+            if replan_decision.strategy.value == "wait_for_user":
+                self.kernel.task_manager.add_evidence(evidence, task.id)
+                self.event_bus.emit(
+                    "task_replan_required",
+                    task_id=task.id,
+                    decision=replan_decision.to_dict(),
+                )
+                self.kernel.task_manager.pause(task.id)
+                return
+
+            if replan_decision.strategy.value == "fail" or attempts > max_replans:
+                evidence["replan_guard"] = {
+                    "max_replans": max_replans,
+                    "attempt": attempts,
+                }
+                self.kernel.task_manager.add_evidence(evidence, task.id)
+                self.event_bus.emit(
+                    "task_replan_required",
+                    task_id=task.id,
+                    decision=replan_decision.to_dict(),
+                )
+                self.kernel.task_manager.fail(
+                    "Autonomous replanning exhausted its safe recovery budget.",
+                    task.id,
+                )
+                return
+
+            # Record the failed attempt first: the repair planner must
+            # see its output (a failing test's traceback, for example).
+            self.kernel.task_manager.add_evidence(evidence, task.id)
+            try:
+                new_plan = self.kernel.planner.replan(
+                    task,
+                    diagnosis,
+                    replan_decision.strategy,
+                )
+            except PlanningError as exc:
+                evidence["replan_error"] = str(exc)
+                if task.evidence and isinstance(task.evidence[-1], dict):
+                    task.evidence[-1]["replan_error"] = str(exc)
+                self.event_bus.emit(
+                    "task_replan_required",
+                    task_id=task.id,
+                    decision=replan_decision.to_dict(),
+                    error=str(exc),
+                )
+                self.kernel.task_manager.pause(task.id)
+                return
+
+            task.plan = new_plan
+            task.pending_steps = [step.description for step in new_plan.steps]
+            task.current_step = None
+            task.error = None
+            self.event_bus.emit(
+                "task_replanned",
+                task_id=task.id,
+                decision=replan_decision.to_dict(),
+                plan=new_plan.to_dict(),
+            )
+
+            # The task remains ACTIVE throughout an autonomous replan;
+            # only its structured plan is replaced.
+            task.plan.status = PlanStatus.ACTIVE
+            task.plan.mark_ready_steps()
+
+            next_step = self._next_ready_plan_step(task)
+            if next_step is None:
+                self.kernel.task_manager.fail(
+                    "Replanned task has no executable ready step.",
+                    task.id,
+                )
+                return
+
+            next_request = self.build_plan_request(task, next_step)
+            if next_request is None:
+                self.kernel.task_manager.fail(
+                    f"Unable to build a tool request for replanned step '{next_step.id}'.",
+                    task.id,
+                )
+                return
+
+            print(
+                f"[Tasks] Autonomous replan: {next_step.id} -> "
+                f"{next_request.tool}",
+                flush=True,
+            )
+            self.event_bus.emit("tool_request", request=next_request)
+            return
+
+        self.kernel.task_manager.add_evidence(evidence, task.id)
+        self.kernel.task_manager.fail(
+            result.error or "Tool execution failed.",
+            task.id,
+        )
+        return
+
 
     @staticmethod
     def _project_task_report(task) -> dict[str, Any]:
