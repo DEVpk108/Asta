@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from core.module import Module
 from core.contracts import ActionType, IntentType, IntentResult, ToolRequest, ToolResult
 from core.tools import ToolRequestBuilder
+from core.approval_language import classify_approval, normalize_confirmation_transcript
 
 from chat_history import ChatHistoryStore
 
@@ -1105,33 +1106,10 @@ class AIModule(Module):
 
         return False
 
-    _AFFIRMATIVE_WORDS = frozenset(
-        {"yes", "yeah", "yep", "yup", "confirm", "confirmed", "approve",
-         "approved", "proceed", "haan", "han", "ha", "हाँ", "हां", "हा"}
-    )
-    _NEGATIVE_WORDS = frozenset(
-        {"no", "not", "dont", "don't", "cancel", "stop", "reject", "never",
-         "wait", "nahi", "nahin", "mat", "नहीं", "नही", "मत"}
-    )
-
     @classmethod
     def _classify_short_approval(cls, compact):
-        """Return (approved, rejected) for short free-form answers.
-
-        Accepts e.g. "I just said yes", "yes please do it", "हाँ" while
-        requiring an explicit yes/confirm word and no negation, so filler
-        such as "okay" still cannot authorise anything.
-        """
-        words = re.findall(r"[\w'\u0900-\u097F]+", str(compact).lower())
-        if not words or len(words) > 10:
-            return False, False
-        has_yes = any(word in cls._AFFIRMATIVE_WORDS for word in words)
-        has_no = any(word in cls._NEGATIVE_WORDS for word in words)
-        if has_yes and not has_no:
-            return True, False
-        if has_no and not has_yes and len(words) <= 4:
-            return False, True
-        return False, False
+        """Use the same complete-utterance consent policy as voice input."""
+        return classify_approval(compact)
 
     def _handle_approval_response(self, text):
         manager = self.kernel.approval_manager
@@ -1160,7 +1138,7 @@ class AIModule(Module):
         background_pending = [item for item in pending
             if background is not None and background.owns(item.request.metadata.get("task_id"))]
         if background_pending:
-            compact = self._normalize_question(text).rstrip(" .!?;:")
+            compact = normalize_confirmation_transcript(text)
             explicit = {"approve coding step": True, "approve project step": True,
                         "reject coding step": False, "reject project step": False}
             if compact in explicit and len(pending) == 1:
@@ -1173,17 +1151,7 @@ class AIModule(Module):
             # Other chat does not silently approve or cancel background work.
             return False
 
-        normalized = self._normalize_question(text)
-        compact = normalized.rstrip(" .!?;:")
-
-        approved = compact in self._APPROVAL_CONFIRMATIONS
-        rejected = compact in self._APPROVAL_REJECTIONS
-        if compact in {"yeah go ahead", "sure go ahead", "okay go ahead", "okay do it"}:
-            approved = True
-        if compact in {"no thanks", "cancel it", "don't do it", "do not do it"}:
-            rejected = True
-        if not (approved or rejected):
-            approved, rejected = self._classify_short_approval(compact)
+        approved, rejected = classify_approval(text)
 
         if not (approved or rejected):
             # The user moved on to something else. Cancel the pending request

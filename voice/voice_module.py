@@ -9,6 +9,7 @@ from uuid import uuid4
 import numpy as np
 
 from core.module import Module
+from core.approval_language import normalize_confirmation_transcript
 
 from .microphone_engine import MicrophoneEngine
 from .wakeword_engine import WakeWordEngine
@@ -612,48 +613,8 @@ class VoiceModule(Module):
 
     @staticmethod
     def _normalize_confirmation_transcript(text):
-        """Canonicalize common short approval/rejection phrases.
-
-        Whisper may hear a natural reply such as "okay so", "yeah go ahead",
-        or "no thanks" when the user is answering a yes/no approval prompt.
-        During confirmation mode only, reduce these short replies to the
-        decision word so the deterministic approval handler can act on them.
-        """
-        normalized = " ".join(str(text).strip().lower().split())
-        normalized = normalized.rstrip(" .!?;:,")
-
-        aliases = {
-            "yes": ("yes", "yeah", "yep", "yup", "sure", "okay", "ok"),
-            "no": ("no", "nope", "nah"),
-            "cancel": ("cancel",),
-            "confirm": ("confirm", "confirmed"),
-        }
-
-        tokens = normalized.split()
-        if not tokens:
-            return text
-
-        first = tokens[0]
-        for canonical, variants in aliases.items():
-            if first in variants and len(tokens) <= 4:
-                print(
-                    f"[STT] Confirmation normalization: {text!r} -> {canonical!r}",
-                    flush=True,
-                )
-                return canonical
-
-        phrase_aliases = {
-            "go ahead": "go ahead",
-            "do it": "do it",
-            "proceed": "proceed",
-            "i confirm": "i confirm",
-            "yes proceed": "yes proceed",
-            "do not": "do not",
-        }
-        if normalized in phrase_aliases:
-            return phrase_aliases[normalized]
-
-        return text
+        """Preserve the full reply so the consent policy sees any negation."""
+        return normalize_confirmation_transcript(text)
 
     def _incremental_dispatch_loop(self):
         while True:
