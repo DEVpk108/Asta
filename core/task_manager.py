@@ -53,11 +53,14 @@ class TaskManager:
         with self._lock:
             self._tasks[task.id] = task
 
+            paused_snapshot = None
             if activate:
-                self._activate_locked(task)
+                paused_snapshot = self._activate_locked(task)
 
             snapshot = task.to_dict()
 
+        if paused_snapshot is not None:
+            self._emit("task_paused", task=paused_snapshot)
         self._emit("task_created", task=snapshot)
         if activate:
             self._emit("task_activated", task=snapshot)
@@ -91,9 +94,11 @@ class TaskManager:
     def activate(self, task_id: str) -> AgentTask:
         with self._lock:
             task = self._require(task_id)
-            self._activate_locked(task)
+            paused_snapshot = self._activate_locked(task)
             snapshot = task.to_dict()
 
+        if paused_snapshot is not None:
+            self._emit("task_paused", task=paused_snapshot)
         self._emit("task_activated", task=snapshot)
         return task
 
@@ -111,11 +116,13 @@ class TaskManager:
     def resume(self, task_id: str | None = None) -> AgentTask:
         with self._lock:
             task = self._require(task_id or self._active_task_id)
-            self._activate_locked(task)
+            paused_snapshot = self._activate_locked(task)
             if task.status != TaskStatus.ACTIVE:
                 task.resume()
             snapshot = task.to_dict()
 
+        if paused_snapshot is not None:
+            self._emit("task_paused", task=paused_snapshot)
         self._emit("task_resumed", task=snapshot)
         return task
 
@@ -218,19 +225,34 @@ class TaskManager:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _activate_locked(self, task: AgentTask) -> None:
+    def _activate_locked(self, task: AgentTask) -> dict[str, Any] | None:
+        """Commit the switch under the lock; return any deferred pause event.
+
+        Never call subscribers here: a subscriber may hold another component's
+        lock while querying this manager from a second thread.
+        """
+        # An invalid target must not pause the valid current task first.
+        if task.status in {
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        }:
+            raise ValueError(f"cannot activate task in {task.status.value} state")
+
+        paused_snapshot = None
         previous_id = self._active_task_id
         if previous_id and previous_id != task.id:
             previous = self._tasks.get(previous_id)
             if previous and previous.status == TaskStatus.ACTIVE:
                 previous.pause()
-                self._emit("task_paused", task=previous.to_dict())
+                paused_snapshot = previous.to_dict()
 
         if task.status == TaskStatus.PAUSED:
             task.resume()
         else:
             task.activate()
         self._active_task_id = task.id
+        return paused_snapshot
 
     def _require(self, task_id: str | None) -> AgentTask:
         if not task_id:
