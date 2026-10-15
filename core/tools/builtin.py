@@ -84,7 +84,7 @@ class StopProcessTool(Tool):
     @property
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
-            name="system.stop_process", description="Terminate a local process by PID.",
+            name="system.stop_process", description="Terminate a local process by PID, including its child processes on Windows.",
             input_schema={"type": "object", "properties": {"target": {"type": "string", "pattern": "^[1-9][0-9]*$"}}, "required": ["target"]},
             risk_level="high", metadata={"actions": ["stop"], "category": "system"},
         )
@@ -99,7 +99,13 @@ class StopProcessTool(Tool):
         except ValueError:
             return _result(request, False, error="Argument 'target' must be a positive process ID.", start=start)
         try:
-            os.kill(pid, signal.SIGTERM)
+            if platform.system() == "Windows":
+                completed = subprocess.run(["taskkill", "/PID", str(pid), "/T"],
+                    capture_output=True, text=True, timeout=15, shell=False)
+                if completed.returncode != 0:
+                    return _result(request, False, error=f"Could not stop process tree {pid}: {(completed.stderr or completed.stdout or '').strip()[:500]}", start=start)
+            else:
+                os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             return _result(request, False, error=f"Process not found: {pid}", start=start)
         except PermissionError:
@@ -182,6 +188,9 @@ class CloseApplicationTool(Tool):
                 )
 
                 def resolve_roots():
+                    invalidate = getattr(self.application_manager, "invalidate_process_cache", None)
+                    if callable(invalidate):
+                        invalidate()
                     if callable(root_resolver):
                         return tuple(root_resolver(resolved_target, limit=64))
                     if callable(single_resolver):

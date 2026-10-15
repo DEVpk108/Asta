@@ -151,6 +151,8 @@ def _stop_hud():
 
 
 def main():
+    from core.logging_setup import configure_logging
+    configure_logging()
     # Start the presentation shell before importing modules that load heavy
     # local models (Whisper, wake-word, etc.). This keeps HUD boot independent
     # from backend model initialization time.

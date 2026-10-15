@@ -1,2 +1,2 @@
-# Optional browser automation for autonomous capability setup.
-playwright>=1.40,<2
+# Compatibility entry point; run from repository root.
+-e .[browser]

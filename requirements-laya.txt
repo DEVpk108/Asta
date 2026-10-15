@@ -1,5 +1,2 @@
-# Optional A.S.T.A. System 1 decision layer
-#
-# Laya is intentionally optional so the base runtime does not load an
-# additional Transformer checkpoint unless ASTA_DECISION_ENGINE=laya is used.
-laya>=0.3.5,<0.4
+# Compatibility entry point; run from repository root.
+-e .[laya]

@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import time
+import threading
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -43,9 +44,13 @@ class ApplicationResolutionError(RuntimeError):
 class ApplicationManager:
     """Generic Windows application discovery; no per-app aliases."""
 
-    def __init__(self, *, refresh_interval_seconds=300.0, powershell_runner=None):
+    def __init__(self, *, refresh_interval_seconds=300.0, powershell_runner=None, process_cache_seconds=0.5):
         self.refresh_interval_seconds = max(0.0, float(refresh_interval_seconds))
         self._powershell_runner = powershell_runner or _run_powershell
+        self._process_cache_seconds = max(0.0, float(process_cache_seconds))
+        self._process_lock = threading.RLock()
+        self._process_cache = None
+        self._process_cache_at = 0.0
         self._applications: tuple[ApplicationRecord, ...] = ()
         self._last_refresh = 0.0
         self._last_error: str | None = None
@@ -243,7 +248,21 @@ class ApplicationManager:
 
         return matches[0]
 
+    def invalidate_process_cache(self):
+        with self._process_lock:
+            self._process_cache = None
+
     def _discover_windows_processes(self):
+        with self._process_lock:
+            if (self._process_cache is not None and
+                    time.monotonic() - self._process_cache_at < self._process_cache_seconds):
+                return list(self._process_cache)
+            records = self._query_windows_processes()
+            self._process_cache = tuple(records)
+            self._process_cache_at = time.monotonic()
+            return list(records)
+
+    def _query_windows_processes(self):
         output = self._powershell_runner(
             "$windowTitles = @{}; "
             "Get-Process | ForEach-Object { "
@@ -512,28 +531,18 @@ def _score_running_process(query: str, process: RunningProcessRecord) -> float:
 
 
 def _dedupe(records):
-    result = []
-    seen_names = set()
+    by_name = {}
     seen_targets = set()
-
     for app in records:
-        key = app.normalized_name
-        target = app.launch_target.lower()
+        key, target = app.normalized_name, app.launch_target.lower()
         if (key, target) in seen_targets:
             continue
         seen_targets.add((key, target))
-
-        if key in seen_names:
-            existing = next(x for x in result if x.normalized_name == key)
-            if existing.provider == "windows.start_apps" and app.provider != "windows.start_apps":
-                continue
-            result.remove(existing)
-
-        seen_names.add(key)
-        result.append(app)
-
-    result.sort(key=lambda x: x.name.lower())
-    return tuple(result)
+        existing = by_name.get(key)
+        if existing is not None and existing.provider == "windows.start_apps" and app.provider != "windows.start_apps":
+            continue
+        by_name[key] = app
+    return tuple(sorted(by_name.values(), key=lambda app: app.name.lower()))
 
 
 def _run_powershell(command: str) -> str:

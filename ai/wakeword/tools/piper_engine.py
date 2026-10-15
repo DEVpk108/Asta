@@ -9,6 +9,7 @@ Responsibilities:
     - Generate speech from text
 """
 
+from ai.wakeword.audio_contract import normalize_wav
 from pathlib import Path
 import shutil
 import subprocess
@@ -101,6 +102,7 @@ class PiperEngine:
                 "Piper completed but output file was not created."
             )
 
+        normalize_wav(output_path)
         return output_path
 
     def version(self) -> str:

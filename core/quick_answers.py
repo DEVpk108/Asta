@@ -6,7 +6,9 @@ parsed and computed locally in microseconds.
 
 from __future__ import annotations
 
+import ast
 import math
+import operator
 import re
 
 _UNITS = {
@@ -39,6 +41,10 @@ _LEAD = re.compile(
 def _number(tokens: list[str]) -> float | None:
     if not tokens:
         return None
+    if tokens[0] in {"negative", "minus", "-", "+", "positive"}:
+        sign = -1 if tokens[0] in {"negative", "minus", "-"} else 1
+        value = _number(tokens[1:])
+        return None if value is None else sign * value
     if len(tokens) == 1:
         try:
             return float(tokens[0].replace(",", ""))
@@ -83,19 +89,44 @@ def _format(value: float) -> str:
     return f"{value:.4f}".rstrip("0").rstrip(".")
 
 
+def _evaluate_arithmetic(expression):
+    """Evaluate only bounded arithmetic AST nodes, never Python eval()."""
+    tree = ast.parse(expression, mode="eval")
+    if sum(1 for _ in ast.walk(tree)) > 64:
+        raise ValueError("expression too large")
+    binary = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+              ast.Div: operator.truediv, ast.Mod: operator.mod, ast.Pow: operator.pow}
+    def visit(node):
+        if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+            value = node.value
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            value = visit(node.operand) * (-1 if isinstance(node.op, ast.USub) else 1)
+        elif isinstance(node, ast.BinOp) and type(node.op) in binary:
+            left, right = visit(node.left), visit(node.right)
+            if isinstance(node.op, ast.Pow) and abs(right) > 64:
+                raise ValueError("exponent too large")
+            value = binary[type(node.op)](left, right)
+        else:
+            raise ValueError("not arithmetic")
+        if type(value) not in (int, float) or not math.isfinite(value) or abs(value) > 1e15:
+            raise ValueError("result outside bounds")
+        return value
+    return visit(tree.body)
+
+
 def quick_math(text: str) -> str | None:
     """Answer simple spoken arithmetic, or None."""
     value = str(text or "").strip().lower().rstrip("?.! ")
     value = _LEAD.sub("", value).strip()
     root = re.fullmatch(r"(?:the\s+)?(square|cube)\s+root\s+of\s+(.+)", value)
     if root:
-        radicand = _number(root.group(2).replace("-", " ").split())
+        radicand = _number(root.group(2).split())
         if radicand is None or (root.group(1) == "square" and radicand < 0):
             return None
         if root.group(1) == "square":
             result = math.sqrt(radicand)
         else:
-            result = round(radicand ** (1 / 3), 9)
+            result = math.copysign(round(abs(radicand) ** (1 / 3), 9), radicand)
         return f"That's {_format(result)}."
     value = re.sub(r"(\d)\s*([+\-*/×÷^%x])\s*(\d)", r"\1 \2 \3", value)
     value = re.sub(r"\bsquared\b", "** 2", value)
@@ -125,7 +156,7 @@ def quick_math(text: str) -> str | None:
             parsed = _number(number)
             if parsed is None:
                 return None
-            expression.append(repr(parsed))
+            expression.append(f"({parsed!r})")
             expression.append(matched[0])
             pieces.append(" ".join(number))
             number = []
@@ -136,17 +167,14 @@ def quick_math(text: str) -> str | None:
     parsed = _number(number)
     if parsed is None or len(expression) < 2:
         return None
-    expression.append(repr(parsed))
+    expression.append(f"({parsed!r})")
     if len(expression) > 15:
         return None
-    for index, token in enumerate(expression):
-        if token == "**" and abs(float(expression[index + 1])) > 64:
-            return None
     try:
-        result = eval(" ".join(expression), {"__builtins__": {}}, {})  # noqa: S307 - digits and operators only
-    except (ZeroDivisionError, OverflowError):
+        result = _evaluate_arithmetic(" ".join(expression))
+    except ZeroDivisionError:
         return "That can't be calculated, because it divides by zero."
-    except Exception:
+    except (ValueError, OverflowError, SyntaxError, TypeError):
         return None
     if not isinstance(result, (int, float)) or abs(result) > 1e15:
         return None

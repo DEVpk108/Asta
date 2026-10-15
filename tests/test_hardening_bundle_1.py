@@ -211,7 +211,7 @@ def voice_methods():
     tree=ast.parse(Path('voice/voice_module.py').read_text(encoding='utf-8'))
     cls=next(node for node in tree.body if isinstance(node,ast.ClassDef) and node.name=='VoiceModule')
     methods=[node for node in cls.body if isinstance(node,ast.FunctionDef) and node.name in {'_can_listen','on_conversation_mode_set'}]
-    namespace={'time':SimpleNamespace(monotonic=lambda:10.)}
+    namespace={'time':SimpleNamespace(monotonic=lambda:10.), 'logger':__import__('logging').getLogger('voice.voice_module')}
     exec(compile(ast.Module(body=methods,type_ignores=[]),'<native-voice-owners>','exec'),namespace)
     return namespace
 

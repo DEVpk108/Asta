@@ -1,5 +1,2 @@
-# AI4Bharat IndicConformer-600M-Multi
-transformers
-torchaudio
-onnx
-onnxruntime
+# Compatibility entry point; run from repository root.
+-e .[indic]

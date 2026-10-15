@@ -27,6 +27,7 @@ Current expected source counts:
 
 from __future__ import annotations
 
+from ai.wakeword.audio_contract import WAKEWORD_SAMPLE_RATE
 import csv
 import hashlib
 import shutil
@@ -112,7 +113,7 @@ REPORT_FILE = (
 # AUDIO EXPECTATIONS
 # ============================================================
 
-EXPECTED_SAMPLE_RATE = 22050
+EXPECTED_SAMPLE_RATE = WAKEWORD_SAMPLE_RATE
 EXPECTED_CHANNELS = 1
 EXPECTED_SAMPLE_WIDTH = 2
 

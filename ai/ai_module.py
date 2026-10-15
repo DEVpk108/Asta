@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import time
@@ -44,6 +45,8 @@ def _language_policy() -> str:
         "Asking to play, open, or search something is a request, not a result: never say you are "
         "playing or opening something unless a tool result confirms it.\n\n"
     )
+
+logger = logging.getLogger(__name__)
 
 class AIModule(Module):
 
@@ -150,7 +153,7 @@ class AIModule(Module):
         self._post_response_capture = PostResponseCapture(self.event_bus)
 
     def initialize(self):
-        print("[AI] Initializing...", flush=True)
+        logger.info("[AI] Initializing...")
         self._ground_engine_in_capabilities()
         self.chat_history.initialize()
 
@@ -175,7 +178,7 @@ class AIModule(Module):
             self.on_tool_confirmation_required,
         )
         self.event_bus.subscribe("tool_confirmation_response", self.on_tool_confirmation_answered)
-        print("[AI] Ready", flush=True)
+        logger.info("[AI] Ready")
 
     def shutdown(self):
         capture = getattr(self, "_post_response_capture", None)
@@ -206,7 +209,7 @@ class AIModule(Module):
         if callable(decision_shutdown):
             decision_shutdown()
 
-        print("[AI] Stopped", flush=True)
+        logger.info("[AI] Stopped")
 
     def _registered_tool_names(self):
         try:
@@ -292,11 +295,8 @@ class AIModule(Module):
         if session_id:
             intent = self.kernel.intent_router.analyze(text)
             if intent.intent == IntentType.COMMAND:
-                print(
-                    "[AI] Incremental command already owned by TaskRuntime: "
-                    f"{text!r}",
-                    flush=True,
-                )
+                logger.info("[AI] Incremental command already owned by TaskRuntime: "
+                    f"{text!r}")
                 return
         self.on_user_message(text)
 
@@ -304,7 +304,7 @@ class AIModule(Module):
         if not text:
             return
         self._cancel_post_response_capture()
-        print(f"[AI] User: {text}", flush=True)
+        logger.info(f"[AI] User: {text}")
         self._current_user_text = str(text)
 
         if self._handle_approval_response(text):
@@ -335,24 +335,24 @@ class AIModule(Module):
             return
 
         if self._is_presentation_request(text):
-            print("[AI] Presentation mode", flush=True)
+            logger.info("[AI] Presentation mode")
             self._present_to_teacher()
             return
 
         if self._is_creator_identity_question(text):
-            print("[AI] Creator identity response", flush=True)
+            logger.info("[AI] Creator identity response")
             self._emit_assistant_text("I was created by Mr. PRASANT KUMAR.")
             return
 
         quick = quick_math(text)
         if quick:
-            print(f"[AI] System 1 quick answer: {quick}", flush=True)
+            logger.info(f"[AI] System 1 quick answer: {quick}")
             self._emit_assistant_text(quick)
             return
 
         file_reply = unsupported_file_action(text, self._registered_tool_names())
         if file_reply:
-            print("[AI] No file tool registered; answering honestly", flush=True)
+            logger.info("[AI] No file tool registered; answering honestly")
             self._emit_assistant_text(file_reply)
             return
 
@@ -364,7 +364,7 @@ class AIModule(Module):
             if work is not None:
                 # "Okay" right after "Playing Baithi Hai": the LLM used to answer
                 # "Okay, I'll play Baithi Hai" -- a promise of an action that never runs.
-                print(f"[AI] Acknowledgement after recent work ({work.goal}); staying quiet.", flush=True)
+                logger.info(f"[AI] Acknowledgement after recent work ({work.goal}); staying quiet.")
                 return
 
         if self._is_unknown_name_question(text):
@@ -377,7 +377,7 @@ class AIModule(Module):
         if intent_hint.intent in {IntentType.UNKNOWN, IntentType.CONVERSATION}:
             followup = project_followup.followup_intent(text, getattr(self.kernel, "task_manager", None))
             if followup is not None:
-                print(f"[AI] Follow-up to the last project task: {followup.normalized_text}", flush=True)
+                logger.info(f"[AI] Follow-up to the last project task: {followup.normalized_text}")
                 intent_hint = followup
         if intent_hint.intent in {IntentType.UNKNOWN, IntentType.CONVERSATION}:
             understood = self._understand_project_request(text)
@@ -397,16 +397,13 @@ class AIModule(Module):
 
         context_response = self._context_response(text)
         if context_response is not None:
-            print("[AI] Answering from recent chat context.", flush=True)
+            logger.info("[AI] Answering from recent chat context.")
             self._emit_assistant_text(context_response)
             return
 
         result: IntentResult = intent_hint
-        print(
-            f"[AI] Intent: {result.intent.value} "
-            f"(confidence={result.confidence:.2f}, classifier={result.classifier})",
-            flush=True,
-        )
+        logger.info(f"[AI] Intent: {result.intent.value} "
+            f"(confidence={result.confidence:.2f}, classifier={result.classifier})")
         if result.intent == IntentType.COMMAND:
             self._handle_command_intent(result)
             return
@@ -499,12 +496,9 @@ class AIModule(Module):
         project = str(snapshot.get("project_name") or "") or re.split(r"[\\/]", project_path.rstrip("\\/"))[-1]
         started = time.perf_counter()
         decision = talk.decide(text, complete, project=project, files=files, recent_task=recent, history=history)
-        print(
-            f"[AI] Project conversation: {decision.action if decision else 'unparsed'}"
+        logger.info(f"[AI] Project conversation: {decision.action if decision else 'unparsed'}"
             f" goal={getattr(decision, 'goal', '')!r} question={getattr(decision, 'question', '')!r}"
-            f" ({time.perf_counter() - started:.2f}s)",
-            flush=True,
-        )
+            f" ({time.perf_counter() - started:.2f}s)")
         if decision is None or decision.action == "none":
             return None
         if decision.action == "ask":
@@ -531,7 +525,7 @@ class AIModule(Module):
         if understood is None:
             return False
         if understood is not True:
-            print(f"[AI] Intent: task (classifier=project_conversation)", flush=True)
+            logger.info(f"[AI] Intent: task (classifier=project_conversation)")
             self._start_project_task(text, understood)
         return True
 
@@ -545,7 +539,7 @@ class AIModule(Module):
         if status:
             if work is None:
                 return False  # nothing of ours to explain; let the LLM answer
-            print(f"[AI] Explaining recent work: {work.goal} ({work.status})", flush=True)
+            logger.info(f"[AI] Explaining recent work: {work.goal} ({work.status})")
             self._emit_assistant_text(work_awareness.describe(work))
             return True
         if work is None:
@@ -567,7 +561,7 @@ class AIModule(Module):
             self._retried_goal = None
             return True
         self._retried_goal = work.goal
-        print(f"[AI] Retrying recent task: {work.goal} (was {work.status})", flush=True)
+        logger.info(f"[AI] Retrying recent task: {work.goal} (was {work.status})")
         self.on_user_message(work.goal)
         return True
 
@@ -599,12 +593,9 @@ class AIModule(Module):
             last_app = str(getattr(recent, "name", recent) or "")
             started = time.perf_counter()
             resolution = intent_resolver.resolve_with_llm(text, complete, work=work, last_app=last_app)
-            print(
-                f"[AI] LLM intent: {resolution.action if resolution else 'unparsed'}"
+            logger.info(f"[AI] LLM intent: {resolution.action if resolution else 'unparsed'}"
                 f" query={getattr(resolution, 'query', '')!r} app={getattr(resolution, 'app', '')!r}"
-                f" ({time.perf_counter() - started:.2f}s)",
-                flush=True,
-            )
+                f" ({time.perf_counter() - started:.2f}s)")
             if resolution is None or resolution.action == "none":
                 return None
             if resolution.action == "retry":
@@ -625,7 +616,7 @@ class AIModule(Module):
             goal = f"play {entities['query']} from the screen in {where}"
         else:
             goal = " ".join(str(text).strip().lower().split())
-        print(f"[AI] Understood from context ({classifier}): {entities}", flush=True)
+        logger.info(f"[AI] Understood from context ({classifier}): {entities}")
         return IntentResult(
             intent=IntentType.COMMAND,
             confidence=0.85,
@@ -762,11 +753,8 @@ class AIModule(Module):
             if provider:
                 entities["provider"] = provider
 
-            print(
-                "[AI] Recovered media command from recent task context: "
-                f"{operation} {query} (match={match_score:.2f})",
-                flush=True,
-            )
+            logger.info("[AI] Recovered media command from recent task context: "
+                f"{operation} {query} (match={match_score:.2f})")
             return IntentResult(
                 intent=IntentType.COMMAND,
                 confidence=max(0.80, min(0.98, match_score)),
@@ -809,11 +797,8 @@ class AIModule(Module):
             and intent_hint.confidence >= 0.95
             and "commands" not in intent_hint.entities
         ):
-            print(
-                "[AI] System 1 fast-path: deterministic direct command; "
-                "Laya not blocking execution.",
-                flush=True,
-            )
+            logger.info("[AI] System 1 fast-path: deterministic direct command; "
+                "Laya not blocking execution.")
             return
 
         should_try_action = (
@@ -897,23 +882,17 @@ class AIModule(Module):
                     media_providers=media_providers,
                 )
             except Exception as exc:
-                print(
-                    f"[AI] System 1 action decision unavailable: "
-                    f"{type(exc).__name__}: {exc}",
-                    flush=True,
-                )
+                logger.warning(f"[AI] System 1 action decision unavailable: "
+                    f"{type(exc).__name__}: {exc}")
             else:
-                print(
-                    f"[AI] System 1 Action: "
+                logger.info(f"[AI] System 1 Action: "
                     f"action={action_decision.action.value} "
                     f"target={action_decision.arguments.get('target_app', 'none')} "
                     f"confidence={action_decision.confidence:.2f} "
                     f"addressed={action_decision.addressed:.2f} "
                     f"complete={action_decision.command_complete} "
                     f"compound={action_decision.compound} "
-                    f"latency={action_decision.latency_ms:.1f}ms",
-                    flush=True,
-                )
+                    f"latency={action_decision.latency_ms:.1f}ms")
                 self.event_bus.emit(
                     "action_decision",
                     decision=action_decision,
@@ -944,11 +923,8 @@ class AIModule(Module):
                         requires_tools=True,
                         classifier="laya_system1",
                     )
-                    print(
-                        "[AI] System 1 recovered a media command; "
-                        "routing through the normal ToolSelector/Authority path.",
-                        flush=True,
-                    )
+                    logger.info("[AI] System 1 recovered a media command; "
+                        "routing through the normal ToolSelector/Authority path.")
                     self._handle_command_intent(media_intent)
                     return True
 
@@ -982,11 +958,8 @@ class AIModule(Module):
                         requires_tools=True,
                         classifier="laya_system1",
                     )
-                    print(
-                        f"[AI] System 1 recovered an application command: "
-                        f"{app_intent.entities['action']} {target_app}",
-                        flush=True,
-                    )
+                    logger.info(f"[AI] System 1 recovered an application command: "
+                        f"{app_intent.entities['action']} {target_app}")
                     self._handle_command_intent(app_intent)
                     return True
 
@@ -995,22 +968,16 @@ class AIModule(Module):
         try:
             snapshot = engine.analyze(text)
         except Exception as exc:
-            print(
-                f"[AI] System 1 decision unavailable: "
-                f"{type(exc).__name__}: {exc}",
-                flush=True,
-            )
+            logger.warning(f"[AI] System 1 decision unavailable: "
+                f"{type(exc).__name__}: {exc}")
             return
 
         if snapshot.engine == "disabled":
             return False
 
-        print(
-            f"[AI] System 1: engine={snapshot.engine} "
+        logger.info(f"[AI] System 1: engine={snapshot.engine} "
             f"model={snapshot.model or 'unknown'} "
-            f"latency={snapshot.latency_ms:.1f}ms",
-            flush=True,
-        )
+            f"latency={snapshot.latency_ms:.1f}ms")
         self.event_bus.emit("decision_result", decision=snapshot)
         return False
 
@@ -1157,11 +1124,8 @@ class AIModule(Module):
         list_expired = getattr(manager, "list_expired", None)
         if callable(list_expired):
             for stale in list_expired():
-                print(
-                    "[AI] Approval expired "
-                    f"(request_id={stale.request.request_id})",
-                    flush=True,
-                )
+                logger.info("[AI] Approval expired "
+                    f"(request_id={stale.request.request_id})")
                 self.event_bus.emit(
                     "tool_confirmation_response",
                     request_id=stale.request.request_id,
@@ -1195,11 +1159,8 @@ class AIModule(Module):
             # The user moved on to something else. Cancel the pending request
             # instead of leaving it armed for an unrelated future "yes".
             for item in pending:
-                print(
-                    "[AI] Approval superseded by a new request "
-                    f"(request_id={item.request.request_id})",
-                    flush=True,
-                )
+                logger.info("[AI] Approval superseded by a new request "
+                    f"(request_id={item.request.request_id})")
                 self.event_bus.emit(
                     "tool_confirmation_response",
                     request_id=item.request.request_id,
@@ -1218,11 +1179,8 @@ class AIModule(Module):
             )
 
         request = ordered[-1].request
-        print(
-            f"[AI] Approval response: {'approved' if approved else 'rejected'} "
-            f"(request_id={request.request_id})",
-            flush=True,
-        )
+        logger.info(f"[AI] Approval response: {'approved' if approved else 'rejected'} "
+            f"(request_id={request.request_id})")
         self.event_bus.emit(
             "tool_confirmation_response",
             request_id=request.request_id,
@@ -1268,11 +1226,8 @@ class AIModule(Module):
             "starting and stopping processes, running commands, capturing screenshots, and controlling audio such as mute and unmute."
         )
         if tool_names:
-            print(
-                "[AI] Presentation mode using registered tools: "
-                + ", ".join(tool_names),
-                flush=True,
-            )
+            logger.info("[AI] Presentation mode using registered tools: "
+                + ", ".join(tool_names))
 
         presentation = [
             "Hello Sir. I’m A.S.T.A., a local-first AI engineering assistant created by Mr. PRASANT KUMAR.",
@@ -1334,11 +1289,8 @@ class AIModule(Module):
     def _handle_command_intent(self, intent: IntentResult):
         planned_request = self._planned_request_for_intent(intent)
         if planned_request is not None:
-            print(
-                f"[AI] Executing planned step: {planned_request.tool} "
-                f"(request_id={planned_request.request_id})",
-                flush=True,
-            )
+            logger.info(f"[AI] Executing planned step: {planned_request.tool} "
+                f"(request_id={planned_request.request_id})")
             self.event_bus.emit("tool_request", request=planned_request)
             return
 
@@ -1382,16 +1334,13 @@ class AIModule(Module):
         try:
             request = self.tool_request_builder.build(intent)
         except ValueError as exc:
-            print(f"[AI] Unable to build tool request: {exc}", flush=True)
+            logger.info(f"[AI] Unable to build tool request: {exc}")
             self._emit_assistant_text(
                 f"I couldn't map that command to an available tool: {exc}"
             )
             return
-        print(
-            f"[AI] Selected tool: {request.tool} "
-            f"(request_id={request.request_id})",
-            flush=True,
-        )
+        logger.info(f"[AI] Selected tool: {request.tool} "
+            f"(request_id={request.request_id})")
         self.event_bus.emit("tool_request", request=request)
 
     def _planned_request_for_intent(self, intent: IntentResult):
@@ -1449,7 +1398,7 @@ class AIModule(Module):
         try:
             request = self.tool_request_builder.build(first_intent)
         except ValueError as exc:
-            print(f"[AI] Unable to build compound command: {exc}", flush=True)
+            logger.info(f"[AI] Unable to build compound command: {exc}")
             self._emit_assistant_text(
                 f"I couldn't map that command to an available tool: {exc}"
             )
@@ -1458,12 +1407,9 @@ class AIModule(Module):
         request.metadata["sequence"] = [dict(command) for command in commands]
         request.metadata["sequence_index"] = 0
 
-        print(f"[AI] Compound command: {len(commands)} step(s)", flush=True)
-        print(
-            f"[AI] Selected tool: {request.tool} "
-            f"(request_id={request.request_id}, step=1/{len(commands)})",
-            flush=True,
-        )
+        logger.info(f"[AI] Compound command: {len(commands)} step(s)")
+        logger.info(f"[AI] Selected tool: {request.tool} "
+            f"(request_id={request.request_id}, step=1/{len(commands)})")
         self.event_bus.emit("tool_request", request=request)
 
     def on_task_failed(self, task=None, *args, **kwargs):
@@ -1496,7 +1442,7 @@ class AIModule(Module):
         ):
             # Sandbox repair results say what was checked and what to do.
             message = error
-        print(f"[AI] Task failed: {goal or message}", flush=True)
+        logger.warning(f"[AI] Task failed: {goal or message}")
         self._emit_assistant_text(message)
 
     _SIDE_MEDIA_OPERATIONS = frozenset({"pause", "play", "toggle", "next", "previous", "stop"})
@@ -1533,11 +1479,8 @@ class AIModule(Module):
             metadata={"action": "media", "side_action": True},
         )
         result = self.kernel.tool_dispatcher.dispatch(request)
-        print(
-            f"[AI] Media control during project task: {operation} -> "
-            f"{'ok' if result.success else result.error}",
-            flush=True,
-        )
+        logger.info(f"[AI] Media control during project task: {operation} -> "
+            f"{'ok' if result.success else result.error}")
         if result.success:
             self._emit_assistant_text(self._format_tool_success(result))
         else:
@@ -1570,7 +1513,7 @@ class AIModule(Module):
         in_background = background is not None and background.owns(request.metadata.get("task_id"))
         if in_background:
             text += " Use the approval button, or say approve coding step or reject coding step."
-        print(f"[AI] Approval required: {reason}", flush=True)
+        logger.info(f"[AI] Approval required: {reason}")
         spoken = self._spoken_approval(request, in_background) or None
         questions = getattr(self, "_approval_questions", None)
         if questions is None:
@@ -1653,7 +1596,7 @@ class AIModule(Module):
         now = time.monotonic()
         last = getattr(self, "_last_assistant_emit", None)
         if last is not None and last[0] == text and now - last[1] < 5.0:
-            print(f"[AI] Suppressed repeated message: {text}", flush=True)
+            logger.info(f"[AI] Suppressed repeated message: {text}")
             return
         self._last_assistant_emit = (text, now)
         if spoken is not None and spoken != text:
@@ -1722,10 +1665,7 @@ class AIModule(Module):
                 intent = self.kernel.intent_router.analyze(text)
                 context = builder.build_prompt(text, intent)
         except Exception as exc:  # context enrichment must not break chat
-            print(
-                f"[Context] Failed to build runtime context: {type(exc).__name__}: {exc}",
-                flush=True,
-            )
+            logger.warning(f"[Context] Failed to build runtime context: {type(exc).__name__}: {exc}")
             context = None
         return context
 
@@ -1748,7 +1688,7 @@ class AIModule(Module):
         if not still_current():
             return None
         if not response:
-            print("[AI] No response generated.", flush=True)
+            logger.info("[AI] No response generated.")
             return
         # Tool-call markup is routed (allowlisted) or dropped, never shown.
         contained_tool_markup = looks_like_tool_markup(response)

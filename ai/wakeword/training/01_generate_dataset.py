@@ -6,9 +6,7 @@ def main():
     generator = PiperGenerator()
 
     generator.generate(
-        phrases=[
-            "Asta"
-        ],
+        phrases=None,
         samples_per_phrase=1000,
         overwrite=False,
     )

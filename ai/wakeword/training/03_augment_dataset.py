@@ -7,6 +7,7 @@ clean ASTA dataset.
 Author: ASTA
 """
 
+from ai.wakeword.audio_contract import WAKEWORD_SAMPLE_RATE
 from pathlib import Path
 import csv
 import random
@@ -41,7 +42,7 @@ AUGMENTED_MANIFEST = (
 
 TARGET_AUGMENTED_SAMPLES = 5000
 
-SAMPLE_RATE = 22050
+SAMPLE_RATE = WAKEWORD_SAMPLE_RATE
 
 # Maximum gain change.
 MIN_GAIN_DB = -4.0

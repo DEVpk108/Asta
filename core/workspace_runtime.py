@@ -5,6 +5,7 @@ import platform
 import subprocess
 import sys
 import logging
+import threading
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -25,6 +26,8 @@ class WorkspaceRuntimeModule(Module):
             kernel=kernel,
         )
         self.state_store = WorkspaceStateStore(state_path)
+        self._persist_lock = threading.RLock()
+        self._last_persisted = None
 
     def initialize(self):
         self._restore_workspace()
@@ -57,7 +60,12 @@ class WorkspaceRuntimeModule(Module):
         if not isinstance(workspace, dict):
             return
         try:
-            self.state_store.save(workspace)
+            with self._persist_lock:
+                cleaned = self.state_store._clean(workspace)
+                if cleaned == self._last_persisted:
+                    return
+                self.state_store.save(workspace)
+                self._last_persisted = cleaned
         except (OSError, ValueError, TypeError):
             logger.exception("Could not persist the workspace context.")
 

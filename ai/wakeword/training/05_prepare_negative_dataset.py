@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai.wakeword.audio_contract import WAKEWORD_SAMPLE_RATE
 import csv
 import hashlib
 import io
@@ -20,7 +21,7 @@ from tqdm import tqdm
 # ASTA LIBRISPEECH ENGLISH NEGATIVE DATASET
 # ============================================================
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 GENERATED_ROOT = PROJECT_ROOT / "ai" / "wakeword" / "generated"
 
@@ -38,7 +39,7 @@ DEV_CLEAN_URL = "https://www.openslr.org/resources/12/dev-clean.tar.gz"
 DEV_OTHER_URL = "https://www.openslr.org/resources/12/dev-other.tar.gz"
 
 TARGET_TOTAL = 3000
-TARGET_SAMPLE_RATE = 22050
+TARGET_SAMPLE_RATE = WAKEWORD_SAMPLE_RATE
 
 MIN_DURATION = 0.5
 MAX_DURATION = 10.0

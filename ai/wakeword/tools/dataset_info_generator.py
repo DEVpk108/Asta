@@ -1,3 +1,4 @@
+from ai.wakeword.audio_contract import WAKEWORD_SAMPLE_RATE
 from pathlib import Path
 import json
 import wave
@@ -98,7 +99,7 @@ def main():
 
         "audio_format": {
 
-            "sample_rate": 16000,
+            "sample_rate": WAKEWORD_SAMPLE_RATE,
 
             "channels": 1,
 

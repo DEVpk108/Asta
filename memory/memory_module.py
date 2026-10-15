@@ -4,6 +4,8 @@ MemPalace is the first backend. The module owns the integration boundary so the
 rest of A.S.T.A. does not depend directly on MemPalace APIs.
 """
 
+import logging
+
 import queue
 import threading
 
@@ -11,6 +13,8 @@ from core.module import Module
 
 from .mempalace_adapter import MemPalaceAdapter
 
+
+logger = logging.getLogger(__name__)
 
 class MemoryModule(Module):
     """Persist conversation memory and prepare relevant recall context."""
@@ -41,7 +45,7 @@ class MemoryModule(Module):
                         return
                     self._remember(*item)
                 except Exception as exc:
-                    print(f"[Memory] Write failed: {type(exc).__name__}: {exc}", flush=True)
+                    logger.warning(f"[Memory] Write failed: {type(exc).__name__}: {exc}")
                 finally:
                     self._write_queue.task_done()
         finally:
@@ -66,7 +70,7 @@ class MemoryModule(Module):
                 self._write_queue.put(item)
 
     def initialize(self):
-        print("[Memory] Initializing...", flush=True)
+        logger.info("[Memory] Initializing...")
         self._closing = False
         self._deleted_sessions.clear()
         self.backend.initialize()
@@ -74,17 +78,11 @@ class MemoryModule(Module):
         self.kernel.memory_context = ""
 
         if self.backend.available:
-            print(
-                f"[Memory] MemPalace ready: {self.backend.palace_path}",
-                flush=True,
-            )
+            logger.info(f"[Memory] MemPalace ready: {self.backend.palace_path}")
         else:
-            print(
-                "[Memory] MemPalace unavailable; A.S.T.A. will run without long-term memory.",
-                flush=True,
-            )
+            logger.warning("[Memory] MemPalace unavailable; A.S.T.A. will run without long-term memory.")
             if self.backend.error:
-                print(f"[Memory] {self.backend.error}", flush=True)
+                logger.info(f"[Memory] {self.backend.error}")
 
         if self.backend.available:
             self._writer_thread = threading.Thread(
@@ -98,7 +96,7 @@ class MemoryModule(Module):
         self.event_bus.subscribe("conversation_turn_completed", self.on_assistant_response)
         self.event_bus.subscribe("chat_session_changed", self.on_chat_session_changed)
         self.event_bus.subscribe("memory_request", self.on_memory_request)
-        print("[Memory] Ready", flush=True)
+        logger.info("[Memory] Ready")
 
     def shutdown(self):
         self.event_bus.unsubscribe("user_message", self.on_user_message)
@@ -124,7 +122,7 @@ class MemoryModule(Module):
         if getattr(self.kernel, "memory", None) is self:
             self.kernel.memory = None
         self.kernel.memory_context = ""
-        print("[Memory] Stopped accepting writes; queued writes drain before close.", flush=True)
+        logger.info("[Memory] Stopped accepting writes; queued writes drain before close.")
 
     def on_user_message(self, text):
         """Recall before storing the current message, so the query sees prior memory."""

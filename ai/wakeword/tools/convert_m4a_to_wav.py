@@ -1,3 +1,4 @@
+from ai.wakeword.audio_contract import WAKEWORD_SAMPLE_RATE
 from pathlib import Path
 from pydub import AudioSegment
 from tqdm import tqdm
@@ -11,7 +12,7 @@ def convert_file(src: Path, dst: Path):
 
     audio = (
         audio
-        .set_frame_rate(16000)
+        .set_frame_rate(WAKEWORD_SAMPLE_RATE)
         .set_channels(1)
         .set_sample_width(2)
     )

@@ -260,7 +260,8 @@ try {
 } catch {}
 if (-not $result.typed) {
   [System.Windows.Forms.SendKeys]::SendWait('^a')
-  [System.Windows.Forms.SendKeys]::SendWait($env:ASTA_UI_KEYS); $result.typed = $true
+  [System.Windows.Forms.Clipboard]::SetText($env:ASTA_UI_QUERY)
+  [System.Windows.Forms.SendKeys]::SendWait('^v'); $result.typed = $true
 }
 Start-Sleep -Milliseconds 400
 try { $box.SetFocus() } catch {}

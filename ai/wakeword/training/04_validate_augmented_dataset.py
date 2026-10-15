@@ -6,6 +6,7 @@ Validate the augmented ASTA wakeword dataset.
 Author: ASTA
 """
 
+from ai.wakeword.audio_contract import WAKEWORD_SAMPLE_RATE
 from pathlib import Path
 import array
 import csv
@@ -35,7 +36,7 @@ REPORT_PATH = (
     / "augmentation_validation_report.txt"
 )
 
-EXPECTED_SAMPLE_RATE = 22050
+EXPECTED_SAMPLE_RATE = WAKEWORD_SAMPLE_RATE
 EXPECTED_CHANNELS = 1
 EXPECTED_SAMPLE_WIDTH = 2  # 16-bit PCM
 

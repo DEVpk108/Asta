@@ -20,6 +20,7 @@ Run:
 
 from __future__ import annotations
 
+from ai.wakeword.audio_contract import WAKEWORD_SAMPLE_RATE
 import csv
 import hashlib
 import math
@@ -33,7 +34,7 @@ from typing import Any
 # Configuration
 # ---------------------------------------------------------------------------
 
-TARGET_SAMPLE_RATE = 22050
+TARGET_SAMPLE_RATE = WAKEWORD_SAMPLE_RATE
 EXPECTED_CHANNELS = 1
 EXPECTED_SAMPLE_WIDTH_BYTES = 2  # PCM16
 

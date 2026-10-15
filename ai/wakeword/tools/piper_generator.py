@@ -24,12 +24,14 @@ from ai.wakeword.config import (
 )
 
 from ai.wakeword.tools.piper_engine import PiperEngine
+from ai.wakeword.audio_contract import validate_wav
 
 
 class PiperGenerator:
 
     def __init__(self):
 
+        self._manifest_filenames = None
         self.engine = PiperEngine(
             executable=PIPER_EXECUTABLE,
             model=PIPER_MODEL,
@@ -174,30 +176,12 @@ class PiperGenerator:
     # ---------------------------------------------------------
 
     def _manifest_contains(self, filename):
-        """
-        Check whether a file is already recorded in the manifest.
-
-        This prevents duplicate manifest rows when generation
-        is resumed.
-        """
-
-        if not self.manifest_path.exists():
-            return False
-
-        with self.manifest_path.open(
-            "r",
-            newline="",
-            encoding="utf-8",
-        ) as file:
-
-            reader = csv.DictReader(file)
-
-            for row in reader:
-
-                if row["filename"] == filename:
-                    return True
-
-        return False
+        if self._manifest_filenames is None:
+            self._manifest_filenames = set()
+            if self.manifest_path.exists():
+                with self.manifest_path.open("r", newline="", encoding="utf-8") as file:
+                    self._manifest_filenames.update(row["filename"] for row in csv.DictReader(file))
+        return filename in self._manifest_filenames
 
     # ---------------------------------------------------------
 
@@ -231,6 +215,8 @@ class PiperGenerator:
                 speaker_id,
                 speaker_weight,
             ])
+        if self._manifest_filenames is not None:
+            self._manifest_filenames.add(filename)
 
     # ---------------------------------------------------------
 
@@ -383,6 +369,7 @@ class PiperGenerator:
                     and not overwrite
                 ):
 
+                    validate_wav(filename)  # never silently resume a legacy-rate dataset
                     skipped += 1
 
                     # Make sure an existing WAV has

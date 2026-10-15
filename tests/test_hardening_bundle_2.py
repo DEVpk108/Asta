@@ -495,7 +495,7 @@ def speech_class_without_optional_audio():
     path = Path(__file__).resolve().parents[1]/'speech'/'speech_module.py'
     tree = ast.parse(path.read_text(encoding='utf-8'))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'SpeechModule')
-    ns = dict(Module=Module, KokoroEngine=lambda: SimpleNamespace(), queue=queue,
+    ns = dict(logger=__import__('logging').getLogger('speech.speech_module'), Module=Module, KokoroEngine=lambda: SimpleNamespace(), queue=queue,
         threading=threading, time=time, re=__import__('re'), unicodedata=__import__('unicodedata'))
     exec(compile(ast.Module(body=[cls], type_ignores=[]), str(path), 'exec'), ns)
     return ns['SpeechModule']

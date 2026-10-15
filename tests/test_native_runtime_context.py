@@ -116,12 +116,12 @@ def test_missing_builder_is_created_once_and_cached(monkeypatch):
 
 
 @pytest.mark.parametrize('component', ['intent_router', 'context_builder'])
-def test_context_enrichment_failure_falls_back_to_contextless_generation(component, capsys):
+def test_context_enrichment_failure_falls_back_to_contextless_generation(component, caplog):
     ai, kernel = _make()
     getattr(kernel, component).fail = True
     ai._generate_response('request')
     assert ai.engine.calls == [('request', None)]
-    assert 'Failed to build runtime context' in capsys.readouterr().out
+    assert 'Failed to build runtime context' in caplog.text
 
 
 def test_streaming_precedes_completed_response_with_native_context():

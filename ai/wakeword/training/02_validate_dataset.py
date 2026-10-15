@@ -6,6 +6,7 @@ Validate the clean synthetic ASTA wakeword dataset.
 Author: ASTA
 """
 
+from ai.wakeword.audio_contract import WAKEWORD_SAMPLE_RATE
 from pathlib import Path
 import array
 import csv
@@ -27,7 +28,7 @@ DATASET_DIR = (
 
 MANIFEST_PATH = DATASET_DIR / "manifest.csv"
 
-EXPECTED_SAMPLE_RATE = 22050
+EXPECTED_SAMPLE_RATE = WAKEWORD_SAMPLE_RATE
 EXPECTED_CHANNELS = 1
 EXPECTED_SAMPLE_WIDTH = 2  # 16-bit PCM
 

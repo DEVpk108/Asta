@@ -71,8 +71,8 @@ python -m venv .venv
 # macOS / Linux
 source .venv/bin/activate
 
-pip install -r requirements.txt
-pip install -r requirements-kokoro.txt
+python -m pip install -e ".[kokoro,dev]"
+# requirements*.txt remain compatibility entry points; run them from this root.
 # Optional System 1 decision layer
 pip install -r requirements-laya.txt
 
@@ -94,8 +94,7 @@ A.S.T.A. falls back to Whisper and plain silence detection.
 
 `requirements-kokoro.txt` is not optional for running the assistant:
 `speech/speech_module.py` imports `KokoroEngine` at import time. On an NVIDIA
-GPU, install the CUDA build of PyTorch before it (see the note inside that
-file).
+GPU, install the CUDA build of PyTorch before installing the Kokoro extra.
 
 Optional extras:
 
@@ -529,7 +528,7 @@ files.
 | `hud/` | Electron HUD and its localhost transport |
 | `memory/` | optional MemPalace long-term memory |
 | `chat_history/` | local SQLite conversation history |
-| `vision/` | screenshot backend, experimental face recognition |
+| `vision/` | screenshot and visual inspection backends |
 | `input/` | optional terminal text adapter |
 | `tests/` | pytest suite |
 
@@ -597,8 +596,9 @@ file paths across restarts, and the early sandboxed project-task loop can read,
 write, execute, verify, and recover within its declared limits. Durable task
 checkpoints and automatic resume are not implemented yet. The roadmap is
 staged; it does not imply that every planned capability is implemented or
-reliable today. `vision/face_recognition.py` remains a standalone OpenCV
-experiment and is not wired into the kernel.
+reliable today. `experiments/face_identity.py` is an opt-in OpenCV experiment, not a kernel
+module or authorization mechanism. It accepts numeric local `.npy` embeddings
+with pickle loading disabled.
 
 ### Workspace interface
 
@@ -612,3 +612,23 @@ focus and reduced-motion preferences. Avatar motion follows runtime state and
 speech-output audio; its bounded renderer pauses when hidden or motion is
 disabled. See [interface contracts and validation](docs/hud-workspace-redesign.md)
 and [reactive avatar behavior](docs/reactive-avatar-ui.md).
+
+
+### Dependency, logging, and repository maintenance
+
+`pyproject.toml` is the canonical dependency specification. Work from a checkout
+and use an editable install; the wheel is not a standalone packaged Electron
+application or model distribution. Optional extras are `kokoro`, `browser`,
+`laya`, `mempalace`, `indic`, `wakeword-training`, and `dev`. The existing
+requirements files forward to these extras. CUDA wheels, Electron's npm install,
+model downloads, and FFmpeg for offline training are separate setup steps.
+
+AI, voice, speech, memory and tool-runtime diagnostics use Python logging.
+`ASTA_LOG_LEVEL` controls verbosity; `ASTA_LOG_FORMAT=json` selects structured
+records. `ASTA_LOG_FILE` enables rotating files and is off by default: transcripts
+may be private. CLI progress and some older modules still use `print()`.
+
+See [Bundle 3](docs/hardening-bundle-3.md) for the 16 kHz training data contract,
+legacy dataset migration cautions and preserved binary artifacts. The
+[review closure matrix](docs/review-fix-status.md) distinguishes completed fixes
+from partial refactors, data-removal decisions and future capabilities.

@@ -12,7 +12,7 @@ Features:
 - NEVER uses snapshot_download()
 - Avoids downloading the entire dataset
 - Skips already-used source files
-- Converts audio to 22050 Hz mono WAV
+- Converts audio to 16000 Hz mono WAV
 - Filters by duration
 - Detects duplicates using SHA256
 - Continues until TARGET_SAMPLES is reached
@@ -27,6 +27,7 @@ Source:
 Author: ASTA
 """
 
+from ai.wakeword.audio_contract import WAKEWORD_SAMPLE_RATE
 from pathlib import Path
 import csv
 import hashlib
@@ -52,7 +53,7 @@ SPLIT = "train"
 
 TARGET_SAMPLES = 2990
 
-TARGET_SAMPLE_RATE = 22050
+TARGET_SAMPLE_RATE = WAKEWORD_SAMPLE_RATE
 
 MIN_DURATION_SECONDS = 0.5
 MAX_DURATION_SECONDS = 8.0
@@ -558,7 +559,7 @@ def process_audio(
 ):
     """
     Read MP3 and convert to:
-        22050 Hz
+        16000 Hz
         mono
         PCM16 WAV
     """

@@ -1,3 +1,4 @@
+import logging
 import json
 import threading
 import time
@@ -11,6 +12,8 @@ from core.tools.sandbox import is_sandbox_setup_error
 
 APPROVED_RETRY_SECONDS = 900.0
 
+
+logger = logging.getLogger(__name__)
 
 class ToolRuntimeModule(Module):
     """EventBus adapter for tool dispatch and approval."""
@@ -37,7 +40,7 @@ class ToolRuntimeModule(Module):
             "tool_confirmation_response",
             self.on_confirmation_response,
         )
-        print("[Tools] Ready", flush=True)
+        logger.info("[Tools] Ready")
 
     def shutdown(self):
         with self._timer_lock:
@@ -52,13 +55,13 @@ class ToolRuntimeModule(Module):
             "tool_confirmation_response",
             self.on_confirmation_response,
         )
-        print("[Tools] Stopped", flush=True)
+        logger.info("[Tools] Stopped")
 
     def on_tool_request(self, request):
         if self._closing:
             return
         if not isinstance(request, ToolRequest):
-            print("[Tools] Ignoring invalid tool request.", flush=True)
+            logger.warning("[Tools] Ignoring invalid tool request.")
             return
 
         background = getattr(self.kernel, "background_tasks", None)
@@ -138,7 +141,7 @@ class ToolRuntimeModule(Module):
         pending = manager.get(request_id)
         if pending is None or manager.contains(request_id):
             return  # already answered, or still live
-        print(f"[Tools] Approval expired (request_id={request_id}); step not run.", flush=True)
+        logger.info(f"[Tools] Approval expired (request_id={request_id}); step not run.")
         background = getattr(self.kernel, "background_tasks", None)
         task_id = pending.request.metadata.get("task_id")
         if background is not None and background.owns(task_id) and not background.in_worker():
@@ -260,7 +263,7 @@ class ToolRuntimeModule(Module):
             created = self._approved_retries.pop(self._fingerprint(request), None)
         if created is None:
             return False
-        print("[Tools] Rerunning the command you already approved, now that the sandbox is ready.", flush=True)
+        logger.info("[Tools] Rerunning the command you already approved, now that the sandbox is ready.")
         return True
 
     def _emit_result(self, result, *, request=None):

@@ -1,3 +1,4 @@
+from ai.wakeword.audio_contract import WAKEWORD_SAMPLE_RATE
 from pathlib import Path
 import sys
 
@@ -44,7 +45,7 @@ WAKE_PHRASES = [
     "wake_up_asta",
 ]
 
-TARGET_SR = 16000
+TARGET_SR = WAKEWORD_SAMPLE_RATE
 
 # 2 seconds at 16 kHz.
 TARGET_SAMPLES = 32000
@@ -57,10 +58,7 @@ NCPU = 1
 # Import openWakeWord
 # ---------------------------------------------------------------------
 
-OPENWAKEWORD_ROOT = PROJECT_ROOT / "openWakeWord"
-
-sys.path.insert(0, str(OPENWAKEWORD_ROOT))
-
+# Use the installed dependency, not a second vendored source tree.
 from openwakeword.utils import AudioFeatures
 
 
@@ -76,10 +74,10 @@ def load_audio(path):
 
     audio = audio.astype(np.float32)
 
-    if sr != 16000:
+    if sr != TARGET_SR:
         audio = resample_poly(
             audio,
-            16000,
+            TARGET_SR,
             sr,
         )
 

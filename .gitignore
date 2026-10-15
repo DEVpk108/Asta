@@ -76,3 +76,11 @@ models/speech/
 
 # Applied patch files
 *.patch
+
+# Local recordings, biometric artifacts and export bundles (not source code)
+*.m4a
+*.mp3
+*.flac
+*.pkl
+asta_code_review*.txt
+ASTA-*-regression.log

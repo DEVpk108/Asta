@@ -9,11 +9,12 @@ filename,source_file,text,duration,source_sample_rate,sample_rate,sha256
 
 Example:
 
-hindi_000000.wav,common_voice_hi_27388723.mp3,हिंदी text,4.428000,32000,22050,<sha256>
+hindi_000000.wav,common_voice_hi_27388723.mp3,हिंदी text,4.428000,32000,16000,<sha256>
 
 Author: ASTA
 """
 
+from ai.wakeword.audio_contract import WAKEWORD_SAMPLE_RATE
 from pathlib import Path
 import csv
 import hashlib
@@ -40,7 +41,7 @@ REPORT_PATH = (
     / "hindi_validation_report.txt"
 )
 
-EXPECTED_SAMPLE_RATE = 22050
+EXPECTED_SAMPLE_RATE = WAKEWORD_SAMPLE_RATE
 
 MIN_DURATION = 0.25
 MAX_DURATION = 10.0

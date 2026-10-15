@@ -1,3 +1,4 @@
+from ai.wakeword.audio_contract import WAKEWORD_SAMPLE_RATE
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +10,7 @@ from scipy.signal import resample_poly
 from openwakeword.utils import AudioFeatures
 
 
-TARGET_SR = 16000
+TARGET_SR = WAKEWORD_SAMPLE_RATE
 TARGET_SAMPLES = 32000
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -48,10 +49,10 @@ def load_audio(path):
 
     audio = audio.astype(np.float32)
 
-    if sr != 16000:
+    if sr != TARGET_SR:
         audio = resample_poly(
             audio,
-            16000,
+            TARGET_SR,
             sr,
         )
 

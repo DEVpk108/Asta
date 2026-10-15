@@ -1,3 +1,4 @@
+import logging
 import queue
 import re
 import unicodedata
@@ -7,6 +8,8 @@ import time
 from core.module import Module
 from .kokoro_engine import KokoroEngine
 
+
+logger = logging.getLogger(__name__)
 
 class SpeechModule(Module):
 
@@ -50,7 +53,7 @@ class SpeechModule(Module):
         self._audio_level_interval = 0.04  # ~25 HUD updates/sec
 
     def initialize(self):
-        print("[Speech] Initializing...", flush=True)
+        logger.info("[Speech] Initializing...")
         self._engine_closed = False
         self._running = True
         self.event_bus.subscribe("assistant_sentence", self.on_assistant_sentence)
@@ -68,10 +71,10 @@ class SpeechModule(Module):
             daemon=True,
         )
         self._speech_thread.start()
-        print("[Speech] Ready", flush=True)
+        logger.info("[Speech] Ready")
 
     def shutdown(self):
-        print("[Speech] Shutting down...", flush=True)
+        logger.info("[Speech] Shutting down...")
         self._running = False
         self._interrupt_event.set()
         self._publish_audio_level(0.0, force=True)
@@ -93,11 +96,11 @@ class SpeechModule(Module):
             if worker is not threading.current_thread():
                 worker.join(timeout=2.0)
             if worker.is_alive():
-                print("[Speech] Worker still stopping; stream close deferred to its owner.", flush=True)
+                logger.info("[Speech] Worker still stopping; stream close deferred to its owner.")
                 return
         self._close_engine()
         self._speech_thread = None
-        print("[Speech] Stopped", flush=True)
+        logger.info("[Speech] Stopped")
 
     def _close_engine(self):
         with self._state_lock:
@@ -262,7 +265,7 @@ class SpeechModule(Module):
         if enabled:
             with self._state_lock:
                 self._defer_speech = True
-            print("[Speech] Deferring TTS while user is speaking.", flush=True)
+            logger.info("[Speech] Deferring TTS while user is speaking.")
             return
 
         with self._state_lock:
@@ -271,10 +274,7 @@ class SpeechModule(Module):
             self._defer_speech = False
 
         if deferred:
-            print(
-                f"[Speech] Releasing {len(deferred)} deferred sentence(s).",
-                flush=True,
-            )
+            logger.info(f"[Speech] Releasing {len(deferred)} deferred sentence(s).")
             for text in deferred:
                 self.on_assistant_sentence(text)
 
@@ -353,13 +353,13 @@ class SpeechModule(Module):
             if dropped:
                 with self._state_lock:
                     self._queued_text = max(0, self._queued_text - dropped)
-                print(f"[Speech] Dropped an out-of-date line: {prepared}", flush=True)
+                logger.info(f"[Speech] Dropped an out-of-date line: {prepared}")
                 self._maybe_finish_speech()
         return removed + dropped
 
     def on_speech_interrupt(self, *args, **kwargs):
         """Cancel current speech and discard anything queued behind it."""
-        print("[Speech] Interrupt requested.", flush=True)
+        logger.info("[Speech] Interrupt requested.")
         self._interrupt_event.set()
         self._publish_audio_level(0.0, force=True)
         cut = [getattr(self, "_current_text", None), *self._deferred_sentences]
@@ -389,7 +389,7 @@ class SpeechModule(Module):
             self._presentation_mode_active = False
 
         if drained:
-            print(f"[Speech] Discarded {drained} queued speech item(s).", flush=True)
+            logger.info(f"[Speech] Discarded {drained} queued speech item(s).")
         if was_active:
             self.event_bus.emit("speech_finished")
 
@@ -407,7 +407,7 @@ class SpeechModule(Module):
             return
         if getattr(self, "_replaying_cut", False):
             return  # a replay was cut too: don't loop
-        print(f"[Speech] Repeating {len(lines)} interrupted line(s).", flush=True)
+        logger.info(f"[Speech] Repeating {len(lines)} interrupted line(s).")
         self._replaying_cut = True
         try:
             for line in lines:
@@ -491,7 +491,7 @@ class SpeechModule(Module):
                     first_of_response = not getattr(self, "_response_audio_started", False)
                     self._response_audio_started = True
 
-                    print(f"[Speech] Synthesizing: {text}", flush=True)
+                    logger.info(f"[Speech] Synthesizing: {text}")
                     self._current_text = text
                     try:
                         if self._running and not self._interrupt_event.is_set():
@@ -515,13 +515,10 @@ class SpeechModule(Module):
                                     on_level=self._publish_audio_level,
                                 )
                             if not completed:
-                                print("[Speech] Playback interrupted.", flush=True)
+                                logger.info("[Speech] Playback interrupted.")
                     except Exception as exc:
                         self._publish_audio_level(0.0, force=True)
-                        print(
-                            f"[Speech] Speech worker error: {type(exc).__name__}: {exc}",
-                            flush=True,
-                        )
+                        logger.warning(f"[Speech] Speech worker error: {type(exc).__name__}: {exc}")
                     finally:
                         self._publish_audio_level(0.0, force=True)
                         if self._queue.empty():
@@ -536,10 +533,7 @@ class SpeechModule(Module):
                         self._queue.task_done()
                         self._maybe_finish_speech()
                 except Exception as exc:
-                    print(
-                        f"[Speech] Worker error: {type(exc).__name__}: {exc}",
-                        flush=True,
-                    )
+                    logger.warning(f"[Speech] Worker error: {type(exc).__name__}: {exc}")
         finally:
             self._close_engine()
 

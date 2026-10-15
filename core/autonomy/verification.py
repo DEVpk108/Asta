@@ -152,6 +152,10 @@ class VerificationEngine:
         last_error = None
         for attempt in range(1, self.poll_attempts + 1):
             try:
+                # Post-action verification must not trust a pre-action cache.
+                invalidate = getattr(manager, "invalidate_process_cache", None)
+                if callable(invalidate):
+                    invalidate()
                 if bool(checker(query)):
                     return VerificationResult(
                         status=VerificationStatus.VERIFIED,

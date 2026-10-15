@@ -1,3 +1,4 @@
+import logging
 import os
 import queue
 import re
@@ -20,6 +21,8 @@ from .recognition_engine import RecognitionEngine
 from .incremental_command_engine import IncrementalCommandDetector
 from .incremental_speech_session import IncrementalSpeechSession
 
+
+logger = logging.getLogger(__name__)
 
 class VoiceModule(Module):
 
@@ -129,7 +132,7 @@ class VoiceModule(Module):
         self.wakeword_return_greeting = "Yes?"
 
     def initialize(self):
-        print("[Voice] Initializing...", flush=True)
+        logger.info("[Voice] Initializing...")
 
         self.event_bus.subscribe("conversation_mode_set", self.on_conversation_mode_set)
         self.event_bus.subscribe("assistant_sentence", self._on_assistant_sentence)
@@ -155,9 +158,9 @@ class VoiceModule(Module):
                 daemon=True,
             )
             self._incremental_dispatch_thread.start()
-            print("[Voice] Incremental voice commitment: ENABLED", flush=True)
+            logger.info("[Voice] Incremental voice commitment: ENABLED")
         else:
-            print("[Voice] Incremental voice commitment: disabled", flush=True)
+            logger.info("[Voice] Incremental voice commitment: disabled")
 
         self.microphone.start()
 
@@ -168,10 +171,10 @@ class VoiceModule(Module):
         )
         self._thread.start()
 
-        print("[Voice] Ready", flush=True)
+        logger.info("[Voice] Ready")
 
     def shutdown(self):
-        print("[Voice] Shutting down...", flush=True)
+        logger.info("[Voice] Shutting down...")
 
         self.event_bus.unsubscribe("conversation_mode_set", self.on_conversation_mode_set)
         self.event_bus.unsubscribe("assistant_sentence", self._on_assistant_sentence)
@@ -200,16 +203,13 @@ class VoiceModule(Module):
             self.microphone.stop()
             self.microphone.close()
         except Exception as exc:
-            print(
-                f"[Voice] Microphone shutdown error: {type(exc).__name__}: {exc}",
-                flush=True,
-            )
+            logger.warning(f"[Voice] Microphone shutdown error: {type(exc).__name__}: {exc}")
 
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=2.0)
 
         self._thread = None
-        print("[Voice] Stopped", flush=True)
+        logger.info("[Voice] Stopped")
 
     def on_conversation_mode_set(self, enabled):
         self._manual_conversation = bool(enabled)
@@ -219,7 +219,7 @@ class VoiceModule(Module):
             self._last_interaction = time.monotonic()
             self._last_transcript = ""
             self._last_transcript_at = 0.0
-            print("[Voice] Conversation mode: ON (manual)", flush=True)
+            logger.info("[Voice] Conversation mode: ON (manual)")
         else:
             self._conversation_active = False
             self._asta_wakeword_cooldown_until = time.monotonic() + 2.0
@@ -231,19 +231,19 @@ class VoiceModule(Module):
             clear_buffer = getattr(microphone, "clear_buffer", None)
             if callable(clear_buffer):
                 clear_buffer()
-            print("[Voice] Conversation mode: OFF", flush=True)
+            logger.info("[Voice] Conversation mode: OFF")
 
     def _end_conversation(self):
         """Follow-up window closed: back to wake-word only."""
         self._conversation_active = False
-        print("[Voice] Conversation mode: INACTIVE", flush=True)
+        logger.info("[Voice] Conversation mode: INACTIVE")
         self.microphone.clear_buffer()
         self.event_bus.emit("conversation_state_changed", active=False)
 
     def _start_conversation(self, *, announce=True):
         self._conversation_active = True
         self._last_interaction = time.monotonic()
-        print("[Voice] Conversation mode: ACTIVE", flush=True)
+        logger.info("[Voice] Conversation mode: ACTIVE")
         self.event_bus.emit("conversation_state_changed", active=True)
 
         if not announce:
@@ -288,7 +288,7 @@ class VoiceModule(Module):
         )
         self.microphone.clear_buffer()
         self._start_barge_listener()
-        print("[Voice] Barge-in listening: ENABLED", flush=True)
+        logger.info("[Voice] Barge-in listening: ENABLED")
 
     def _on_speech_finished(self, *args, **kwargs):
         self._tts_active = False
@@ -306,17 +306,14 @@ class VoiceModule(Module):
         # and fed into VAD as preroll instead of being dropped by the old
         # 600 ms blind listening guard.
         self.microphone.clear_buffer()
-        print(
-            "[Voice] Barge-in listening: DISABLED "
-            f"(post-TTS settle={self._post_tts_guard_seconds * 1000:.0f}ms)",
-            flush=True,
-        )
+        logger.info("[Voice] Barge-in listening: DISABLED "
+            f"(post-TTS settle={self._post_tts_guard_seconds * 1000:.0f}ms)")
 
         if self._conversation_active and not self._manual_conversation:
             self._last_interaction = time.monotonic()
 
     def _on_speech_interrupt(self, *args, **kwargs):
-        print("[Voice] Speech interrupt received.", flush=True)
+        logger.info("[Voice] Speech interrupt received.")
         self._tts_active = False
         self._tts_guard_until = time.monotonic() + 0.05
         # Preserve the ring-buffer onset. The command capture will consume it
@@ -454,11 +451,8 @@ class VoiceModule(Module):
             self._interrupted_audio = seed
             self._speech_interrupted.set()
 
-            print(
-                f"[Interrupt] Speech onset detected "
-                f"(rms={rms:.4f}, peak={peak:.4f})",
-                flush=True,
-            )
+            logger.info(f"[Interrupt] Speech onset detected "
+                f"(rms={rms:.4f}, peak={peak:.4f})")
             self.event_bus.emit("speech_interrupt")
             if getattr(self, "_barge_resume", False):
                 threading.Thread(
@@ -490,11 +484,8 @@ class VoiceModule(Module):
         if fraction is None:
             return
         if fraction < 0.15:
-            print(
-                "[Interrupt] Nobody was talking (it was ASTA's own voice); "
-                "repeating the cut sentence.",
-                flush=True,
-            )
+            logger.info("[Interrupt] Nobody was talking (it was ASTA's own voice); "
+                "repeating the cut sentence.")
             self.event_bus.emit("speech_false_interrupt")
 
     def _take_post_tts_seed(self):
@@ -511,18 +502,18 @@ class VoiceModule(Module):
             return None
 
         if seed.size:
-            print("[VAD] Using post-TTS microphone preroll.", flush=True)
+            logger.info("[VAD] Using post-TTS microphone preroll.")
         return seed if seed.size else None
 
     def _on_tool_confirmation_required(self, *args, **kwargs):
         self._awaiting_confirmation = True
         self._last_transcript = ""
         self._last_transcript_at = 0.0
-        print("[Voice] Confirmation listening: ENABLED", flush=True)
+        logger.info("[Voice] Confirmation listening: ENABLED")
 
     def _on_tool_confirmation_response(self, *args, **kwargs):
         self._awaiting_confirmation = False
-        print("[Voice] Confirmation listening: DISABLED", flush=True)
+        logger.info("[Voice] Confirmation listening: DISABLED")
 
     def _confirmation_listening_active(self):
         """Return true only while an actual approval request is pending.
@@ -543,21 +534,15 @@ class VoiceModule(Module):
         try:
             pending = tuple(list_pending())
         except Exception as exc:
-            print(
-                "[Voice] Confirmation state check failed: "
-                f"{type(exc).__name__}: {exc}",
-                flush=True,
-            )
+            logger.warning("[Voice] Confirmation state check failed: "
+                f"{type(exc).__name__}: {exc}")
             return True
 
         if pending:
             return True
 
         self._awaiting_confirmation = False
-        print(
-            "[Voice] Confirmation listening: cleared stale state.",
-            flush=True,
-        )
+        logger.info("[Voice] Confirmation listening: cleared stale state.")
         return False
 
     def _can_listen(self):
@@ -577,7 +562,7 @@ class VoiceModule(Module):
             and normalized == self._last_transcript
             and now - self._last_transcript_at < self._duplicate_window
         ):
-            print(f"[STT] Rejected duplicate transcript: {text!r}", flush=True)
+            logger.info(f"[STT] Rejected duplicate transcript: {text!r}")
             return True
 
         self._last_transcript = normalized
@@ -605,13 +590,10 @@ class VoiceModule(Module):
             boosted = np.concatenate(
                 (np.zeros(4800, dtype=np.float32), samples * gain)
             ).astype(np.float32)
-            print(
-                f"[STT] Empty result; retrying quiet utterance (gain={gain:.1f}x).",
-                flush=True,
-            )
+            logger.info(f"[STT] Empty result; retrying quiet utterance (gain={gain:.1f}x).")
             return self.recognition.transcribe(boosted)
         except Exception as exc:
-            print(f"[STT] Quiet-utterance retry failed: {type(exc).__name__}: {exc}", flush=True)
+            logger.warning(f"[STT] Quiet-utterance retry failed: {type(exc).__name__}: {exc}")
             return ""
 
     @staticmethod
@@ -638,11 +620,8 @@ class VoiceModule(Module):
                 if not value:
                     continue
 
-                print(
-                    "[IncrementalVoice] Dispatching committed command: "
-                    f"{value!r} (commit_id={commit_id or 'final'})",
-                    flush=True,
-                )
+                logger.info("[IncrementalVoice] Dispatching committed command: "
+                    f"{value!r} (commit_id={commit_id or 'final'})")
                 self.event_bus.emit(
                     "incremental_user_message",
                     text=value,
@@ -650,11 +629,8 @@ class VoiceModule(Module):
                     session_id=session_id,
                 )
             except Exception as exc:
-                print(
-                    "[IncrementalVoice] Dispatch error: "
-                    f"{type(exc).__name__}: {exc}",
-                    flush=True,
-                )
+                logger.warning("[IncrementalVoice] Dispatch error: "
+                    f"{type(exc).__name__}: {exc}")
             finally:
                 self._incremental_dispatch_queue.task_done()
 
@@ -725,7 +701,7 @@ class VoiceModule(Module):
 
         self._incremental_capture_active = True
         self.event_bus.emit("incremental_voice_listening", enabled=True)
-        print("[IncrementalVoice] Listening to the active utterance.", flush=True)
+        logger.info("[IncrementalVoice] Listening to the active utterance.")
 
         try:
             result = session.run(
@@ -746,7 +722,7 @@ class VoiceModule(Module):
                 enabled=False,
                 session_id=session_id,
             )
-            print("[IncrementalVoice] Utterance capture finished.", flush=True)
+            logger.info("[IncrementalVoice] Utterance capture finished.")
 
     def _running_and_incremental_listenable(self):
         return self._running and not self._tts_active
@@ -774,7 +750,7 @@ class VoiceModule(Module):
         self.vad.min_speech_duration = 0.20
 
         try:
-            print("[VAD] Listening for short confirmation...", flush=True)
+            logger.info("[VAD] Listening for short confirmation...")
             try:
                 return self.vad.collect_utterance(
                     self.microphone,
@@ -804,7 +780,7 @@ class VoiceModule(Module):
         if not self._listener_ready_reported:
             self._listener_ready_reported = True
             self.event_bus.emit("voice_ready")
-            print("[Voice] Wake-word listener ready.", flush=True)
+            logger.info("[Voice] Wake-word listener ready.")
 
         while self._running:
             try:
@@ -856,11 +832,8 @@ class VoiceModule(Module):
                     continue
 
                 if wakeword_audio is not None and self._incremental_voice_enabled:
-                    print(
-                        "[IncrementalVoice] Fresh wakeword handoff; "
-                        "starting command capture from live audio.",
-                        flush=True,
-                    )
+                    logger.info("[IncrementalVoice] Fresh wakeword handoff; "
+                        "starting command capture from live audio.")
 
                 if wakeword_audio is None or not self._incremental_voice_enabled:
                     self.microphone.flush()
@@ -892,11 +865,8 @@ class VoiceModule(Module):
                         self._queue_incremental_session_finished(session_id)
                         continue
 
-                    print(
-                        "[IncrementalVoice] Final uncommitted tail: "
-                        f"{text}",
-                        flush=True,
-                    )
+                    logger.info("[IncrementalVoice] Final uncommitted tail: "
+                        f"{text}")
                     self._last_interaction = time.monotonic()
                     self._queue_incremental_user_message(
                         text,
@@ -912,10 +882,7 @@ class VoiceModule(Module):
                     try:
                         stream = self.recognition.create_stream()
                     except Exception as exc:
-                        print(
-                            f"[Voice] Streaming STT unavailable: {type(exc).__name__}: {exc}",
-                            flush=True,
-                        )
+                        logger.warning(f"[Voice] Streaming STT unavailable: {type(exc).__name__}: {exc}")
                         stream = None
 
                 try:
@@ -972,14 +939,11 @@ class VoiceModule(Module):
                 if self._is_duplicate_transcript(text):
                     continue
 
-                print(f"[Voice] User: {text}", flush=True)
+                logger.info(f"[Voice] User: {text}")
                 self._last_interaction = time.monotonic()
                 self.event_bus.emit("user_message", text=text)
                 self._last_interaction = time.monotonic()
 
             except Exception as exc:
-                print(
-                    f"[Voice] Error: {type(exc).__name__}: {exc}",
-                    flush=True,
-                )
+                logger.warning(f"[Voice] Error: {type(exc).__name__}: {exc}")
                 time.sleep(0.1)

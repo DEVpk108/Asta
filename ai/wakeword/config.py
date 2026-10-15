@@ -18,8 +18,7 @@ GENERATED_DIR = ROOT / "generated"
 # Models
 MODEL_DIR = ROOT / "models"
 
-# OpenWakeWord
-OWW_DIR = ROOT / "openWakeWord"
+# openWakeWord is loaded from the installed dependency.
 
 # Temporary cache
 CACHE_DIR = ROOT / "cache"
