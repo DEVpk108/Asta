@@ -222,6 +222,7 @@ class VoiceModule(Module):
             print("[Voice] Conversation mode: ON (manual)", flush=True)
         else:
             self._conversation_active = False
+            self._asta_wakeword_cooldown_until = time.monotonic() + 2.0
             self._last_interaction = 0.0
             self._last_transcript = ""
             self._last_transcript_at = 0.0
@@ -564,6 +565,8 @@ class VoiceModule(Module):
             self._running
             and not self._tts_active
             and time.monotonic() >= self._tts_guard_until
+            and (self._conversation_active or time.monotonic() >=
+                 getattr(self, "_asta_wakeword_cooldown_until", 0.0))
         )
 
     def _is_duplicate_transcript(self, text):

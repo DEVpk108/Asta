@@ -29,16 +29,18 @@ def _encode_rgb_png(width: int, height: int, bgra: bytes) -> bytes:
     if len(bgra) != expected:
         raise ValueError(f"Unexpected screenshot buffer size: {len(bgra)} != {expected}")
 
-    rows = bytearray()
-    source = memoryview(bgra)
+    if width <= 0 or height <= 0:
+        raise ValueError("Screenshot dimensions must be positive")
+    rows = bytearray((width * 3 + 1) * height)
+    source = bytes(bgra)
     row_size = width * 4
-
     for y in range(height):
-        rows.append(0)  # PNG filter type: none.
-        row = source[y * row_size:(y + 1) * row_size]
-        for x in range(0, row_size, 4):
-            b, g, r, _a = row[x:x + 4]
-            rows.extend((r, g, b))
+        src = y * row_size
+        dst = y * (width * 3 + 1) + 1
+        stop = dst + width * 3
+        rows[dst:stop:3] = source[src + 2:src + row_size:4]
+        rows[dst + 1:stop:3] = source[src + 1:src + row_size:4]
+        rows[dst + 2:stop:3] = source[src:src + row_size:4]
 
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     return (

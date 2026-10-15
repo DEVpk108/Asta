@@ -186,20 +186,7 @@ class AgentBrain:
         return decision
 
     def _build_decision_prompt(self, task_state: dict[str, Any]) -> str:
-        definitions = []
         registry = getattr(self.kernel, "tool_registry", None)
-        if registry is not None:
-            for definition in registry.definitions():
-                definitions.append(
-                    {
-                        "name": definition.name,
-                        "description": definition.description,
-                        "input_schema": definition.input_schema,
-                        "risk_level": definition.risk_level,
-                        "requires_confirmation": definition.requires_confirmation,
-                        "metadata": definition.metadata,
-                    }
-                )
 
         payload = {
             "task": self._compact_task_state(task_state),
@@ -570,7 +557,8 @@ class AgentBrain:
         candidate = body.rstrip()
         # Drop a dangling separator or a key without a value.
         for _ in range(3):
-            trimmed = re.sub(r'(,\s*"[^"]*"\s*:?\s*|,\s*|:\s*)$', "", candidate)
+            dangling = r'(,\s*"[^"]*"\s*:?\s*|,\s*|:\s*)$' if stack[-1] == "}" else r',\s*$'
+            trimmed = re.sub(dangling, "", candidate)
             if trimmed == candidate:
                 break
             candidate = trimmed.rstrip()

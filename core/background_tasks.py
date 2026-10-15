@@ -173,7 +173,7 @@ class BackgroundTaskCoordinator:
             )
         elif task.status.value in _TERMINAL or task.status.value == "paused":
             self._phase(task.status.value, "Project task " + task.status.value)
-        elif self.snapshot()["phase"] != "awaiting_approval":
+        elif (self.snapshot() or {}).get("phase") != "awaiting_approval":
             self._phase("working", "Project task is active")
 
     def on_created(self, task=None, **kwargs):

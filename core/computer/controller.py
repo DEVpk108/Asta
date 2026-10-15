@@ -149,19 +149,23 @@ class ComputerController:
 
                 if clipboard is not None:
                     try:
-                        previous = clipboard.paste()
                         clipboard.copy(value)
-                        backend.hotkey("ctrl", "v")
-                        clipboard.copy(previous)
-                        return {
-                            "text_length": len(value),
-                            "typed": True,
-                            "method": "clipboard_paste",
-                        }
                     except Exception:
-                        # Fall through to direct typing for environments where
-                        # clipboard access is restricted.
+                        # No paste was issued, so direct typing is safe.
                         pass
+                    else:
+                        try:
+                            backend.hotkey("ctrl", "v")
+                        except Exception as exc:
+                            # The OS may already have queued the paste. Never
+                            # retry by typing and risk entering the value twice.
+                            raise ComputerControlError(
+                                "Paste submission failed; not retrying text entry."
+                            ) from exc
+                        # A fixed sleep cannot prove the application consumed
+                        # the clipboard. Leave our payload until the next copy.
+                        return {"text_length": len(value), "typed": True,
+                                "method": "clipboard_paste", "clipboard_restored": False}
 
             try:
                 backend.write(value, interval=interval)

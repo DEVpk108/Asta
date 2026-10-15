@@ -197,14 +197,11 @@ def main():
     from speech.speech_module import SpeechModule
     from hud.hud_module import HUDModule
     from ai.ai_module import AIModule
-    from ai.runtime_patch import apply_ai_runtime_patch
     from memory.memory_module import MemoryModule
     from input.text_input_module import TextInputModule
     from voice.voice_module import VoiceModule
     from vision.screenshot_backend import capture_screenshot
 
-    # Apply small runtime compatibility patches before module instances are created.
-    apply_ai_runtime_patch()
     # MemoryModule owns recall and ContextBuilder owns prompt inclusion.
     # Native AIModule generation now prepares context; no memory/context wrapper.
 

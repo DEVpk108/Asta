@@ -130,18 +130,25 @@ def context_note(work: Any, last_app: str = "") -> str:
 
 def parse_resolution(raw: str) -> Resolution | None:
     text = re.sub(r"<think>.*?</think>", "", str(raw or ""), flags=re.DOTALL)
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group(0))
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    action = str(data.get("action") or "").strip().lower().replace(" ", "_")
-    if action not in ACTIONS:
-        return None
+    decoder = json.JSONDecoder()
+    offset = 0
+    data = None
+    while True:
+        begin = text.find("{", offset)
+        if begin < 0:
+            return None
+        try:
+            candidate, next_offset = decoder.raw_decode(text, begin)
+        except ValueError:
+            offset = begin + 1
+            continue
+        offset = next_offset
+        if not isinstance(candidate, dict):
+            continue
+        action = str(candidate.get("action") or "").strip().lower().replace(" ", "_")
+        if action in ACTIONS:
+            data = candidate
+            break
     return Resolution(
         action=action,
         query=str(data.get("query") or "").strip(" .'\""),

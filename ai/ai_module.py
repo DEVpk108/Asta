@@ -16,6 +16,9 @@ from core.context_builder import ContextBuilder
 from chat_history import ChatHistoryStore
 
 from .post_response_capture import PostResponseCapture, extract_prompt
+from .message_shortcuts import handle_shortcut, _is_creator_identity_question as is_creator_question
+from .response_formatter import (format_tool_success, format_tool_failure,
+    _is_superseded_failure, _is_intermediate_task_result, _verified_visual_response)
 from .llm_provider import create_llm_provider
 from .model_tool_calls import finish_model_response, speech_filter, looks_like_tool_markup
 from core.phrasing import say
@@ -319,6 +322,9 @@ class AIModule(Module):
                 return
 
         if self._handle_post_response_screenshot(text):
+            return
+
+        if handle_shortcut(self, text):
             return
 
         if self._handle_conversation_mode_command(text):
@@ -1230,7 +1236,7 @@ class AIModule(Module):
             "who is your creator",
             "who is asta's creator",
         }
-        return normalized in variants
+        return normalized in variants or is_creator_question(text)
 
     def _present_to_teacher(self):
         definitions = self.kernel.tool_registry.definitions()
@@ -1589,6 +1595,12 @@ class AIModule(Module):
     def on_tool_result(self, result):
         if not isinstance(result, ToolResult):
             return
+        if _is_superseded_failure(self, result) or _is_intermediate_task_result(self, result):
+            return
+        verified_response = _verified_visual_response(result)
+        if verified_response is not None:
+            self._emit_assistant_text(verified_response)
+            return
         result_metadata = (
             result.metadata if isinstance(result.metadata, dict) else {}
         )
@@ -1631,147 +1643,12 @@ class AIModule(Module):
 
     @staticmethod
     def _format_tool_success(result: ToolResult) -> str:
-        completion = (
-            result.metadata.get("completion_message")
-            if isinstance(result.metadata, dict)
-            else None
-        )
-        if completion:
-            return str(completion)
-        output = result.output
-        if isinstance(output, dict):
-            target = output.get("target")
-            if result.tool == "system.open_application" and target:
-                return f"Opened {target}."
-            if result.tool == "system.launch_application" and target:
-                return f"Launched {target}."
-            if result.tool == "system.close_application" and target:
-                # Say what was actually closed ("Close sport" closed Spotify.exe).
-                process = re.sub(r"\.exe$", "", str(output.get("process") or ""), flags=re.IGNORECASE)
-                if process and process.lower().replace(" ", "") != str(target).lower().replace(" ", ""):
-                    return f"Closed {process}."
-                return f"Closed {target}."
-            if result.tool == "media.ui_play":
-                return str(output.get("message") or "Playing it now.")
-            if result.tool == "media.control":
-                message = output.get("message")
-                if message:
-                    return str(message)
-                return "Media action completed."
-            if result.tool == "system.stop_process" and output.get("pid"):
-                return f"Stopped process {output['pid']}."
-            if result.tool == "system.start_process" and target:
-                return f"Started {target}."
-            if result.tool == "vision.screenshot":
-                path = output.get("path")
-                if path:
-                    print(f"[AI] Screenshot saved: {path}", flush=True)
-                return "Screenshot captured."
-            if result.tool == "vision.inspect":
-                summary = str(output.get("summary") or "").strip()
-                if output.get("question") and summary:
-                    return summary
-                if output.get("source") == "media_session" and output.get("track"):
-                    return f"Now playing {output['track']}."
-                if bool(output.get("verified")):
-                    return "I checked the screen. The requested visual condition is confirmed."
-                if bool(output.get("visual_match")):
-                    return "I checked the screen, but the visual verification was inconclusive."
-                return "I checked the screen, but could not verify the requested visual condition."
-            if result.tool == "notes.create_note":
-                title = output.get("title")
-                return f"Saved note '{title}'." if title else "Saved note."
-            if result.tool == "notes.read_note":
-                content = output.get("content")
-                return str(content).strip() if content else "That note is empty."
-            if result.tool == "notes.list_notes":
-                count = int(output.get("count", 0))
-                notes = output.get("notes") or []
-                if count == 0:
-                    return "You don't have any saved notes yet."
-                titles = [str(item.get("title")).strip() for item in notes[:8] if item.get("title")]
-                suffix = f": {', '.join(titles)}" if titles else "."
-                if count > len(titles):
-                    suffix = suffix.rstrip(".") + f", and {count - len(titles)} more."
-                return f"You have {count} saved note{'s' if count != 1 else ''}{suffix}"
-            if result.tool == "notes.search_notes":
-                count = int(output.get("count", 0))
-                matches = output.get("matches") or []
-                if count == 0:
-                    return "I couldn't find any matching notes."
-                titles = [str(item.get("title")).strip() for item in matches[:8] if item.get("title")]
-                return f"I found {count} matching note{'s' if count != 1 else ''}: {', '.join(titles)}."
-        if output is None:
-            return f"{result.tool} completed successfully."
-        return str(output)
+        return format_tool_success(result)
 
     @staticmethod
     def _format_tool_failure(result: ToolResult) -> str:
-        output = result.output if isinstance(result.output, dict) else {}
-
-        if str(result.error or "") == AIModule._REJECTED_ERROR:
-            return "Okay, I cancelled that."
-
-        if str(result.error or "").startswith("Approval expired"):
-            return AIModule._APPROVAL_EXPIRED_MESSAGE
-
-        if result.tool == "system.close_application":
-            target = output.get("target") or output.get("resolved_target")
-            if target:
-                return f"I couldn't close {target}."
-            return "I couldn't close the application."
-
-        if result.tool in {
-            "system.open_application",
-            "system.launch_application",
-        }:
-            target = output.get("target") or output.get("resolved_target")
-            missing = re.search(
-                r"No installed application matched '([^']+)'",
-                str(result.error or ""),
-            )
-            if missing:
-                return (
-                    f"I couldn't find an app called {missing.group(1)}. "
-                    "Could you say the name again?"
-                )
-            if target:
-                return f"I couldn't open {target}."
-            return "I couldn't open the application."
-
-        if result.tool == "system.start_process":
-            target = output.get("target")
-            return f"I couldn't start {target}." if target else "I couldn't start the process."
-
-        if result.tool == "media.ui_play":
-            query = output.get("query") or "that"
-            app = output.get("application") or "the app"
-            if output.get("method"):
-                return f"I pressed play on {query} in {app}, but it didn't start playing."
-            return f"I couldn't find {query} in {app}'s results."
-
-        if result.tool == "media.control":
-            error = str(result.error or "").lower()
-            if "one-time setup" in error or "not configured" in error or "asta_spotify_client_id" in error:
-                return (
-                    "Spotify's developer API isn't set up yet. "
-                    "I'll open the setup in your browser if I can."
-                )
-            if "spotify authorization" in error or "authorize a.s.t.a" in error:
-                return (
-                    "Spotify needs authorization. Please complete the Spotify authorization "
-                    "in the browser; I’ll continue the original task afterward."
-                )
-            return "I couldn't control media playback."
-
-        if result.tool == "system.stop_process":
-            return "I couldn't stop that process."
-
-        if result.tool in {"vision.screenshot", "vision.open_screenshot"}:
-            return "I couldn't complete the screenshot action."
-
-        # Keep internal diagnostics in logs/HUD metadata, not in spoken audio.
-        return "I couldn't complete that action."
+        return format_tool_failure(result, rejected_error=AIModule._REJECTED_ERROR,
+                                   approval_expired_message=AIModule._APPROVAL_EXPIRED_MESSAGE)
 
     def _cancel_post_response_capture(self):
         capture = getattr(self, "_post_response_capture", None)
