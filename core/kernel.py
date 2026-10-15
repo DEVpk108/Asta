@@ -1,4 +1,5 @@
 import threading
+from chat_history import ChatHistoryStore
 
 from .agent import AgentBrain
 from .applications import ApplicationManager
@@ -38,6 +39,9 @@ class Kernel:
         maximum_automatic_risk=None,
         authority_path=None,
     ):
+        self.chat_history = ChatHistoryStore()
+        self._owns_chat_history = True
+        self.desktop_lock = threading.RLock()
         self.event_bus = EventBus()
         self.model_runtime = None
         self.background_tasks = None
@@ -96,6 +100,7 @@ class Kernel:
         self.tool_dispatcher = ToolDispatcher(
             registry=self.tool_registry,
             authority=self.authority_manager,
+            desktop_lock=self.desktop_lock,
         )
 
         self.modules = []
@@ -106,6 +111,10 @@ class Kernel:
         self._shutdown_started = False
         self._shutdown_owner = None
         self._shutdown_complete = threading.Event()
+
+    @property
+    def session_id(self):
+        return self.chat_history.session_id
 
     def create_task(self, goal, **kwargs):
         return self.task_manager.create(goal, **kwargs)
@@ -153,6 +162,7 @@ class Kernel:
                 except Exception as exc:
                     print(f"[Kernel] Error shutting down {module.name}: {exc}")
             self._shutdown_model_runtime()
+            self.chat_history.close()
             vision_shutdown = getattr(self.vision_engine, "shutdown", None)
             if callable(vision_shutdown):
                 try:
@@ -234,9 +244,12 @@ class Kernel:
 
             print("[Kernel] Stopped")
         finally:
-            with self._shutdown_lock:
-                self._shutdown_owner = None
-                self._shutdown_complete.set()
+            try:
+                self.chat_history.close()
+            finally:
+                with self._shutdown_lock:
+                    self._shutdown_owner = None
+                    self._shutdown_complete.set()
 
     def _shutdown_model_runtime(self):
         if self.background_tasks is not None:

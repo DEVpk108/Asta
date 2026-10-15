@@ -544,12 +544,7 @@ class SpotifyProvider:
         if device_id:
             body["device_id"] = device_id
 
-        response = requests.put(
-            "https://api.spotify.com/v1/me/player/play",
-            headers={"Authorization": f"Bearer {token}"},
-            json=body,
-            timeout=15,
-        )
+        response = self._spotify_request("PUT", "/me/player/play", json_body=body)
         if response.status_code in {401, 403, 404}:
             detail = response.text.strip()
             raise RuntimeError(

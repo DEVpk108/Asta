@@ -32,6 +32,7 @@ class SpeechModule(Module):
         self._queue = queue.Queue()
         self._running = False
         self._speech_thread = None
+        self._engine_closed = False
         # Keep a small coalescing window to absorb back-to-back sentence chunks
         # without adding meaningful first-audio latency.
         self.coalesce_window = 0.03
@@ -50,6 +51,7 @@ class SpeechModule(Module):
 
     def initialize(self):
         print("[Speech] Initializing...", flush=True)
+        self._engine_closed = False
         self._running = True
         self.event_bus.subscribe("assistant_sentence", self.on_assistant_sentence)
         self.event_bus.subscribe(
@@ -82,17 +84,29 @@ class SpeechModule(Module):
         )
         self.event_bus.unsubscribe("speech_interrupt", self.on_speech_interrupt)
 
+        abort = getattr(self.engine, "abort", None)
+        if callable(abort):
+            abort()
         self._queue.put(None)
+        worker = self._speech_thread
+        if worker is not None and worker.is_alive():
+            if worker is not threading.current_thread():
+                worker.join(timeout=2.0)
+            if worker.is_alive():
+                print("[Speech] Worker still stopping; stream close deferred to its owner.", flush=True)
+                return
+        self._close_engine()
+        self._speech_thread = None
+        print("[Speech] Stopped", flush=True)
 
-        if self._speech_thread is not None and self._speech_thread.is_alive():
-            self._speech_thread.join(timeout=2.0)
-
+    def _close_engine(self):
+        with self._state_lock:
+            if self._engine_closed:
+                return
+            self._engine_closed = True
         close = getattr(self.engine, "close", None)
         if callable(close):
             close()
-
-        self._speech_thread = None
-        print("[Speech] Stopped", flush=True)
 
     @staticmethod
     def _looks_like_code_or_diagnostic(line):
@@ -447,84 +461,87 @@ class SpeechModule(Module):
         return " ".join(part.strip() for part in parts if part and part.strip())
 
     def _speech_loop(self):
-        while self._running:
-            try:
-                text = self._queue.get()
-                if text is None:
-                    self._queue.task_done()
-                    break
-
-                with self._state_lock:
-                    self._queued_text = max(0, self._queued_text - 1)
-
-                # If a new response arrived after an interrupt, this is the
-                # first accepted item and the new response should speak normally.
-                if self._interrupt_event.is_set():
-                    self._interrupt_event.clear()
-
-                text = self._get_coalesced_text(text)
-                if not text:
-                    self._queue.task_done()
-                    self._maybe_finish_speech()
-                    continue
-
-                with self._state_lock:
-                    self._synthesis_inflight += 1
-
-                # Only the first item of a response gets the early first
-                # clause; later (coalesced) sentences are already queued.
-                first_of_response = not getattr(self, "_response_audio_started", False)
-                self._response_audio_started = True
-
-                print(f"[Speech] Synthesizing: {text}", flush=True)
-                self._current_text = text
+        try:
+            while self._running:
                 try:
-                    if self._running and not self._interrupt_event.is_set():
-                        should_continue = lambda: (
-                            self._running and not self._interrupt_event.is_set()
+                    text = self._queue.get()
+                    if text is None:
+                        self._queue.task_done()
+                        break
+
+                    with self._state_lock:
+                        self._queued_text = max(0, self._queued_text - 1)
+
+                    # If a new response arrived after an interrupt, this is the
+                    # first accepted item and the new response should speak normally.
+                    if self._interrupt_event.is_set():
+                        self._interrupt_event.clear()
+
+                    text = self._get_coalesced_text(text)
+                    if not text:
+                        self._queue.task_done()
+                        self._maybe_finish_speech()
+                        continue
+
+                    with self._state_lock:
+                        self._synthesis_inflight += 1
+
+                    # Only the first item of a response gets the early first
+                    # clause; later (coalesced) sentences are already queued.
+                    first_of_response = not getattr(self, "_response_audio_started", False)
+                    self._response_audio_started = True
+
+                    print(f"[Speech] Synthesizing: {text}", flush=True)
+                    self._current_text = text
+                    try:
+                        if self._running and not self._interrupt_event.is_set():
+                            should_continue = lambda: (
+                                self._running and not self._interrupt_event.is_set()
+                            )
+                            stream_play = getattr(self.engine, "stream_play", None)
+                            if callable(stream_play):
+                                # Streamed: playback starts with the first chunk.
+                                completed = stream_play(
+                                    text,
+                                    should_continue=should_continue,
+                                    on_level=self._publish_audio_level,
+                                    first_clause=first_of_response,
+                                )
+                            else:
+                                audio = self.engine.synthesize(text)
+                                completed = audio is None or self.engine.play(
+                                    audio,
+                                    should_continue=should_continue,
+                                    on_level=self._publish_audio_level,
+                                )
+                            if not completed:
+                                print("[Speech] Playback interrupted.", flush=True)
+                    except Exception as exc:
+                        self._publish_audio_level(0.0, force=True)
+                        print(
+                            f"[Speech] Speech worker error: {type(exc).__name__}: {exc}",
+                            flush=True,
                         )
-                        stream_play = getattr(self.engine, "stream_play", None)
-                        if callable(stream_play):
-                            # Streamed: playback starts with the first chunk.
-                            completed = stream_play(
-                                text,
-                                should_continue=should_continue,
-                                on_level=self._publish_audio_level,
-                                first_clause=first_of_response,
-                            )
-                        else:
-                            audio = self.engine.synthesize(text)
-                            completed = audio is None or self.engine.play(
-                                audio,
-                                should_continue=should_continue,
-                                on_level=self._publish_audio_level,
-                            )
-                        if not completed:
-                            print("[Speech] Playback interrupted.", flush=True)
+                    finally:
+                        self._publish_audio_level(0.0, force=True)
+                        if self._queue.empty():
+                            # Let the device drain before speech_finished so the
+                            # microphone does not reopen over the last syllable.
+                            idle = getattr(self.engine, "idle", None)
+                            if callable(idle):
+                                idle()
+                        with self._state_lock:
+                            self._synthesis_inflight -= 1
+                            self._current_text = None
+                        self._queue.task_done()
+                        self._maybe_finish_speech()
                 except Exception as exc:
-                    self._publish_audio_level(0.0, force=True)
                     print(
-                        f"[Speech] Speech worker error: {type(exc).__name__}: {exc}",
+                        f"[Speech] Worker error: {type(exc).__name__}: {exc}",
                         flush=True,
                     )
-                finally:
-                    self._publish_audio_level(0.0, force=True)
-                    if self._queue.empty():
-                        # Let the device drain before speech_finished so the
-                        # microphone does not reopen over the last syllable.
-                        idle = getattr(self.engine, "idle", None)
-                        if callable(idle):
-                            idle()
-                    with self._state_lock:
-                        self._synthesis_inflight -= 1
-                        self._current_text = None
-                    self._queue.task_done()
-                    self._maybe_finish_speech()
-            except Exception as exc:
-                print(
-                    f"[Speech] Worker error: {type(exc).__name__}: {exc}",
-                    flush=True,
-                )
+        finally:
+            self._close_engine()
 
     def _maybe_finish_speech(self):
         with self._state_lock:

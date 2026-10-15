@@ -6,4 +6,16 @@
 from .store import ChatHistoryStore
 
 
-__all__ = ["ChatHistoryStore"]
+__all__ = ["ChatHistoryStore", "shared_history"]
+
+# Construction is also safe for small standalone module/test kernels.
+import threading
+_creation_lock = threading.RLock()
+
+
+def shared_history(kernel):
+    with _creation_lock:
+        store = getattr(kernel, "chat_history", None)
+        if store is None:
+            store = kernel.chat_history = ChatHistoryStore()
+        return store

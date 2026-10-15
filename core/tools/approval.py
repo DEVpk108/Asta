@@ -86,9 +86,15 @@ class ApprovalManager:
             return None
         return pending.request
 
-    def reject(self, request_id: str) -> bool:
+    def take(self, request_id: str, *, expired_only=False) -> PendingApproval | None:
         with self._lock:
-            return self._pending.pop(request_id, None) is not None
+            pending = self._pending.get(request_id)
+            if pending is None or (expired_only and not self._is_expired(pending)):
+                return None
+            return self._pending.pop(request_id)
+
+    def reject(self, request_id: str) -> bool:
+        return self.take(request_id) is not None
 
     def contains(self, request_id: str) -> bool:
         with self._lock:

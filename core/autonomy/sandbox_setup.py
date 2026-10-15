@@ -119,6 +119,7 @@ class SandboxSetupOperator:
         application_manager=None,
         open_target: Callable[[str], None] | None = None,
     ):
+        self.executable = None
         self.notify = notify or (lambda message: None)
         self.runtime_name = (runtime_name or os.getenv("ASTA_CONTAINER_RUNTIME", "docker")).strip().lower()
         self.image = (image or os.getenv("ASTA_SANDBOX_IMAGE", DEFAULT_SANDBOX_IMAGE)).strip()
@@ -222,6 +223,8 @@ class SandboxSetupOperator:
         return "Docker Desktop" if self.runtime_name == "docker" else "Podman"
 
     def _call(self, arguments, *, timeout, output_limit=4096):
+        if not self.executable:
+            return None
         try:
             return self._run([self.executable, *arguments], timeout=timeout, output_limit=output_limit)
         except (SandboxRuntimeError, OSError):

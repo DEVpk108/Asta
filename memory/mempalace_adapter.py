@@ -8,14 +8,25 @@ changing the kernel or AI layer.
 from __future__ import annotations
 
 import os
+import threading
+from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _serialized(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return call
 
 
 class MemPalaceAdapter:
     """Store and retrieve A.S.T.A. memories through MemPalace."""
 
     def __init__(self, *, palace_path: str | None = None, wing: str = "asta"):
+        self._lock = threading.RLock()
         self.palace_path = palace_path or os.getenv("ASTA_MEMPALACE_PATH")
         self.wing = wing
         self._collection = None
@@ -23,6 +34,7 @@ class MemPalaceAdapter:
         self.available = False
         self.error: str | None = None
 
+    @_serialized
     def initialize(self) -> bool:
         """Load MemPalace lazily so A.S.T.A. can still run without it installed."""
         try:
@@ -43,6 +55,7 @@ class MemPalaceAdapter:
             self.error = f"{type(exc).__name__}: {exc}"
             return False
 
+    @_serialized
     def remember(self, *, role: str, text: str, session_id: str = "") -> bool:
         """Store one verbatim conversation message as a MemPalace drawer."""
         if not self.available or self._collection is None:
@@ -93,6 +106,7 @@ class MemPalaceAdapter:
             self.error = f"{type(exc).__name__}: {exc}"
             return False
 
+    @_serialized
     def delete_session(self, session_id: str) -> bool:
         """Remove all conversation memories belonging to one chat session."""
         if not self.available or self._collection is None:
@@ -109,6 +123,7 @@ class MemPalaceAdapter:
             self.error = f"{type(exc).__name__}: {exc}"
             return False
 
+    @_serialized
     def search(self, query: str, *, n_results: int = 5) -> list[dict]:
         """Return raw semantic memory hits for the A.S.T.A. runtime."""
         if not self.available or self._stack is None:
@@ -150,6 +165,7 @@ class MemPalaceAdapter:
 
         return "\n".join(lines) if len(lines) > 1 else ""
 
+    @_serialized
     def status(self) -> dict[str, object]:
         return {
             "available": self.available,
@@ -158,6 +174,7 @@ class MemPalaceAdapter:
             "error": self.error,
         }
 
+    @_serialized
     def close(self) -> None:
         self._collection = None
         self._stack = None

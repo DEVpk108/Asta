@@ -19,6 +19,7 @@ import re
 import threading
 import time
 import unicodedata
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -134,7 +135,8 @@ class SongResolver:
         self.timeout = float(timeout if timeout is not None else os.getenv("ASTA_CATALOG_TIMEOUT", "2.5"))
         self.country = os.getenv("ASTA_CATALOG_COUNTRY", "IN")
         self._lock = threading.Lock()
-        self._cache: dict[str, list[dict[str, Any]]] = {}
+        self._cache = OrderedDict()
+        self._cache_limit = 256
         self._history: dict[str, Any] | None = None
         self.last: Resolution | None = None
 
@@ -193,14 +195,20 @@ class SongResolver:
         return title.strip(), artist.strip()
 
     def _search(self, term: str) -> list[dict[str, Any]]:
-        if term in self._cache:
-            return self._cache[term]
+        with self._lock:
+            if term in self._cache:
+                self._cache.move_to_end(term)
+                return [dict(row) for row in self._cache[term]]
         try:
             rows = self.fetch(term, country=self.country, timeout=self.timeout)
         except Exception as exc:
             print(f"[Catalog] Lookup failed for {term!r}: {type(exc).__name__}", flush=True)
             rows = []
-        self._cache[term] = rows
+        with self._lock:
+            self._cache[term] = [dict(row) for row in rows]
+            self._cache.move_to_end(term)
+            while len(self._cache) > self._cache_limit:
+                self._cache.popitem(last=False)
         return rows
 
     def _candidates(self, title: str) -> list[dict[str, Any]]:

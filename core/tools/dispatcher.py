@@ -1,4 +1,6 @@
 import time
+import threading
+from contextlib import nullcontext
 from typing import Any
 
 from core.contracts import (
@@ -18,7 +20,9 @@ class ToolDispatcher:
         registry: ToolRegistry,
         policy=None,
         authority: AuthorityManager | None = None,
+        desktop_lock=None,
     ):
+        self._desktop_lock = desktop_lock if desktop_lock is not None else threading.RLock()
         self.registry = registry
         self.authority = authority if authority is not None else AuthorityManager(
             policy=policy,
@@ -69,8 +73,13 @@ class ToolDispatcher:
                 },
             )
 
+        desktop = request.tool.startswith(("computer.", "vision.")) or request.tool in {
+            "project.open_program", "media.ui_play", "media.control", "browser.search",
+            "system.open_application", "system.launch_application", "system.close_application",
+        }
         try:
-            result = tool.execute(request)
+            with self._desktop_lock if desktop else nullcontext():
+                result = tool.execute(request)
         except Exception as exc:
             return self._failure(
                 request=request,

@@ -117,46 +117,47 @@ class OpenProjectProgramTool(Tool):
 
         relative = program.relative_to(root).as_posix()
         python = project_python(root)
-        log = tempfile.NamedTemporaryFile(prefix="asta-program-", suffix=".log", delete=False)
-        flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0) if os.name == "nt" else 0
-        try:
-            process = self._popen(
-                [python, relative, *arguments],
-                cwd=str(root),
-                stdin=subprocess.DEVNULL if flags == 0 else None,
-                stderr=log,
-                creationflags=flags,
-                **({} if os.name == "nt" else {"start_new_session": True}),
-            )
-        except Exception as exc:
-            log.close()
-            return self._result(request, start, success=False,
-                                error=f"Couldn't start {relative}: {type(exc).__name__}: {exc}")
+        with tempfile.TemporaryFile(mode="w+b") as log:
+            flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0) if os.name == "nt" else 0
+            try:
+                process = self._popen(
+                    [python, relative, *arguments],
+                    cwd=str(root),
+                    stdin=subprocess.DEVNULL if flags == 0 else None,
+                    stderr=log,
+                    creationflags=flags,
+                    **({} if os.name == "nt" else {"start_new_session": True}),
+                )
+            except Exception as exc:
+                return self._result(request, start, success=False,
+                                    error=f"Couldn't start {relative}: {type(exc).__name__}: {exc}")
 
-        settle = self._settle if self._settle is not None else _settle_seconds()
-        deadline = time.monotonic() + settle
-        returncode = process.poll()
-        while returncode is None and time.monotonic() < deadline:
-            time.sleep(0.1)
+            settle = self._settle if self._settle is not None else _settle_seconds()
+            deadline = time.monotonic() + settle
             returncode = process.poll()
-        log.close()
-        try:
-            stderr = Path(log.name).read_text(encoding="utf-8", errors="replace")[-_STDERR_TAIL:]
-        except OSError:
-            stderr = ""
-        output = {
-            "path": relative,
-            "command": f"python {relative}" + (" " + " ".join(arguments) if arguments else ""),
-            "pid": getattr(process, "pid", None),
-            "state": "running" if returncode is None else "finished",
-            "returncode": returncode,
-            "stderr": stderr,
-            "launched": True,
-        }
-        if returncode not in (None, 0):
-            last = next((line for line in reversed(stderr.strip().splitlines()) if line.strip()), "")
-            return self._result(
-                request, start, success=False, output=output,
-                error=f"{relative} crashed right after starting (exit {returncode})" + (f": {last}" if last else "."),
-            )
-        return self._result(request, start, success=True, output=output)
+            while returncode is None and time.monotonic() < deadline:
+                time.sleep(0.1)
+                returncode = process.poll()
+            try:
+                log.flush()
+                log.seek(0, os.SEEK_END)
+                log.seek(max(0, log.tell() - _STDERR_TAIL))
+                stderr = log.read().decode("utf-8", errors="replace")
+            except OSError:
+                stderr = ""
+            output = {
+                "path": relative,
+                "command": f"python {relative}" + (" " + " ".join(arguments) if arguments else ""),
+                "pid": getattr(process, "pid", None),
+                "state": "running" if returncode is None else "finished",
+                "returncode": returncode,
+                "stderr": stderr,
+                "launched": True,
+            }
+            if returncode not in (None, 0):
+                last = next((line for line in reversed(stderr.strip().splitlines()) if line.strip()), "")
+                return self._result(
+                    request, start, success=False, output=output,
+                    error=f"{relative} crashed right after starting (exit {returncode})" + (f": {last}" if last else "."),
+                )
+            return self._result(request, start, success=True, output=output)

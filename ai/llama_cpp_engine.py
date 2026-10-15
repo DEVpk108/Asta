@@ -1,4 +1,5 @@
 import json
+from functools import wraps
 import os
 import re
 import threading
@@ -11,6 +12,14 @@ from core import gpu_share
 
 from .llama_server_manager import LlamaServerManager
 from .model_tool_calls import native_tool_call_text
+
+
+def _serialized_request(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self._request_lock:
+            return method(self, *args, **kwargs)
+    return call
 
 
 class LlamaCppEngine:
@@ -43,6 +52,7 @@ class LlamaCppEngine:
         self.top_k = int(setting("TOP_K", "50" if env_prefix == "ASTA_LLM" else "20"))
         self.top_p = float(setting("TOP_P", "0.95"))
         self.min_p = float(setting("MIN_P", "0.0"))
+        self._request_lock = threading.RLock()
         self.session = requests.Session()
         self.server_manager = server_manager or LlamaServerManager(
             base_url=self.base_url, env_prefix=env_prefix
@@ -165,6 +175,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
 """.strip()
         self._messages = [{"role": "system", "content": self.system_prompt}]
 
+    @_serialized_request
     def set_system_prompt(self, prompt):
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("System prompt must be a non-empty string.")
@@ -193,6 +204,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
         self.model = model_id
         return model_id
 
+    @_serialized_request
     def warmup(self):
         start = time.perf_counter()
         try:
@@ -280,6 +292,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
 
         self._messages = system + turns
 
+    @_serialized_request
     def reset_conversation(self):
         self._messages = [{"role": "system", "content": self.system_prompt}]
         self.previous_response_id = None
@@ -600,6 +613,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
         self._trim_history()
         return result
 
+    @_serialized_request
     def complete_json(self, system, user, max_tokens=96, timeout=None):
         """One stateless JSON completion (no chat history, not spoken).
 
@@ -632,6 +646,7 @@ Your goal is not merely to produce an answer. Help the user understand the probl
         message = choice.get("message") or {}
         return str(message.get("content") or "")
 
+    @_serialized_request
     def generate_response(self, text, on_sentence=None, context=None):
         if not text:
             return ""

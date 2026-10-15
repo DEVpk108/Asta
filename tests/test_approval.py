@@ -77,8 +77,8 @@ def test_approved_request_executes_once():
         approved=True,
     )
 
-    assert len(results) == 2
-    assert results[1].success is False
+    # Duplicate delivery is idempotent: no execution or spurious failure card.
+    assert len(results) == 1
 
     teardown(kernel)
 

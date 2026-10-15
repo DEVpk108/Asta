@@ -13,7 +13,7 @@ from core.tools import ToolRequestBuilder
 from core.approval_language import classify_approval, normalize_confirmation_transcript
 from core.context_builder import ContextBuilder
 
-from chat_history import ChatHistoryStore
+from chat_history import ChatHistoryStore, shared_history
 
 from .post_response_capture import PostResponseCapture, extract_prompt
 from .message_shortcuts import handle_shortcut, _is_creator_identity_question as is_creator_question
@@ -145,7 +145,8 @@ class AIModule(Module):
 
         self.engine = create_llm_provider(kernel=kernel, purpose="chat")
         self.tool_request_builder = ToolRequestBuilder(kernel.tool_registry)
-        self.chat_history = ChatHistoryStore()
+        self.chat_history = shared_history(kernel)
+        self._chat_epoch = 0
         self._post_response_capture = PostResponseCapture(self.event_bus)
 
     def initialize(self):
@@ -160,6 +161,7 @@ class AIModule(Module):
         warmup = getattr(self.engine, "warmup", None)
         if callable(warmup):
             warmup()
+        self.event_bus.subscribe("chat_session_changed", self.on_chat_session_changed)
         self.event_bus.subscribe("user_message", self.on_user_message)
         self.event_bus.subscribe(
             "incremental_user_message",
@@ -179,6 +181,7 @@ class AIModule(Module):
         capture = getattr(self, "_post_response_capture", None)
         if capture is not None:
             capture.close()
+        self.event_bus.unsubscribe("chat_session_changed", self.on_chat_session_changed)
         self.event_bus.unsubscribe("user_message", self.on_user_message)
         self.event_bus.unsubscribe(
             "incremental_user_message",
@@ -192,7 +195,8 @@ class AIModule(Module):
             self.on_tool_confirmation_required,
         )
         self.event_bus.unsubscribe("tool_confirmation_response", self.on_tool_confirmation_answered)
-        self.chat_history.close()
+        if not getattr(self.kernel, "_owns_chat_history", False):
+            self.chat_history.close()
 
         engine_shutdown = getattr(self.engine, "shutdown", None)
         if callable(engine_shutdown):
@@ -485,7 +489,7 @@ class AIModule(Module):
         if not forced and not talk.worth_checking(text, files, last):
             return None
         try:
-            history = self.chat_history.latest_active_context(limit=8)
+            history = self._active_chat_context(limit=8)
         except Exception:
             history = []
         recent = ""
@@ -1052,12 +1056,29 @@ class AIModule(Module):
             )
         )
 
+    def _active_chat_context(self, *, limit):
+        store = self.chat_history
+        read = getattr(store, "messages_for_session", None)
+        if callable(read):
+            return read(store.session_id, limit=limit)
+        return store.latest_active_context(limit=limit)  # legacy test adapters
+
+    def on_chat_session_changed(self, session_id):
+        self._chat_epoch = getattr(self, "_chat_epoch", 0) + 1
+        self._cancel_post_response_capture()
+        cancel = getattr(self.engine, "cancel", None)
+        if callable(cancel):
+            cancel()
+        reset = getattr(self.engine, "reset_conversation", None)
+        if callable(reset):
+            reset()
+
     def _context_response(self, text):
         normalized = self._normalize_question(text)
         if normalized not in self._CONTEXT_QUESTIONS:
             return None
 
-        messages = self.chat_history.latest_active_context(limit=12)
+        messages = self._active_chat_context(limit=12)
         if not messages:
             return "We haven't talked about anything in this conversation yet."
 
@@ -1709,9 +1730,14 @@ class AIModule(Module):
         return context
 
     def _generate_response(self, text, runtime_context=None):
+        session_id = getattr(self.kernel, "session_id", None)
+        epoch = getattr(self, "_chat_epoch", 0)
+        def still_current():
+            return (getattr(self.kernel, "session_id", None) == session_id
+                    and getattr(self, "_chat_epoch", 0) == epoch)
         context = self._prepare_runtime_context(text, runtime_context)
         def on_sentence(sentence):
-            if sentence:
+            if sentence and still_current():
                 self.event_bus.emit("assistant_sentence", text=sentence)
 
         response = self.engine.generate_response(
@@ -1719,6 +1745,8 @@ class AIModule(Module):
             on_sentence=speech_filter(on_sentence),
             context=context,
         )
+        if not still_current():
+            return None
         if not response:
             print("[AI] No response generated.", flush=True)
             return
@@ -1728,4 +1756,6 @@ class AIModule(Module):
         if not response:
             return
         self.event_bus.emit("assistant_response", text=response)
+        if not contained_tool_markup:
+            self.event_bus.emit("conversation_turn_completed", text=response, session_id=session_id)
         return None if contained_tool_markup else response

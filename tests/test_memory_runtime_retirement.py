@@ -131,7 +131,7 @@ def test_memory_recall_context_streaming_and_writes_survive_retirement(
     memory = MemoryModule(kernel)
     backend = FakeMemoryBackend(available)
     memory.backend = backend
-    monkeypatch.setattr(memory, '_current_session_id', lambda: 'inert-session')
+    kernel.chat_history.session_id = 'inert-session'
     ai = AIModule(kernel)
     engine = StreamingEngine()
     ai.engine = engine

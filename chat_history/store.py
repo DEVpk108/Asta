@@ -6,8 +6,17 @@ import os
 import sqlite3
 import threading
 import uuid
+from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _serialized(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return call
 
 
 class ChatHistoryStore:
@@ -18,11 +27,14 @@ class ChatHistoryStore:
         configured = db_path or os.getenv("ASTA_CHAT_HISTORY_DB")
         self.db_path = Path(configured) if configured else root / "data" / "chat_history.db"
         self.history_limit = max(1, int(history_limit))
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._connection = None
         self.session_id = uuid.uuid4().hex
 
+    @_serialized
     def initialize(self) -> None:
+        if self._connection is not None:
+            return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.db_path, check_same_thread=False)
         connection.execute("PRAGMA journal_mode=WAL")
@@ -66,6 +78,7 @@ class ChatHistoryStore:
                 (self.session_id, self._now()),
             )
 
+    @_serialized
     def new_session(self) -> str:
         if self._connection is None:
             self.session_id = uuid.uuid4().hex
@@ -81,6 +94,7 @@ class ChatHistoryStore:
         self.session_id = new_id
         return new_id
 
+    @_serialized
     def switch_session(self, session_id: str) -> bool:
         value = str(session_id or "").strip()
         if not value or self._connection is None:
@@ -97,6 +111,7 @@ class ChatHistoryStore:
         self.session_id = value
         return True
 
+    @_serialized
     def delete_session(self, session_id: str) -> bool:
         """Permanently remove one chat session and its messages.
 
@@ -134,6 +149,7 @@ class ChatHistoryStore:
             self._connection.commit()
         return True
 
+    @_serialized
     def append(self, role: str, text: str) -> None:
         value = str(text or "").strip()
         if not value or self._connection is None:
@@ -151,9 +167,11 @@ class ChatHistoryStore:
             )
             self._connection.commit()
 
+    @_serialized
     def recent(self) -> list[dict[str, str]]:
         return self.messages_for_session(self.session_id)
 
+    @_serialized
     def messages_for_session(self, session_id: str, *, limit: int | None = None) -> list[dict[str, str]]:
         """Return recent messages for one chat session in chronological order."""
         value = str(session_id or "").strip()
@@ -179,6 +197,7 @@ class ChatHistoryStore:
             for role, text, created_at in rows
         ]
 
+    @_serialized
     def latest_active_context(self, *, limit: int = 12) -> list[dict[str, str]]:
         """Return the most recently active session's latest messages.
 
@@ -212,6 +231,7 @@ class ChatHistoryStore:
 
         return self.messages_for_session(row[0], limit=max_items)
 
+    @_serialized
     def sessions(self, *, limit: int = 50) -> list[dict[str, object]]:
         if self._connection is None:
             return []
@@ -280,6 +300,7 @@ class ChatHistoryStore:
             )
         return result
 
+    @_serialized
     def close(self) -> None:
         connection = self._connection
         self._connection = None

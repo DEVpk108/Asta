@@ -209,54 +209,55 @@ class _PlaywrightSpotifyBrowser:
                     executable_path=executable,
                     headless=False,
                 )
-            page = context.pages[0] if context.pages else context.new_page()
-            page.set_default_timeout(8_000)
-            page.goto(self.dashboard_url, wait_until="domcontentloaded")
-            page.bring_to_front()
+            try:
+                page = context.pages[0] if context.pages else context.new_page()
+                page.set_default_timeout(8_000)
+                page.goto(self.dashboard_url, wait_until="domcontentloaded")
+                page.bring_to_front()
 
-            # Spotify renders the dashboard client-side; allow a bounded
-            # hydration window before deciding a control is unavailable.
-            self._wait_for_dashboard_render(page)
-
-            # Unauthenticated dashboard URLs currently redirect to the public
-            # Spotify for Developers homepage. Open its Log in control first;
-            # credentials remain a user-only boundary.
-            if self._public_login_control_visible(page):
-                self._click_login_control(page)
+                # Spotify renders the dashboard client-side; allow a bounded
+                # hydration window before deciding a control is unavailable.
                 self._wait_for_dashboard_render(page)
 
-            if self._login_visible(page):
-                self._announce(
-                    "Please sign in to your Spotify account in the A.S.T.A. browser window. I’ll continue after the Developer Dashboard becomes available."
-                )
-                if not self._wait_for_dashboard(page, PlaywrightTimeoutError):
-                    context.close()
-                    raise _UserActionRequired(
-                        "Spotify sign-in is required. Finish sign-in in the A.S.T.A. browser window; the task remains paused until setup can continue."
+                # Unauthenticated dashboard URLs currently redirect to the public
+                # Spotify for Developers homepage. Open its Log in control first;
+                # credentials remain a user-only boundary.
+                if self._public_login_control_visible(page):
+                    self._click_login_control(page)
+                    self._wait_for_dashboard_render(page)
+
+                if self._login_visible(page):
+                    self._announce(
+                        "Please sign in to your Spotify account in the A.S.T.A. browser window. I’ll continue after the Developer Dashboard becomes available."
                     )
+                    if not self._wait_for_dashboard(page, PlaywrightTimeoutError):
+                        raise _UserActionRequired(
+                            "Spotify sign-in is required. Finish sign-in in the A.S.T.A. browser window; the task remains paused until setup can continue."
+                        )
 
-            if self._terms_gate_visible(page):
-                self._announce(
-                    "Spotify is asking for its latest Developer Terms before I can create the app. Please complete that account-level step in the browser."
-                )
-                if not self._wait_for_dashboard(page, PlaywrightTimeoutError):
-                    context.close()
-                    raise _UserActionRequired(
-                        "Spotify Developer Terms setup is still required in the browser."
+                if self._terms_gate_visible(page):
+                    self._announce(
+                        "Spotify is asking for its latest Developer Terms before I can create the app. Please complete that account-level step in the browser."
                     )
+                    if not self._wait_for_dashboard(page, PlaywrightTimeoutError):
+                        raise _UserActionRequired(
+                            "Spotify Developer Terms setup is still required in the browser."
+                        )
 
-            self._open_or_create_app(page)
+                self._open_or_create_app(page)
 
-            if not self._redirect_configured(page):
-                self._configure_redirect(page)
+                if not self._redirect_configured(page):
+                    self._configure_redirect(page)
 
-            client_id = self._extract_client_id(page)
-            context.close()
-            if not client_id:
-                raise RuntimeError(
-                    "Could not locate the Spotify Client ID after app setup."
-                )
-            return client_id
+                client_id = self._extract_client_id(page)
+                if not client_id:
+                    raise RuntimeError(
+                        "Could not locate the Spotify Client ID after app setup."
+                    )
+                return client_id
+
+            finally:
+                context.close()
 
     @staticmethod
     def _find_windows_chrome() -> str | None:

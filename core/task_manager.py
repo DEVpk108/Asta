@@ -17,7 +17,8 @@ class TaskManager:
     memory, MCP and reflection can build around.
     """
 
-    def __init__(self, *, event_bus=None):
+    def __init__(self, *, event_bus=None, terminal_history_limit=100):
+        self._terminal_history_limit = max(1, int(terminal_history_limit))
         self.event_bus = event_bus
         self._tasks: dict[str, AgentTask] = {}
         self._active_task_id: str | None = None
@@ -51,6 +52,11 @@ class TaskManager:
         )
 
         with self._lock:
+            terminal = [key for key, item in self._tasks.items()
+                        if item.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}]
+            for key in terminal[:-self._terminal_history_limit]:
+                if key != self._active_task_id:
+                    self._tasks.pop(key, None)
             self._tasks[task.id] = task
 
             paused_snapshot = None

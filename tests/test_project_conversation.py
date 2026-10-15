@@ -46,7 +46,7 @@ def test_a_vague_request_gets_a_question_and_the_answer_starts_the_task(tmp_path
                                    "Then open snake.py on the desktop.", "question": ""},
     )
     chat = []
-    ai.chat_history.latest_active_context = lambda limit=12: list(chat)
+    ai.chat_history.messages_for_session = lambda session_id, limit=12: list(chat)
     try:
         # A fresh start: no task has run yet, only the project on disk.
         said = "Hey I want you to make changes in the snake game we were building"

@@ -308,20 +308,24 @@ class RoutedLLMProvider:
         with self.client_lock:
             profile = self.runtime.select(goal, task_id=task_id, coding_scope=coding_scope)
             engine = self._engine(profile)
-            self._configure(engine, profile)
-            engine.reset_conversation()
-            self.last_profile = profile
-            response = self.runtime.execute(profile, engine, lambda e: e.generate_response(prompt, context=None))
-            outcome = getattr(engine, "last_generation", None) or {}
-            if outcome.get("cancelled") or outcome.get("finish_reason") == "length":
-                reason = "timeout" if outcome.get("timed_out") else ("cancelled" if outcome.get("cancelled") else "output limit")
-                raise ModelRoutingError(f"Agent generation incomplete ({reason}); no partial plan will execute.")
-            if not task_id and response:
-                with self.runtime.lock:
-                    self.runtime.pending_goals[str(goal).strip()] = profile
-                    while len(self.runtime.pending_goals) > 64:
-                        self.runtime.pending_goals.popitem(last=False)
-            return response
+        def operation(e):
+            with self.client_lock:
+                self._configure(e, profile)
+                e.reset_conversation()
+                self.last_profile = profile
+                response = e.generate_response(prompt, context=None)
+                outcome = getattr(e, "last_generation", None) or {}
+                if outcome.get("cancelled") or outcome.get("finish_reason") == "length":
+                    reason = "timeout" if outcome.get("timed_out") else ("cancelled" if outcome.get("cancelled") else "output limit")
+                    raise ModelRoutingError(f"Agent generation incomplete ({reason}); no partial plan will execute.")
+                return response
+        response = self.runtime.execute(profile, engine, operation)
+        if not task_id and response:
+            with self.runtime.lock:
+                self.runtime.pending_goals[str(goal).strip()] = profile
+                while len(self.runtime.pending_goals) > 64:
+                    self.runtime.pending_goals.popitem(last=False)
+        return response
 
     def generate_response(self, text, on_sentence=None, context=None):
         if not text:
@@ -330,31 +334,28 @@ class RoutedLLMProvider:
             manager = getattr(self.runtime.kernel, "task_manager", None)
             task = manager.current() if manager is not None else None
             task_profile = self.runtime.task_profiles.get(getattr(task, "id", None))
-            followup = task_profile or (
-                "coding" if self.runtime.active_profile == "coding" else self.last_profile
-            )
-            # In dual mode interactive chat always stays on the conversation service.
+            followup = task_profile or ("coding" if self.runtime.active_profile == "coding" else self.last_profile)
             profile = "general" if self.runtime.mode == "dual" else self.runtime.select(text, followup_profile=followup)
             engine = self._engine(profile)
-            self._configure(engine, profile)
-            # Canonical per-client chat history crosses profiles; agent history is separate.
-            engine._messages = [{"role": "system", "content": self.system_prompt}] + [dict(item) for item in self.history]
-            engine._trim_history()
-            try:
-                response = self.runtime.execute(profile, engine, lambda e: e.generate_response(text, on_sentence=on_sentence, context=context))
-            except ModelRoutingError as exc:
-                response = f"I couldn't use the requested {profile} model: {exc} No alternate model was used."
-                if on_sentence:
-                    on_sentence(response)
+        def operation(e):
+            with self.client_lock:
+                self._configure(e, profile)
+                e._messages = [{"role": "system", "content": self.system_prompt}] + [dict(item) for item in self.history]
+                e._trim_history()
+                response = e.generate_response(text, on_sentence=on_sentence, context=context)
+                self.history = [dict(item) for item in e._messages[1:]]
+                self.last_profile = profile
                 return response
-            self.history = [dict(item) for item in engine._messages[1:]]
-            self.last_profile = profile
+        try:
+            return self.runtime.execute(profile, engine, operation)
+        except ModelRoutingError as exc:
+            response = f"I couldn't use the requested {profile} model: {exc} No alternate model was used."
+            if on_sentence:
+                on_sentence(response)
             return response
 
     def complete_json(self, system, user, max_tokens=96, timeout=None):
         with self.client_lock:
-            # Intent classification is role-neutral. Reuse the resident profile
-            # instead of swapping back to general before every coding follow-up.
             profile = "general" if self.runtime.mode == "dual" else (self.runtime.active_profile or "general")
             engine = self._engine(profile)
-            return self.runtime.execute(profile, engine, lambda e: e.complete_json(system, user, max_tokens=max_tokens, timeout=timeout))
+        return self.runtime.execute(profile, engine, lambda e: e.complete_json(system, user, max_tokens=max_tokens, timeout=timeout))

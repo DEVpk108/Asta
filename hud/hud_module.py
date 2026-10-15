@@ -5,7 +5,7 @@ from threading import RLock
 
 from core.module import Module
 
-from chat_history import ChatHistoryStore
+from chat_history import ChatHistoryStore, shared_history
 
 from .hud_state import HUDState
 from .transport import HUDTransport
@@ -27,7 +27,7 @@ class HUDModule(Module):
         self.state = HUDState()
         self._model_state_lock = RLock()
         self.transport = HUDTransport()
-        self.chat_history = ChatHistoryStore()
+        self.chat_history = shared_history(kernel)
         self._conversation_active = False
         self._runtime_ready = False
 
@@ -314,6 +314,7 @@ class HUDModule(Module):
         if message_type == "hud.chat_select":
             session_id = str(message.get("session_id") or "").strip()
             if self.chat_history.switch_session(session_id):
+                self.event_bus.emit("chat_session_changed", session_id=session_id)
                 print(f"[Chat] Selected session {session_id}", flush=True)
                 sessions = self.chat_history.sessions()
                 self.transport.publish_chat_history(
@@ -326,16 +327,20 @@ class HUDModule(Module):
 
         if message_type == "hud.chat_delete":
             session_id = str(message.get("session_id") or "").strip()
+            previous_session = self.chat_history.session_id
             if self.chat_history.delete_session(session_id):
                 memory = getattr(self.kernel, "memory", None)
                 if memory is not None:
                     memory.delete_session(session_id)
+                if self.chat_history.session_id != previous_session:
+                    self.event_bus.emit("chat_session_changed", session_id=self.chat_history.session_id)
                 print(f"[Chat] Deleted session {session_id}", flush=True)
                 self._publish_chat_context()
             return
 
         if message_type == "hud.chat_new":
             session_id = self.chat_history.new_session()
+            self.event_bus.emit("chat_session_changed", session_id=session_id)
             print(f"[Chat] New session {session_id}", flush=True)
             sessions = self.chat_history.sessions()
             self.transport.publish_chat_history([], session_id=session_id, sessions=sessions)
@@ -686,4 +691,5 @@ class HUDModule(Module):
         except OSError:
             pass
         self.transport.stop()
-        self.chat_history.close()
+        if not getattr(self.kernel, "_owns_chat_history", False):
+            self.chat_history.close()

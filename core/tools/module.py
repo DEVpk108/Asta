@@ -26,8 +26,12 @@ class ToolRuntimeModule(Module):
         # after ASTA repairs it, exactly that command may run once more
         # without asking again.
         self._approved_retries: dict[tuple, float] = {}
+        self._timer_lock = threading.RLock()
+        self._timers = {}
+        self._closing = False
 
     def initialize(self):
+        self._closing = False
         self.event_bus.subscribe("tool_request", self.on_tool_request)
         self.event_bus.subscribe(
             "tool_confirmation_response",
@@ -36,6 +40,13 @@ class ToolRuntimeModule(Module):
         print("[Tools] Ready", flush=True)
 
     def shutdown(self):
+        with self._timer_lock:
+            self._closing = True
+            timers = list(self._timers.values())
+            self._timers.clear()
+            self._approved_retries.clear()
+        for timer in timers:
+            timer.cancel()
         self.event_bus.unsubscribe("tool_request", self.on_tool_request)
         self.event_bus.unsubscribe(
             "tool_confirmation_response",
@@ -44,6 +55,8 @@ class ToolRuntimeModule(Module):
         print("[Tools] Stopped", flush=True)
 
     def on_tool_request(self, request):
+        if self._closing:
+            return
         if not isinstance(request, ToolRequest):
             print("[Tools] Ignoring invalid tool request.", flush=True)
             return
@@ -96,19 +109,31 @@ class ToolRuntimeModule(Module):
         self._schedule_expiry(pending.request.request_id)
 
     def _schedule_expiry(self, request_id):
-        """Reject an unanswered approval when it expires.
-
-        Previously an expired approval was only cleaned up when the user next
-        spoke, so its task stayed "awaiting approval" and blocked new work.
-        """
         ttl = float(getattr(self.kernel.approval_manager, "ttl_seconds", 0) or 0)
         if ttl <= 0:
             return
-        timer = threading.Timer(ttl + 0.5, self._expire_approval, args=(request_id,))
-        timer.daemon = True
-        timer.start()
+        with self._timer_lock:
+            if self._closing or self.kernel.approval_manager.get(request_id) is None:
+                return
+            previous = self._timers.pop(request_id, None)
+            if previous is not None:
+                previous.cancel()
+            timer = threading.Timer(ttl + 0.5, lambda: self._expire_approval(request_id, timer=timer))
+            timer.daemon = True
+            self._timers[request_id] = timer
+            timer.start()
 
-    def _expire_approval(self, request_id):
+    def _cancel_expiry(self, request_id):
+        with self._timer_lock:
+            timer = self._timers.pop(request_id, None)
+        if timer is not None:
+            timer.cancel()
+
+    def _expire_approval(self, request_id, *, timer=None):
+        with self._timer_lock:
+            if self._closing or (timer is not None and self._timers.get(request_id) is not timer):
+                return
+            self._timers.pop(request_id, None)
         manager = self.kernel.approval_manager
         pending = manager.get(request_id)
         if pending is None or manager.contains(request_id):
@@ -157,6 +182,8 @@ class ToolRuntimeModule(Module):
         self._confirmation_response(request_id, approved)
 
     def _confirmation_response(self, request_id, approved, *, expired=False):
+        if self._closing:
+            return
         if not isinstance(request_id, str):
             self._emit_error(request_id, "Invalid request_id.")
             return
@@ -165,15 +192,15 @@ class ToolRuntimeModule(Module):
             self._emit_error(request_id, "'approved' must be a boolean.")
             return
 
+        self._cancel_expiry(request_id)
+        manager = self.kernel.approval_manager
+        pending = manager.take(request_id, expired_only=expired)
+        if pending is None:
+            return
+        if manager._is_expired(pending):
+            approved, expired = False, True
         if approved:
-            request = self.kernel.approval_manager.approve(request_id)
-
-            if request is None:
-                self._emit_error(
-                    request_id,
-                    "No pending tool request exists for this request_id.",
-                )
-                return
+            request = pending.request
 
             background = getattr(self.kernel, "background_tasks", None)
             if background is not None and not background.allow_request(request):
@@ -186,18 +213,11 @@ class ToolRuntimeModule(Module):
                 confirmed=True,
             )
             if not result.success and is_sandbox_setup_error(result.error):
-                self._approved_retries[self._fingerprint(request)] = time.monotonic()
+                with self._timer_lock:
+                    self._approved_retries[self._fingerprint(request)] = time.monotonic()
+                    while len(self._approved_retries) > 64:
+                        self._approved_retries.pop(next(iter(self._approved_retries)))
             self._emit_result(result, request=request)
-            return
-
-        pending = self.kernel.approval_manager.get(request_id)
-        rejected = self.kernel.approval_manager.reject(request_id)
-
-        if not rejected:
-            self._emit_error(
-                request_id,
-                "No pending tool request exists for this request_id.",
-            )
             return
 
         rejection_metadata = {"request_id": request_id}
@@ -232,11 +252,12 @@ class ToolRuntimeModule(Module):
         """One rerun of an approved command that the sandbox couldn't start."""
         if not (getattr(request, "metadata", None) or {}).get("retry_after_setup"):
             return False
-        now = time.monotonic()
-        for key, created in list(self._approved_retries.items()):
-            if now - created > APPROVED_RETRY_SECONDS:
-                self._approved_retries.pop(key, None)
-        created = self._approved_retries.pop(self._fingerprint(request), None)
+        with self._timer_lock:
+            now = time.monotonic()
+            for key, created in list(self._approved_retries.items()):
+                if now - created > APPROVED_RETRY_SECONDS:
+                    self._approved_retries.pop(key, None)
+            created = self._approved_retries.pop(self._fingerprint(request), None)
         if created is None:
             return False
         print("[Tools] Rerunning the command you already approved, now that the sandbox is ready.", flush=True)
