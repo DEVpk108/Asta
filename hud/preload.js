@@ -14,6 +14,10 @@ contextBridge.exposeInMainWorld('asta', {
   deleteChatSession: (sessionId) => ipcRenderer.send('hud:delete-chat', sessionId),
   startNewChat: () => ipcRenderer.send('hud:new-chat'),
   setConversationMode: (enabled) => ipcRenderer.send('hud:conversation-mode', !!enabled),
+  acknowledgeResponseRender: (responseId) => ipcRenderer.send('hud:rendered', responseId),
+  onCaptureResponse: (fn) => {
+    ipcRenderer.on('asta:capture-response', (_event, message) => { fn(message) })
+  },
   onCommand: (fn) => {
     ipcRenderer.on('asta:command', (_event, cmd) => {
       try { fn(cmd) } catch (e) { /* ignore */ }

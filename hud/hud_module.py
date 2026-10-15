@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from threading import RLock
 
@@ -35,6 +36,9 @@ class HUDModule(Module):
         self.event_bus.subscribe("background_task_changed", self.on_background_task_changed)
         self.event_bus.subscribe("workspace_updated", self.on_workspace_updated)
         self.event_bus.subscribe("voice_ready", self.on_voice_ready)
+        self.event_bus.subscribe("capture_response_begin", self.on_capture_response_begin)
+        self.event_bus.subscribe("capture_response_ready", self.on_capture_response_ready)
+        self.event_bus.subscribe("capture_response_cancel", self.on_capture_response_cancel)
         self.event_bus.subscribe("assistant_sentence", self.on_assistant_sentence)
         self.event_bus.subscribe("command_acknowledged", self.on_command_acknowledged)
         self.event_bus.subscribe("task_progress", self.on_task_progress)
@@ -279,6 +283,11 @@ class HUDModule(Module):
         if not isinstance(message, dict):
             return
         message_type = message.get("type")
+        if message_type == "hud.rendered":
+            response_id = message.get("response_id")
+            if isinstance(response_id, str) and re.fullmatch(r"[0-9a-f]{32}", response_id):
+                self.event_bus.emit("hud_rendered", response_id=response_id)
+            return
         if message_type == "hud.approval":
             request_id = message.get("request_id")
             approved = message.get("approved")
@@ -620,6 +629,15 @@ class HUDModule(Module):
         else:
             self.set_state(mode="listening", intensity="medium", status="LISTENING", progress=None, activity="approval_rejected")
 
+    def on_capture_response_begin(self, response_id):
+        self.transport.publish_capture_response("begin", response_id)
+
+    def on_capture_response_ready(self, response_id, text):
+        self.transport.publish_capture_response("ready", response_id, text)
+
+    def on_capture_response_cancel(self, response_id):
+        self.transport.publish_capture_response("cancel", response_id)
+
     def on_assistant_sentence(self, text, spoken=None):
         if not isinstance(text, str) or not text.strip():
             return
@@ -637,6 +655,9 @@ class HUDModule(Module):
             ("background_task_changed", self.on_background_task_changed),
             ("workspace_updated", self.on_workspace_updated),
             ("voice_ready", self.on_voice_ready),
+            ("capture_response_begin", self.on_capture_response_begin),
+            ("capture_response_ready", self.on_capture_response_ready),
+            ("capture_response_cancel", self.on_capture_response_cancel),
             ("assistant_sentence", self.on_assistant_sentence),
             ("command_acknowledged", self.on_command_acknowledged),
             ("task_progress", self.on_task_progress),

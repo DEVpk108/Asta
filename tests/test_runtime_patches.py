@@ -1,3 +1,5 @@
+import threading
+
 from core import Kernel
 from core.tools import ScreenshotTool, ToolRuntimeModule
 from ai.runtime_patch import (
@@ -71,7 +73,12 @@ def test_mixed_request_generates_response_then_executes_screenshot():
 
     kernel = Kernel()
     captured = []
-    kernel.register_tool(ScreenshotTool(capture=lambda: captured.append("shot.png") or {"path": "shot.png"}))
+    done = threading.Event()
+    def capture():
+        captured.append("shot.png")
+        done.set()
+        return {"path": "shot.png"}
+    kernel.register_tool(ScreenshotTool(capture=capture))
 
     ai = AIModule(kernel)
     engine = RecordingEngine()
@@ -85,6 +92,7 @@ def test_mixed_request_generates_response_then_executes_screenshot():
         ai.on_user_message("Okay tell me a joke then take a screenshot")
 
         assert engine.calls == ["Okay tell me a joke"]
+        assert done.wait(3), "Headless render fallback never dispatched"
         assert captured == ["shot.png"]
     finally:
         kernel.shutdown()

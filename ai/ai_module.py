@@ -15,8 +15,9 @@ from core.context_builder import ContextBuilder
 
 from chat_history import ChatHistoryStore
 
+from .post_response_capture import PostResponseCapture, extract_prompt
 from .llm_provider import create_llm_provider
-from .model_tool_calls import finish_model_response, speech_filter
+from .model_tool_calls import finish_model_response, speech_filter, looks_like_tool_markup
 from core.phrasing import say
 
 
@@ -142,6 +143,7 @@ class AIModule(Module):
         self.engine = create_llm_provider(kernel=kernel, purpose="chat")
         self.tool_request_builder = ToolRequestBuilder(kernel.tool_registry)
         self.chat_history = ChatHistoryStore()
+        self._post_response_capture = PostResponseCapture(self.event_bus)
 
     def initialize(self):
         print("[AI] Initializing...", flush=True)
@@ -171,6 +173,9 @@ class AIModule(Module):
         print("[AI] Ready", flush=True)
 
     def shutdown(self):
+        capture = getattr(self, "_post_response_capture", None)
+        if capture is not None:
+            capture.close()
         self.event_bus.unsubscribe("user_message", self.on_user_message)
         self.event_bus.unsubscribe(
             "incremental_user_message",
@@ -267,6 +272,7 @@ class AIModule(Module):
         Without this the LLM kept streaming, and the next sentence it produced
         re-armed the speech worker, so A.S.T.A. resumed talking after "stop".
         """
+        self._cancel_post_response_capture()
         cancel = getattr(self.engine, "cancel", None)
         if callable(cancel):
             cancel()
@@ -290,6 +296,7 @@ class AIModule(Module):
     def on_user_message(self, text):
         if not text:
             return
+        self._cancel_post_response_capture()
         print(f"[AI] User: {text}", flush=True)
         self._current_user_text = str(text)
 
@@ -310,6 +317,9 @@ class AIModule(Module):
                 str(text).strip(), re.I):
                 self._emit_assistant_text("A project task is still running, and that would touch the project too, so it has to wait. I can keep chatting, or open apps and play music meanwhile.")
                 return
+
+        if self._handle_post_response_screenshot(text):
+            return
 
         if self._handle_conversation_mode_command(text):
             return
@@ -1763,6 +1773,44 @@ class AIModule(Module):
         # Keep internal diagnostics in logs/HUD metadata, not in spoken audio.
         return "I couldn't complete that action."
 
+    def _cancel_post_response_capture(self):
+        capture = getattr(self, "_post_response_capture", None)
+        if capture is not None:
+            capture.cancel()
+
+    def _handle_post_response_screenshot(self, text):
+        prompt = extract_prompt(text)
+        if not prompt:
+            return False
+        routed = self.kernel.intent_router.analyze(text)
+        commands = (routed.entities or {}).get("commands")
+        if routed.intent == IntentType.COMMAND and isinstance(commands, list) and len(commands) >= 2:
+            return False
+        intent = IntentResult(
+            intent=IntentType.COMMAND, confidence=1.0,
+            normalized_text="take a screenshot", entities={"action": "screenshot"},
+            requires_tools=True, classifier="post_response_capture",
+        )
+        try:
+            request = self.tool_request_builder.build(intent)
+        except ValueError as exc:
+            self._emit_assistant_text(f"I couldn't take the screenshot: {exc}")
+            return True
+        request.metadata["post_response_action"] = True
+        capture = getattr(self, "_post_response_capture", None)
+        if capture is None:
+            capture = self._post_response_capture = PostResponseCapture(self.event_bus)
+        token = capture.begin(request)
+        if token is None:
+            return True
+        try:
+            response = self._generate_response(prompt)
+        except BaseException:
+            capture.cancel(token)
+            raise
+        capture.complete(token, response)
+        return True
+
     def _prepare_runtime_context(self, text, runtime_context=None):
         """Apply the existing per-turn context policy without a startup wrapper."""
         builder = getattr(self.kernel, "context_builder", None)
@@ -1798,7 +1846,9 @@ class AIModule(Module):
             print("[AI] No response generated.", flush=True)
             return
         # Tool-call markup is routed (allowlisted) or dropped, never shown.
+        contained_tool_markup = looks_like_tool_markup(response)
         response = finish_model_response(self, response)
         if not response:
             return
         self.event_bus.emit("assistant_response", text=response)
+        return None if contained_tool_markup else response

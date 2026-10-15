@@ -176,6 +176,10 @@ function handleHudMessage (message) {
     if (message.action === 'restore' && win.isMinimized()) win.showInactive()
     return
   }
+  if (message.type === 'hud.capture_response') {
+    if (rendererReady && win && !win.isDestroyed()) win.webContents.send('asta:capture-response', message)
+    return
+  }
   if (message.type === 'hud.chat') sendHudChat(message.chat || {})
 }
 
@@ -324,6 +328,11 @@ ipcMain.on('win:toggle-maximize', () => {
 })
 ipcMain.on('win:close', () => { if (win) win.close() })
 ipcMain.on('win:toggle-fullscreen', () => { if (win) win.setFullScreen(!win.isFullScreen()) })
+ipcMain.on('hud:rendered', (event, responseId) => {
+  if (!win || win.isDestroyed() || event.sender !== win.webContents) return
+  if (typeof responseId !== 'string' || !/^[0-9a-f]{32}$/.test(responseId)) return
+  writeHudMessage({ type: 'hud.rendered', version: 1, response_id: responseId })
+})
 ipcMain.on('hud:text-message', (_event, text) => { sendTextToAsta(text) })
 ipcMain.on('hud:select-chat', (_event, sessionId) => { selectChatSession(sessionId) })
 ipcMain.on('hud:delete-chat', (_event, sessionId) => { deleteChatSession(sessionId) })

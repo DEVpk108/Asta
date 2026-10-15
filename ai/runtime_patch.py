@@ -1,19 +1,10 @@
 import re
 import time
 
+from .post_response_capture import extract_prompt as _extract_post_response_screenshot
+
 from core.contracts import IntentResult, IntentType, ToolResult
 
-
-_POST_RESPONSE_SCREENSHOT_PATTERN = re.compile(
-    r"^(?P<prompt>.+?)\s*(?:,?\s+)(?:and\s+then|then|after that|followed by|and)\s+"
-    r"(?:please\s+)?"
-    r"(?P<action>"
-    r"(?:take(?:\s+(?:a|the))?\s+(?:a\s+)?(?:screenshot|screen\s*shot))"
-    r"|(?:capture(?:\s+(?:a|the))?\s+(?:a\s+)?(?:screenshot|screen\s*shot))"
-    r"|(?:screenshot|screen\s*shot)"
-    r")$",
-    re.IGNORECASE,
-)
 
 _SCREENSHOT_OPEN_PHRASES = {
     "open screenshot",
@@ -39,21 +30,6 @@ _CONVERSATION_LEAD_PATTERN = re.compile(
     r"^(?:okay|ok|please)\s*[,;:.!?-]*\s+",
     re.IGNORECASE,
 )
-
-
-def _extract_post_response_screenshot(text):
-    if not isinstance(text, str):
-        return None
-
-    normalized = " ".join(text.strip().split())
-    match = _POST_RESPONSE_SCREENSHOT_PATTERN.match(normalized.rstrip(" .!?;:"))
-    if not match:
-        return None
-
-    prompt = match.group("prompt").strip(" ,.!?;:")
-    if not prompt:
-        return None
-    return prompt
 
 
 def _is_screenshot_open_request(text):
@@ -226,6 +202,10 @@ def apply_ai_runtime_patch():
         original_on_tool_result(self, result)
 
     def patched_on_user_message(self, text):
+        self._cancel_post_response_capture()
+        if _extract_post_response_screenshot(text):
+            # Native routing owns consent, compound commands and render waiting.
+            return original_on_user_message(self, text)
         if isinstance(text, str) and text.strip():
             # Whisper often inserts punctuation after conversational fillers,
             # e.g. "Okay, turn off conversation mode.". Canonicalize only for
@@ -310,45 +290,6 @@ def apply_ai_runtime_patch():
                 self.event_bus.emit("tool_request", request=request)
                 return
 
-            if routed.intent != IntentType.COMMAND:
-                prompt = _extract_post_response_screenshot(text)
-                if prompt:
-                    print(
-                        "[AI] Mixed request detected: response followed by screenshot.",
-                        flush=True,
-                    )
-                    print(f"[AI] Response prompt: {prompt}", flush=True)
-
-                    self._generate_response(prompt)
-
-                    screenshot_intent = IntentResult(
-                        intent=IntentType.COMMAND,
-                        confidence=1.0,
-                        normalized_text="take a screenshot",
-                        entities={"action": "screenshot"},
-                        requires_tools=True,
-                        classifier="runtime_patch",
-                    )
-                    try:
-                        request = self.tool_request_builder.build(screenshot_intent)
-                    except ValueError as exc:
-                        print(
-                            f"[AI] Unable to build post-response screenshot request: {exc}",
-                            flush=True,
-                        )
-                        self._emit_assistant_text(
-                            f"I couldn't take the screenshot: {exc}"
-                        )
-                        return
-
-                    request.metadata["post_response_action"] = True
-                    print(
-                        f"[AI] Selected post-response tool: {request.tool} "
-                        f"(request_id={request.request_id})",
-                        flush=True,
-                    )
-                    self.event_bus.emit("tool_request", request=request)
-                    return
 
         original_on_user_message(self, text)
 

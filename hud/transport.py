@@ -121,6 +121,11 @@ class HUDTransport:
         self._last_audio_message = message
         self._broadcast(message)
 
+    def publish_capture_response(self, phase: str, response_id: str, text: str = "") -> None:
+        # Ephemeral: never replay stale capture tickets after reconnect.
+        self._broadcast({"type": "hud.capture_response", "version": 1,
+                         "phase": phase, "response_id": response_id, "text": text})
+
     def publish_chat(self, *, role: str, text: str) -> None:
         normalized_role = "user" if role == "user" else "assistant"
         value = str(text or "").strip()

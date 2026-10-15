@@ -17,6 +17,37 @@
 
   if (!form || !input || !messages || !chatPanel) return
 
+  var captureTicket = null
+  if (bridge && bridge.onCaptureResponse) {
+    bridge.onCaptureResponse(function (message) {
+      if (!message || !/^[0-9a-f]{32}$/.test(message.response_id || '')) return
+      var id = message.response_id
+      if (message.phase === 'begin') {
+        captureTicket = { id: id, nodes: [], completed: false }
+      } else if (captureTicket && captureTicket.id === id) {
+        if (message.phase === 'cancel') { captureTicket = null; return }
+        if (message.phase !== 'ready' || captureTicket.completed || !String(message.text || '').trim()) return
+        var ticket = captureTicket
+        ticket.completed = true
+        // Replace streamed fragments with the completed, filtered response.
+        // Ordinary chat and speech event contracts remain unchanged.
+        ticket.nodes.forEach(function (node) { if (node.parentNode === messages) messages.removeChild(node) })
+        var completedNode = appendMessage('assistant', message.text, false)
+        // Do not acknowledge a node still fading in under the chat animation.
+        completedNode.style.animation = 'none'
+        completedNode.style.opacity = '1'
+        completedNode.style.transform = 'none'
+        if (window.AstaViews && window.AstaViews.show) window.AstaViews.show('chat', false)
+        window.requestAnimationFrame(function () {
+          window.requestAnimationFrame(function () {
+            if (captureTicket === ticket && document.visibilityState === 'visible' &&
+                bridge.acknowledgeResponseRender) bridge.acknowledgeResponseRender(id)
+          })
+        })
+      }
+    })
+  }
+
   var currentSessionId = null
   var recentVisible = false
   var conversationMode = false
@@ -85,13 +116,16 @@
     item.appendChild(label)
     item.appendChild(body)
     messages.appendChild(item)
+    if (role === 'assistant' && captureTicket && !captureTicket.completed) captureTicket.nodes.push(item)
     messages.scrollTop = messages.scrollHeight
     if (role === 'assistant') renderText(body, value)
     else body.textContent = value
     messages.scrollTop = messages.scrollHeight
+    return item
   }
 
   function loadHistory (history) {
+    captureTicket = null
     var payload = Array.isArray(history) ? { messages: history, sessions: [] } : (history || {})
     currentSessionId = payload.session_id || currentSessionId
     renderRecents(Array.isArray(payload.sessions) ? payload.sessions : [])
